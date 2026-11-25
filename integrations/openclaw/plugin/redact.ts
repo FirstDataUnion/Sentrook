@@ -141,6 +141,52 @@ const FIELD_NAME_VALUE = /^(?:[a-z]{2,}(?:[_-][a-z]+)*|[A-Z]{2,}(?:[_-][A-Z]+)*|
 const PLACEHOLDER_VALUE = /^x{3,}$/i;
 const SHORT_WORD = /^[a-z]{1,12}$/;
 /**
+ * A value that stands in for a secret rather than being one: the word REDACTED (maybe in brackets), or a run of one
+ * symbol (`••••••••`, `--------`). A run of one letter or digit is still a value (`11111111` is a password people use).
+ */
+const REDACTED_WORD = /^[(\[<{]?redacted[)\]>}]?$/i;
+const SYMBOL_RUN = /^([^A-Za-z0-9\s])\1{2,}$/u;
+/**
+ * A phrase that says what it stands for (`short-lived token`, `paste your key here`): words that name a credential or
+ * a placeholder. A run of twelve or more token characters in a phrase may be a value, so such a phrase is not one.
+ */
+const STAND_IN_WORD = /(?<![A-Za-z0-9])(?:tokens?|keys?|secrets?|passwords?|passphrases?|credentials?|here|your|example|placeholder)(?![A-Za-z0-9])/i;
+const TOKEN_RUN = /[A-Za-z0-9_+/=.~-]{12}/;
+/**
+ * A plain word in such a phrase: letters (maybe hyphenated) or a short number, maybe in brackets or before punctuation.
+ * A word with a digit among letters or a symbol inside it (`Tr0ub4dor&3`) may be the value itself.
+ */
+const PLAIN_WORD = /^[(\[<{"'~*]*(?:[A-Za-z][A-Za-z'’-]*|[0-9]{1,4})[)\]>}",.;:!?*]*$/;
+/**
+ * A quoted string's content from where a value starts to the closing quote (escaped or not), and a value cut short
+ * with an ellipsis, as docs abridge a token: up to 15 characters, then `...`, `…`, `<...>` or `[...]` (`ya29.a0...`).
+ * A full token with an ellipsis after it is longer, so it is still a value.
+ */
+const QUOTED_REST = /(?<=["'])[^"'\\\n]{1,200}(?=\\{0,8}["'])/y;
+const ELIDED = /^[^\s"'\\]{0,15}(?:\.{3}|…|<(?:\.{3}|…)>|\[(?:\.{3}|…)\])$/;
+/**
+ * Plainly a stand-in for a secret, not one: the word REDACTED, a run of one symbol, or a phrase of plain words that
+ * names a credential or a placeholder and holds no run of twelve or more token characters (`short-lived token`).
+ */
+const standsIn = (v: string): boolean =>
+  REDACTED_WORD.test(v) ||
+  SYMBOL_RUN.test(v) ||
+  (/\s/.test(v) &&
+    STAND_IN_WORD.test(v) &&
+    !TOKEN_RUN.test(v) &&
+    v.split(/\s+/).every((w) => w === "" || PLAIN_WORD.test(w)));
+/**
+ * Whether the value at `start`-`end` opens a quoted string that as a whole stands in for a secret: cut short with an
+ * ellipsis (`"access_token": "ya29.a0..."`) or `standsIn` (`"short-lived token"`). Only a quoted string counts: an
+ * unquoted value before an ellipsis ("the password is hunter2...") is still a value.
+ */
+const quotedStandIn = (text: string, start: number, end: number): boolean => {
+  QUOTED_REST.lastIndex = start;
+  const m = QUOTED_REST.exec(text);
+  if (!m || end > start + m[0].length) return false;
+  return ELIDED.test(m[0]) || standsIn(m[0]);
+};
+/**
  * Plainly not a secret in text: a credential field's name or a placeholder for one (`api_key:api_secret` in docs,
  * `password: your_password`, `token: xxxxxxxx`), or a short lower-case word of three or more different letters
  * (`password=changeme`). A value with a digit, mixed case or a symbol, a longer word, and a run of one letter are still
@@ -151,8 +197,8 @@ const namesAField = (v: string): boolean => {
   if (v.length > 40 || !FIELD_NAME_VALUE.test(v)) return false;
   return CREDENTIAL_FIELD.test(v.replace(/[_-]?here$/i, ""));
 };
-/** A value after a key in text: a key's value that does not name a field. */
-const textKeyValue = (v: string) => keyValue(v) && !namesAField(v);
+/** A value after a key in text: a key's value that does not name a field or stand in for a secret. */
+const textKeyValue = (v: string) => keyValue(v) && !namesAField(v) && !standsIn(v);
 /**
  * An unquoted value after a key: also not code that reads the secret from somewhere (`token = creds.get('token')`,
  * cut where its quoted argument starts). A quoted value or one under an object key is whole, so it is never code cut
@@ -168,7 +214,7 @@ const innerKeyValue = (v: string) => v.length >= 12 && textKeyValue(v) && !isCod
 const innerQuotedValue = (v: string) => v.length >= 12 && textKeyValue(v);
 /** After "password is" or "token:": six or more characters that are not words, a number or code that reads one. */
 const statedValue = (v: string) =>
-  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !isCodeRead(v) && !namesAField(v);
+  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !isCodeRead(v) && !namesAField(v) && !standsIn(v);
 /** Straight after a cue word ("backup key X"): twelve or more characters with letters and digits. */
 const bareValue = (v: string) =>
   v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
@@ -634,6 +680,8 @@ function spansOf(text: string): Array<[number, number, string]> {
       }
       if (shape.group) {
         const idx = m.indices?.groups?.[shape.group];
+        // A quoted value cut short in docs: `"access_token": "ya29.a0..."`.
+        if (idx && quotedStandIn(text, idx[0], idx[1])) continue;
         if (idx && (!shape.check || shape.check(text.slice(idx[0], idx[1])))) spans.push([idx[0], idx[1], shape.kind]);
       } else {
         spans.push([m.index, m.index + m[0].length, shape.kind]);

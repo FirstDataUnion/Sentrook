@@ -646,3 +646,47 @@ test("a key's value that names a field or stands in for one stays; real values u
   const obj = r.value({ api_key: "api_secret", password: "sunshine" }) as Record<string, string>;
   assert.ok(Object.values(obj).every((v) => v.startsWith("⟦secret:credential:")), JSON.stringify(obj));
 });
+
+test("a quoted value that stands in for a secret stays; a full token, even with an ellipsis after it, goes", () => {
+  const google = "ya" + "29.";
+  const refresh = "1/" + "/0";
+  for (const text of [
+    `"access_token": "${google}a0..."`,
+    `"refresh_token": "${refresh}g..."`,
+    '"api_key": "xxxxxxxx"',
+    '"token": "REDACTED"',
+    '"access_token": "short-lived token"',
+    `"access_token": "${google}<...>"`,
+    `"refresh_token": "${refresh}g…"`,
+    '"client_secret": "••••••••"',
+    '"password": "(redacted)"',
+    "token: REDACTED",
+    '"api_key": "paste your key here"',
+    `{"access_token": "${google}a0...", "refresh_token": "${refresh}g...", "token_type": "Bearer", "expires_in": 3599}`,
+  ]) {
+    for (const form of forms(text)) assert.equal(r.string(form), form);
+  }
+  const r20 = seeded(20, 21);
+  const r40 = seeded(40, 22);
+  for (const [text, value] of [
+    [`"access_token": "${google}a0${r40}"`, r40],
+    [`"access_token": "${google}a0${r40}..."`, r40],
+    [`"api_key": "${r20}..."`, r20],
+    [`"api_key": "${r20}…"`, r20],
+    [`the password is ${r20.slice(0, 9)}...`, r20.slice(0, 9)],
+    [`access_token=${google}a0...`, `${google}a0`],
+    [`"password": "${"1".repeat(8)}"`, "1".repeat(8)],
+    [`"password": "${["correct", "horse", "battery", "staple"].join(" ")}"`, "horse battery"],
+    [`"token": "my token is ${r20}"`, r20],
+    [`"password": "your new password is ${"Tr0ub4" + "dor9"}"`, "Tr0ub4dor9"],
+  ]) {
+    for (const form of forms(text).slice(0, 2)) {
+      const out = r.string(form);
+      assert.ok(!out.includes(value), form);
+      assert.ok(out.includes("⟦secret:"), out);
+    }
+  }
+  // A parsed object's value under a credential key is what the call sends, whatever it looks like.
+  const obj = r.value({ access_token: `${google}a0...`, token: "REDACTED" }) as Record<string, string>;
+  assert.ok(Object.values(obj).every((v) => v.startsWith("⟦secret:credential:")), JSON.stringify(obj));
+});
