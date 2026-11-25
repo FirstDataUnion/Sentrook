@@ -96,6 +96,15 @@ since the version the catalog pins.
   observe mode; the reply says which. When the held run had already sent or written something before the held call,
   plain `allow` waits for the next run and the notice offers `/sentrook allow <id> now`, which starts the whole job
   again with a warning that it repeats what it did. The command's output goes to `run-now.log` in the state folder.
+- **Holds on runs that are not cron jobs bind to where the run came from.** A subagent's hold is bound to its parent
+  session (the `parent_session_id` Hermes gives each turn of a delegated child), and a webhook run's to its route (the
+  `webhook:<route>` user id Hermes's webhook platform binds for an authenticated route; the delivery id is not used).
+  Such a hold offers `allow` (a one-use pass for the next matching call from the same source within 7 days; nothing
+  is started), `allow always` where offered, and `deny`, each bound to that source; the notice and the replies name
+  it, and `/sentrook passes` lists each pass by its source. A subagent of another parent session, or another route,
+  is held again. A run with no source Hermes names, an API-server run among them (Hermes 0.23 checks one shared key
+  and gives the run no key name), keeps `allow` alone, bound to the exact arguments. Sources are never read from the
+  prompt or the call, and the stored ref is a hash.
 - **Holds** can be answered for 7 days (was 24 hours). A repeat of a waiting hold (same job and call, no higher
   risk, no new warning) updates it and sends no new notice; `status` and `why` say how many times it was held.
   `holds.json` is version 2 and keeps no raw arguments; holds stored before stay answerable as before until they
@@ -219,6 +228,12 @@ since the version the catalog pins.
   `--scope session`; a pattern Sentrook would not read is refused when you type it.
 - When a review is caused by such a key going to its own service, the prompt suggests the grant, and **Always** sets
   it as it does other suggested grants.
+- The `sentrook-guide` skill has a new section, "Working well with Sentrook", on shaping work so Sentrook can judge
+  it clearly: fetch web pages and APIs with Hermes's own web tools rather than HTTP in code; keep code local (a code
+  or shell call that reads local files does not also reach the network); install packages once, early, in a chat with
+  you, not in cron jobs or subagents; keep a task's files in one work directory; refer to keys by name; and when a
+  call is held or blocked, tell you and point to `/sentrook why` rather than try it again in a new shape. It says
+  plainly that this is about clear scans, never about getting past a check.
 
 ## 2.0.0-beta.17
 
