@@ -21,6 +21,7 @@ import ast
 import builtins
 import importlib
 import inspect
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from urllib.parse import urlsplit
@@ -76,7 +77,6 @@ _LOCAL_MODULES = frozenset(
         "hmac",
         "html",
         "html.parser",
-        "io",
         "itertools",
         "json",
         "keyword",
@@ -95,7 +95,6 @@ _LOCAL_MODULES = frozenset(
         "statistics",
         "struct",
         "tarfile",
-        "tempfile",
         "textwrap",
         "time",
         "tomllib",
@@ -167,6 +166,8 @@ _RESTRICTED: dict[str, frozenset[str]] = {
         }
     ),
     "urllib": frozenset({"parse"}),
+    "io": frozenset({"StringIO", "BytesIO"}),
+    "tempfile": frozenset({"gettempdir", "mkdtemp", "TemporaryDirectory"}),
     # `string.Formatter().get_field` and `typing.get_type_hints` reach attributes and code by name.
     "string": frozenset(
         {
@@ -253,6 +254,16 @@ _FILE_MOVES = frozenset(
         "copytree",
         "move",
     }
+)
+#: File classes that take a path and a mode like `open` (`zipfile.ZipFile(p, "w")`).
+_FILE_CLASSES = frozenset({"FileIO", "ZipFile", "TarFile", "GzipFile", "BZ2File", "LZMAFile"})
+#: Calls that create or open a file where this reading cannot check the path.
+_FILE_FACTORIES = frozenset(
+    {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile", "mkstemp", "FileType"}
+)
+#: Directories a program may write data files in: scratch space no tool reads settings or code from.
+_SCRATCH_DIRS = re.compile(
+    r"\A(?:/tmp/|/var/tmp/|(?:~|/home/[^/]+|/root|/Users/[^/]+)/\.hermes/cache/)"
 )
 #: Calls that write a file at their path argument.
 _WRITE_CALLS = frozenset({"write_text", "write_bytes", "write_file", "patch"})
@@ -381,6 +392,10 @@ def _url_arg(call: ast.Call) -> ast.expr | None:
     return first
 
 
+def _scratch_prefix(prefix: str) -> bool:
+    return bool(_SCRATCH_DIRS.match(prefix)) and "/../" not in prefix and "/./" not in prefix
+
+
 def _hosts_of(values: list[tuple[str, bool]] | None) -> set[str] | None:
     """The hosts of request URLs with these values, or None when one of them is not known."""
     if not values:
@@ -438,6 +453,8 @@ class _Reader:
         #: Names bound by an import of a local or restricted module, with the object each names.
         self.objects: dict[str, object] = {}
         self.http = False
+        #: A function that sets where requests go was imported under another name.
+        self.targets_off = False
         #: What each name resolves to, once worked out, so many calls on one name stay linear.
         self._name_values: dict[str, list[tuple[str, bool]] | None] = {}
         self._name_hosts: dict[str, set[str] | None] = {}
@@ -489,6 +506,8 @@ class _Reader:
                 if module == "urllib" and a.name != "request":
                     raise _Unfollowed
                 bound = a.asname or a.name
+                if a.name in _UNFOLLOWED_CALLS:
+                    self.targets_off = True  # `from urllib.request import ProxyHandler as P`
                 if module == "urllib":
                     self.http_modules.add(bound)
                 elif a.name in _REQUEST_CALLS:
@@ -612,20 +631,31 @@ class _Reader:
             attr = node.args[1] if len(node.args) > 1 else None
             if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)):
                 raise _Unfollowed
-            if attr.value.startswith("__") or attr.value in _REQUEST_CALLS:
+            if attr.value.startswith("_") or attr.value in _REQUEST_CALLS:
                 raise _Unfollowed
             obj = node.args[0]
-            if isinstance(obj, ast.Name) and obj.id in self.restricted:
-                raise _Unfollowed
+            if isinstance(obj, ast.Name) and (obj.id in self.restricted or obj.id in self.objects):
+                raise _Unfollowed  # `getattr(glob, "os")`
         self._check_write(node, name)
 
     def _check_write(self, node: ast.Call, name: str | None) -> None:
         """A call that writes a file is followed only when the file is plainly data (`_DATA_EXTENSIONS`)."""
         path: ast.expr | None = None
-        if name == "open":
+        if name in _FILE_FACTORIES:
+            raise _Unfollowed  # `NamedTemporaryFile(suffix=".pth", …)`, `argparse.FileType("a")`
+        if name == "open" or name in _FILE_CLASSES:
+            if any(isinstance(a, ast.Starred) for a in node.args) or any(
+                k.arg is None for k in node.keywords
+            ):
+                raise _Unfollowed  # `open(*args)`, `open(p, **kw)`: the mode is not seen
             receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
-            module_open = receiver is None or (
-                isinstance(receiver, ast.Name) and inspect.ismodule(self.objects.get(receiver.id))
+            module_open = (
+                receiver is None
+                or name in _FILE_CLASSES
+                or (
+                    isinstance(receiver, ast.Name)
+                    and inspect.ismodule(self.objects.get(receiver.id))
+                )
             )
             mode_at = 1 if module_open else 0
             mode: ast.expr | None = next((k.value for k in node.keywords if k.arg == "mode"), None)
@@ -655,6 +685,46 @@ class _Reader:
             return
         if path is None or not self._data_path(path, frozenset()):
             raise _Unfollowed
+        prefixes = self._path_prefixes(path, frozenset())
+        if not prefixes or not all(_scratch_prefix(p) for p in prefixes):
+            raise _Unfollowed  # a data file outside a scratch directory may be a tool's settings
+
+    def _path_prefixes(self, expr: ast.expr, seen: frozenset[str]) -> list[str] | None:
+        """The known start of each value the path `expr` can take."""
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return [expr.value]
+        if isinstance(expr, ast.JoinedStr):
+            first = expr.values[0] if expr.values else None
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                return [first.value]
+            return None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
+            left = self._path_prefixes(expr.left, seen)
+            if left is None:
+                return None
+            sep = "/" if isinstance(expr.op, ast.Div) else ""
+            return [p + sep for p in left]
+        if isinstance(expr, ast.Call):
+            fn = _call_name(expr.func)
+            if (
+                fn in ("Path", "PurePath", "join", "expanduser", "abspath", "normpath")
+                and expr.args
+            ):
+                first = self._path_prefixes(expr.args[0], seen)
+                if first is None or fn != "join" or len(expr.args) < 2:
+                    return first
+                return [p.rstrip("/") + "/" for p in first]
+            return None
+        if isinstance(expr, ast.Name) and expr.id not in seen:
+            binds = self.bindings.get(expr.id) or []
+            out: list[str] = []
+            for b in binds:
+                got = None if b is None else self._path_prefixes(b, seen | {expr.id})
+                if got is None:
+                    return None
+                out.extend(got)
+            return out or None
+        return None
 
     def _data_path(self, expr: ast.expr, seen: frozenset[str]) -> bool:
         """`expr` is a path that ends in a data extension, however the rest of it is computed."""
@@ -719,8 +789,8 @@ class _Reader:
             parent = self.parents.get(child)
             allowed = _allowed_attrs(obj)
             if not (isinstance(parent, ast.Attribute) and parent.value is child):
-                if allowed is not None:
-                    raise _Unfollowed  # a restricted module used as a value (`f(shutil.os)`)
+                if inspect.ismodule(obj):
+                    raise _Unfollowed  # a module used as a value (`g = glob`, `f(glob)`): its attributes are not followed
                 return
             if parent.attr.startswith("_"):
                 raise _Unfollowed
@@ -757,6 +827,25 @@ class _Reader:
             if isinstance(node, ast.keyword) and node.arg in _UNFOLLOWED_KEYWORDS:
                 return None
             if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                return None
+            if isinstance(node, ast.keyword) and node.arg is None:
+                return None  # `requests.post(url, **kw)`: `kw` may carry `proxies`
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.value, ast.Attribute)
+            ):
+                return None  # `s.proxies["https"] = …`
+            if isinstance(node, ast.Call) and (
+                (isinstance(node.func, ast.Name) and node.func.id in ("setattr", "delattr"))
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("update", "setdefault")
+                    and isinstance(node.func.value, ast.Attribute)
+                )
+            ):
+                return None  # `setattr(req, "full_url", …)`, `s.proxies.update(…)`
+            if self.targets_off:
                 return None  # `req.full_url = …`, `s.proxies = …`: the request changes after it is built
             if (isinstance(node, ast.Attribute) and node.attr in _UNFOLLOWED_CALLS) or (
                 isinstance(node, ast.Name) and node.id in _UNFOLLOWED_CALLS
@@ -964,6 +1053,19 @@ def _local_names(scope: ast.AST) -> set[str]:
     return names - declared
 
 
+def _may_run_code(stmt: ast.stmt) -> bool:
+    """`stmt` may call a function defined above it: anything but an import, a plain `def` or an
+    assignment of values that call nothing."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Pass)):
+        return False
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+        return any(
+            isinstance(n, (ast.Call, ast.Subscript, ast.Attribute, ast.BinOp, ast.Compare))
+            for n in ast.walk(stmt.value)
+        )
+    return True
+
+
 class _Flow:
     """Every global name the program reads is bound by the program before the read (or is a builtin it
     never rebinds). A code tool may keep one interpreter for a whole conversation, so a name read first
@@ -976,13 +1078,12 @@ class _Flow:
             if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
         } | {name for n in ast.walk(tree) if isinstance(n, ast.stmt) for name in _stmt_binds(n)}
         self.deferred: list[tuple[ast.AST, frozenset[str]]] = []
-        self.module_bound: set[str] = set()
-        #: Checking a function body, which runs only when called, after the module has run.
-        self.in_function = False
+        #: The names bound where a class body starts, while checking it: its methods and comprehensions
+        #: do not see the names the class body binds.
+        self.class_outer: frozenset[str] | None = None
 
     def run(self, tree: ast.Module) -> None:
-        self.module_bound = self.block(tree.body, set(), frozenset())
-        self.in_function = True
+        self.block(tree.body, set(), frozenset())
         while self.deferred:
             scope, enclosing = self.deferred.pop()
             local = enclosing | _local_names(scope)
@@ -996,8 +1097,6 @@ class _Flow:
     def ok(self, name: str, bound: set[str], enclosing: frozenset[str]) -> bool:
         if name in bound or name in enclosing:
             return True
-        if self.in_function and name in self.module_bound:
-            return True  # read in a function, which runs after the module binds it
         return (name in _BUILTINS or name in _SAFE_DUNDER_NAMES) and name not in self.stored
 
     def expr(self, node: ast.AST, bound: set[str], enclosing: frozenset[str]) -> None:
@@ -1009,10 +1108,10 @@ class _Flow:
                     raise _Unfollowed
             elif isinstance(n, ast.Lambda):
                 stack.extend([*n.args.defaults, *(d for d in n.args.kw_defaults if d)])
-                self.deferred.append((n, enclosing | frozenset(bound)))
+                self.deferred.append((n, enclosing | self._scope_bound(bound)))
                 continue
             elif isinstance(n, _COMPREHENSIONS):
-                inner = set(bound)
+                inner = set(self._scope_bound(bound))
                 for gen in n.generators:
                     self.expr(gen.iter, inner, enclosing)
                     inner |= _target_names(gen.target)
@@ -1023,24 +1122,48 @@ class _Flow:
                     self.expr(part, inner, enclosing)
                 continue
             elif isinstance(n, ast.NamedExpr):
-                stack.append(n.value)
-                bound.add(n.target.id)
+                stack.append(n.value)  # its target counts as bound nowhere: the branch may not run
                 continue
             stack.extend(ast.iter_child_nodes(n))
 
+    def _scope_bound(self, bound: set[str]) -> frozenset[str]:
+        """What a nested scope created here sees of the names bound so far: in a class body, not the
+        class's own names."""
+        return self.class_outer if self.class_outer is not None else frozenset(bound)
+
     def block(self, stmts: list[ast.stmt], bound: set[str], enclosing: frozenset[str]) -> set[str]:
-        """Check `stmts` in order; return the names definitely bound after them."""
+        """Check `stmts` in order; return the names definitely bound after them. A function's body is
+        checked against the names bound when the block next runs code (it cannot be called sooner), not
+        those bound by the end of the module (`g()` before `terminal = print`)."""
+        pending: list[ast.AST] = []
+
+        def settle() -> None:
+            for scope in pending:
+                self.deferred.append((scope, enclosing | self._scope_bound(bound)))
+            pending.clear()
+
         for stmt in stmts:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 a = stmt.args
                 for d in [*stmt.decorator_list, *a.defaults, *(d for d in a.kw_defaults if d)]:
                     self.expr(d, bound, enclosing)
+                if stmt.decorator_list:
+                    settle()
                 bound.add(stmt.name)  # bound before the body can run, so it may call itself
-                self.deferred.append((stmt, enclosing | frozenset(bound)))
-            elif isinstance(stmt, ast.ClassDef):
+                pending.append(stmt)
+                if stmt.decorator_list:
+                    settle()  # a decorator may call the function now
+                continue
+            if _may_run_code(stmt):
+                settle()
+            if isinstance(stmt, ast.ClassDef):
                 for d in [*stmt.decorator_list, *stmt.bases, *(k.value for k in stmt.keywords)]:
                     self.expr(d, bound, enclosing)
-                self.block(stmt.body, set(bound), enclosing)
+                outer, self.class_outer = self.class_outer, self._scope_bound(bound)
+                try:
+                    self.block(stmt.body, set(bound), enclosing)
+                finally:
+                    self.class_outer = outer
                 bound.add(stmt.name)
             elif isinstance(stmt, ast.If):
                 self.expr(stmt.test, bound, enclosing)
@@ -1060,14 +1183,15 @@ class _Flow:
                     self.expr(item.context_expr, bound, enclosing)
                     if item.optional_vars is not None:
                         bound |= _target_names(item.optional_vars)
-                bound |= self.block(stmt.body, set(bound), enclosing)
+                # a context manager may swallow an exception, so what the body binds is not definite
+                self.block(stmt.body, set(bound), enclosing)
             elif isinstance(stmt, ast.Try) or type(stmt).__name__ == "TryStar":
                 done = self.block(stmt.body + stmt.orelse, set(bound), enclosing)
                 for h in stmt.handlers:
                     if h.type is not None:
                         self.expr(h.type, bound, enclosing)
                     names = {h.name} if h.name else set()
-                    done &= self.block(h.body, bound | names, enclosing)
+                    done &= self.block(h.body, bound | names, enclosing) - names
                 bound |= done
                 bound |= self.block(stmt.finalbody, set(bound), enclosing)
             elif isinstance(stmt, ast.Match):
@@ -1081,9 +1205,17 @@ class _Flow:
                     if case.guard is not None:
                         self.expr(case.guard, bound | names, enclosing)
                     self.block(case.body, bound | names, enclosing)
+            elif isinstance(stmt, ast.Delete):
+                self.expr(stmt, bound, enclosing)
+                for t in stmt.targets:
+                    bound -= _target_names(t)
             else:
+                if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+                    if not self.ok(stmt.target.id, bound, enclosing):
+                        raise _Unfollowed  # `x += …` reads x first
                 self.expr(stmt, bound, enclosing)
                 bound |= _stmt_binds(stmt)
+        settle()
         return bound
 
 

