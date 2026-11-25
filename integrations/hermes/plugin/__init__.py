@@ -370,6 +370,11 @@ def on_pre_llm_call(**kw: Any) -> None:
         with store.session_lock(sid):
             s = store.load_session(sid)
             if not background:
+                # The cron run this session serves, or (a delegated child) the one its parent serves, for holds and
+                # passes of the job (`_inherited_run`).
+                run_rec = _cron_record() or _inherited_run(store, s, kw.get("parent_session_id"))
+                if run_rec is not None:
+                    s["cron"] = run_rec
                 # Without a turn id, calls that name none must not fall back to the previous turn.
                 s["last_turn_id"] = turn_id or None
                 # Only a turn whose request was stored can be carried later.
@@ -582,6 +587,17 @@ def _scan_one(
     )
     planir = built["planir"]
     built["loop_save"] = loop_save
+    # The cron run this call belongs to: kept on the run's own session, so its sub-agents find it (`_inherited_run`).
+    own_run = _cron_record()
+    if own_run is not None:
+        sess["cron"] = own_run
+    built["job_run"] = (
+        _inherited_run(store, sess, turn.get("parent_session_id"))
+        if own_run is None and built["subagent"]
+        else None
+    )
+    if built["job_run"] is not None:
+        sess["cron"] = built["job_run"]
     # Any other call of the unattended review or curator: nobody can answer it either (see `skill_review`).
     background_run = not loop_save and skill_review.in_unattended_review()
     built["background_run"] = background_run
@@ -769,7 +785,7 @@ def _scan_one(
                 job_id is None and source is None,
             )
             # A run the plugin started for an owner's `allow` (`run_now`): its pass serves this run only.
-            rerun = _rerun(cfg, job_id) if job_id else None
+            rerun = _rerun(cfg, job_id, built) if job_id else None
             try:
                 settled = passes.check(
                     cfg.state_dir,
@@ -1273,6 +1289,61 @@ def _cron_run() -> tuple[str | None, str | None, datetime | None]:
     return job_id.strip(), key, at
 
 
+def _cron_record() -> dict[str, Any] | None:
+    """The current cron run as the plugin keeps it on the run's session (`sess["cron"]`): the job, its name, the run
+    as a key and when it started, from Hermes's run metadata only. None outside a cron run."""
+    job_id, key, started = _cron_run()
+    if job_id is None:
+        return None
+    try:
+        read = getattr(_ctx, "current_cron_execution", None)
+        name = getattr(read() if callable(read) else None, "job_name", None)
+    except Exception:  # noqa: BLE001 - no name: the notice shows the id only
+        name = None
+    return {
+        "job_id": job_id,
+        "job_name": name.strip() if isinstance(name, str) and name.strip() else None,
+        "run_key": key,
+        "started_at": started.isoformat() if started else None,
+    }
+
+
+def _inherited_run(store: Store, sess: dict[str, Any], parent_id: Any) -> dict[str, Any] | None:
+    """The cron run a sub-agent belongs to: the one its own session already took from its parent, else its parent
+    session's (`sess["cron"]`, kept by the parent's own turns and scans, or taken in turn from its own parent). The
+    parent is the one Hermes names for the child's turn (`parent_session_id`), never text. Hermes gives a delegated
+    child no cron execution of its own, so this is how its holds and passes reach the job. None when the parent is
+    not a cron run, or is not known to the plugin."""
+    own = sess.get("cron")
+    if isinstance(own, dict) and own.get("job_id"):
+        return own
+    if not isinstance(parent_id, str) or not parent_id.strip():
+        return None
+    rec = store.load_session(parent_id).get("cron")
+    if not isinstance(rec, dict) or not isinstance(rec.get("job_id"), str) or not rec["job_id"]:
+        return None
+    return {k: rec.get(k) for k in ("job_id", "job_name", "run_key", "started_at")}
+
+
+def _run_identity(built: dict[str, Any]) -> tuple[str | None, str | None, datetime | None]:
+    """(the cron job, the run as a key, when it started) for the current call: Hermes's own cron execution, else the
+    cron run a sub-agent belongs to (`built["job_run"]`)."""
+    job_id, key, started = _cron_run()
+    if job_id is not None:
+        return job_id, key, started
+    rec = built.get("job_run")
+    if not isinstance(rec, dict) or not rec.get("job_id"):
+        return None, None, None
+    at = None
+    if isinstance(rec.get("started_at"), str):
+        try:
+            at = datetime.fromisoformat(rec["started_at"])
+            at = at if at.tzinfo is not None else None
+        except ValueError:
+            at = None
+    return str(rec["job_id"]), rec.get("run_key"), at
+
+
 def _acted(sess: dict[str, Any]) -> bool:
     """Whether this run had already sent or written something (`passes.acts`) that ran, before the call being held.
     A cron run is a session of its own on Hermes."""
@@ -1285,10 +1356,10 @@ def _acted(sess: dict[str, Any]) -> bool:
     return False
 
 
-def _rerun(cfg: PluginConfig, job_id: str) -> dict[str, Any] | None:
-    """The record of a run the plugin started for an answer, when the current run is it (`passes.run_of`); earlier
-    such runs of the job that ended unseen get their outcome line now."""
-    _job, key, started = _cron_run()
+def _rerun(cfg: PluginConfig, job_id: str, built: dict[str, Any]) -> dict[str, Any] | None:
+    """The record of a run the plugin started for an answer, when the current run is it (`passes.run_of`), a
+    sub-agent of it included; earlier such runs of the job that ended unseen get their outcome line now."""
+    _job, key, started = _run_identity(built)
     try:
         mine, gone = passes.run_of(
             cfg.state_dir, passes.job_ref(job_id), key, started, datetime.now(UTC)
@@ -1333,18 +1404,45 @@ def _outcome_notice(cfg: PluginConfig, rec: dict[str, Any]) -> None:
 
 
 def on_session_end(**kw: Any) -> None:
-    """The end of a turn: when it is the end of a cron run the plugin started for an owner's answer, the owner gets
-    one line on how it went."""
+    """The end of a turn: when it is the end of a cron run, the owner gets one line listing the run's other held calls
+    (`hold.end_of_run`), and, for a run the plugin started for an owner's answer, one line on how it went."""
     try:
         job_id, key, started = _cron_run()
         if job_id is None:
             return
         cfg, _ = _load()
-        rec = passes.run_end(cfg.state_dir, passes.job_ref(job_id), key, started, datetime.now(UTC))
+        now = datetime.now(UTC)
+        rec = passes.run_end(cfg.state_dir, passes.job_ref(job_id), key, started, now)
         if rec is not None:
             _outcome_notice(cfg, rec)
+        _end_lines(cfg, passes.job_ref(job_id), key, now)
     except Exception as exc:  # noqa: BLE001
         logger.warning("on_session_end failed: %s", exc)
+
+
+def _end_lines(cfg: PluginConfig, ref: str | None, key: str | None, now: datetime) -> None:
+    """Sends the run's end line (`hold.end_line_text`) for each group the run leads, and logs it."""
+    groups = hold.end_of_run(cfg.state_dir, ref, key, now)
+    if not groups:
+        return
+    target, why = _notice_target(cfg)
+    for lead, members in groups:
+        if target:
+            _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD))
+        else:
+            logger.warning("sentrook run ended with held calls but sent no end line: %s", why)
+        _state(cfg)[1].write(
+            {
+                "kind": "run_group",
+                "op": "end_line",
+                "lead": lead.get("id"),
+                "listed": [m.get("id") for m in members],
+                "job_ref": ref,
+                "notice": {"status": "queued", "target": hold.target_label(target)}
+                if target
+                else {"status": "unsent", "target": None, "reason": why},
+            }
+        )
 
 
 def _where(built: dict[str, Any]) -> str:
@@ -1464,6 +1562,12 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None, dict[str, str] | No
         )
         return hold.where_text("cron job", sref, job_id.strip(), name), job_id.strip(), None
     source = _source_of(built)
+    rec = built.get("job_run")
+    if isinstance(rec, dict) and rec.get("job_id"):
+        # A sub-agent of a cron run: the job's own holds and passes apply (`_inherited_run`).
+        job_id = str(rec["job_id"])
+        name = rec.get("job_name") if rec.get("job_name") != job_id else None
+        return hold.where_text("cron job", sref, job_id, name, subagent=True), job_id, None
     if built["subagent"] or built["platform"] == "subagent":
         return hold.where_text("subagent run", sref, source=source), None, source
     if built["platform"] == "cron":
@@ -1758,6 +1862,17 @@ def _hold(
         description = hold.inert(describe(resp, built["tool"]), 160)
     except Exception:  # noqa: BLE001 - a malformed response: no description
         description = ""
+    run_key = _run_identity(built)[1] if job_id else None
+    if job_id and target:
+        # an earlier run of the job that ended where the plugin could not see it: its end line goes out first
+        try:
+            for lead, members in hold.stale_groups(
+                cfg.state_dir, passes.job_ref(job_id), run_key, now
+            ):
+                _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD))
+        except Exception as exc:  # noqa: BLE001 - those holds stay listed in status
+            logger.warning("sentrook could not send an earlier run's end line: %s", exc)
+    group: dict[str, Any] = {}
     try:
         hid, repeat = hold.create(
             cfg.state_dir,
@@ -1778,7 +1893,9 @@ def _hold(
             description=description,
             job_digest=job_digest,
             acted=acted,
-            run_key=_cron_run()[1] if job_id else None,
+            run_key=run_key,
+            acts=passes.acts(built.get("tool_kind"), resp),
+            group_out=group,
         )
         if hid is None:
             notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
@@ -1789,6 +1906,14 @@ def _hold(
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
     if repeat:
         notice = {"status": "not_sent", "target": None, "reason": "repeat of a waiting hold"}
+    elif group.get("lead"):
+        # one notice per run: this call is listed in the run's end line (`hold.end_of_run`)
+        notice = {
+            "status": "not_sent",
+            "target": None,
+            "reason": "in the run's group",
+            "lead": group["lead"],
+        }
     elif hid is not None and target:
         try:
             text = hold.notice_text(

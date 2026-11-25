@@ -31,6 +31,14 @@ process with no terminal. There the plugin holds the call:
   never set by an answer: `why` shows its command, for the owner to set by hand.
 - A later hold of the same job (or source) and action, at no higher risk and with no new warning, updates the waiting
   hold (its count and when it was last seen) and sends no new notice.
+- One notice per cron run: the first hold of a run (`run_key`, a sub-agent of the run included) sends the notice and
+  leads the run's group; a later hold of another action in the same run joins the group (`lead`) and sends nothing
+  then. When the run ends (`end_of_run`), one line lists the group's holds that no line listed yet, by tool and
+  description, with their ids. `allow <lead> all` then answers the lead and every hold a line listed (`shown`) in one
+  started run: each gets a one-use pass of its own and is still gated by its own scan. A hold whose call itself sends
+  or writes (`acts`) is never covered by `all`: it is answered on its own id. A hold that joins after its run's line
+  went out gets a notice of its own. A group whose run never ended where the plugin could see it gets its line when
+  the job's next run makes its first hold (`stale_groups`).
 - After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next
   changed (a new hold or an answer).
 
@@ -170,16 +178,19 @@ def where_text(
     job_id: str | None = None,
     job_name: str | None = None,
     source: dict[str, Any] | None = None,
+    subagent: bool = False,
 ) -> str:
     """Which run a hold belongs to: a cron job by its id, with its name quoted and labelled as the
     job's name (whoever made the job chose it, possibly the agent, so it must read as a name, never as
-    an instruction), else the kind of run and, when the run has a source, the source by its name (quoted,
-    as a job's name is; a parent session by its ref); then the session."""
+    an instruction), and `subagent` when a sub-agent of the job's run made the call; else the kind of run and, when
+    the run has a source, the source by its name (quoted, as a job's name is; a parent session by its ref); then the
+    session."""
     if job_id:
         name = (
             f", job name {json.dumps(inert(job_name, 60), ensure_ascii=False)}" if job_name else ""
         )
-        return f"cron job {inert(job_id, 40)}{name}, session {session_ref}"
+        by = "a sub-agent of " if subagent else ""
+        return f"{by}cron job {inert(job_id, 40)}{name}, session {session_ref}"
     label = _SOURCE_LABELS.get(str((source or {}).get("kind")))
     if source and label:
         shown = (
@@ -346,13 +357,18 @@ def create(
     job_digest: str | None = None,
     acted: bool = False,
     run_key: str | None = None,
+    acts: bool = False,
+    group_out: dict[str, Any] | None = None,
 ) -> tuple[str | None, bool]:
     """Stores a new hold, or counts a repeat of a waiting one (`_repeat_of`); returns its id (None when the file
     cannot be read: the call is still held, but cannot be answered) and whether it was a repeat (no new notice).
     `job_digest`: the job's settings as `run_now.digest` gives them; `acted`: the held run had sent or written
     something before the held call; `run_key`: the held run, which never counts as one started for an answer. A
     repeat keeps the first notice's digest, takes the latest run, and has acted when any of its runs had.
-    `source`: where a run that is not a cron job came from (`passes.source_of`); its answers are bound to it."""
+    `source`: where a run that is not a cron job came from (`passes.source_of`); its answers are bound to it.
+    `acts`: the held call itself sends or writes (`passes.acts`). A new hold of a cron run that already has a waiting
+    lead whose end line has not gone out joins its group: `group_out["lead"]` is set to the lead's id, and the caller
+    sends no notice."""
     store = Store(state_dir)
     ref = passes.job_ref(job_id)
     source = source if ref is None and isinstance(source, dict) and source.get("ref") else None
@@ -372,6 +388,9 @@ def create(
             ]
             # the job as it was at the first notice (unreadable then: unknown for good), so an edit since still
             # counts as a change
+            if same.get("run_key") != run_key:
+                # a new run repeats it: that run's other holds join it and get their own end line
+                same.pop("end_line_at", None)
             same["run_key"] = run_key
             same["acted"] = bool(same.get("acted")) or acted
             store.save_holds(data)
@@ -380,6 +399,11 @@ def create(
         hid = f"h-{secrets.token_hex(3)}"
         while hid in taken:
             hid = f"h-{secrets.token_hex(3)}"
+        lead = _run_lead(data, ref, run_key)
+        if lead is not None:
+            lead["group"] = [*(lead.get("group") or []), hid][-MAX_HELD:]
+            if group_out is not None:
+                group_out["lead"] = lead["id"]
         data["holds"].append(
             {
                 "v": 2,
@@ -409,11 +433,138 @@ def create(
                 "job_digest": job_digest,
                 "acted": acted,
                 "run_key": run_key,
+                "acts": acts,
+                **({"lead": lead["id"]} if lead is not None else {}),
             }
         )
         data["holds"] = data["holds"][-MAX_HOLDS:]
         store.save_holds(data)
         return hid, False
+
+
+def _run_lead(data: dict[str, Any], ref: str | None, run_key: str | None) -> dict[str, Any] | None:
+    """The waiting hold that leads cron run `run_key` of job `ref`: the run's first hold, whose end line has not gone
+    out yet. None off a cron job, without a run key, or when the run has no lead."""
+    if not ref or not run_key:
+        return None
+    return next(
+        (
+            h
+            for h in data["holds"]
+            if isinstance(h, dict)
+            and h.get("v") == 2
+            and h.get("job_ref") == ref
+            and h.get("run_key") == run_key
+            and not h.get("lead")
+            and not h.get("end_line_at")
+        ),
+        None,
+    )
+
+
+def _unlisted(data: dict[str, Any], lead: dict[str, Any]) -> list[dict[str, Any]]:
+    """The waiting holds of `lead`'s group that no end line has listed yet."""
+    shown = set(lead.get("shown") or [])
+    ids = [i for i in lead.get("group") or [] if i not in shown]
+    by_id = {h.get("id"): h for h in data["holds"] if isinstance(h, dict)}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _close_group(
+    data: dict[str, Any], lead: dict[str, Any], now: datetime
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Marks `lead`'s end line as sent and its unlisted holds as shown; (lead, holds to list), or None when there is
+    nothing to list."""
+    lead["end_line_at"] = _iso(now)
+    members = _unlisted(data, lead)
+    if not members:
+        return None
+    lead["shown"] = [*(lead.get("shown") or []), *(m["id"] for m in members)][-MAX_HELD:]
+    return dict(lead), [dict(m) for m in members]
+
+
+def end_of_run(
+    state_dir: Path, ref: str | None, run_key: str | None, now: datetime
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """Cron run `run_key` of job `ref` ended: its group's end line is due. Returns (lead, holds to list) for the line
+    (`end_line_text`), and marks them listed; [] when the run had no lead or nothing more was held."""
+    if not ref or not run_key:
+        return []
+    store = Store(state_dir)
+    with _LOCK, file_lock(state_dir / "holds.json"):
+        data = store.load_holds()
+        if data is None:
+            return []
+        out = []
+        for h in data["holds"]:
+            if (
+                isinstance(h, dict)
+                and h.get("v") == 2
+                and h.get("job_ref") == ref
+                and h.get("run_key") == run_key
+                and not h.get("lead")
+                and not h.get("end_line_at")
+            ):
+                closed = _close_group(data, h, now)
+                if closed is not None:
+                    out.append(closed)
+        store.save_holds(data)
+        return out
+
+
+def stale_groups(
+    state_dir: Path, ref: str | None, run_key: str | None, now: datetime
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """The groups of job `ref`'s earlier runs whose end was never seen: their end lines are due before run
+    `run_key` makes its first notice. Same shape as `end_of_run`."""
+    if not ref or not run_key:
+        return []
+    store = Store(state_dir)
+    with _LOCK, file_lock(state_dir / "holds.json"):
+        data = store.load_holds()
+        if data is None:
+            return []
+        out = []
+        for h in data["holds"]:
+            if (
+                isinstance(h, dict)
+                and h.get("v") == 2
+                and h.get("job_ref") == ref
+                and h.get("run_key") not in (None, run_key)
+                and not h.get("lead")
+                and not h.get("end_line_at")
+                and h.get("group")
+            ):
+                closed = _close_group(data, h, now)
+                if closed is not None:
+                    out.append(closed)
+        if out:
+            store.save_holds(data)
+        return out
+
+
+def end_line_text(lead: dict[str, Any], members: list[dict[str, Any]], cmd: Cmd) -> str:
+    """The run's end line: the holds of `lead`'s group no line listed yet, each by its id, tool and description (as
+    the notice shows them, and no more), and how to answer them. `all` is offered only when at least one listed call
+    does not itself send or write (`acts`)."""
+    texts = RUN_GROUP
+    lines = [
+        texts["head"].format(job=inert(lead.get("job_id"), 40), n=len(members), lead=lead.get("id"))
+    ]
+    for m in members:
+        own = texts["own_answer"] if m.get("acts") else ""
+        lines.append(
+            texts["item"].format(
+                id=m.get("id"),
+                tool=inert(m.get("tool"), 80),
+                description=inert(m.get("description"), 160),
+                own=own,
+            )
+        )
+    if any(not m.get("acts") and passes.ALLOW in (m.get("offers") or []) for m in members):
+        lines.append(texts["all"].format(allow=cmd("allow"), lead=lead.get("id")))
+    lines.append(texts["each"].format(allow=cmd("allow"), deny=cmd("deny"), why=cmd("why")))
+    return "\n".join(lines)
 
 
 def waiting(state_dir: Path, now: datetime) -> int | None:
@@ -525,6 +676,21 @@ OUTCOMES = {
     "none": "Sentrook: cron job {job} ran again without using your answer.",
 }
 
+#: The run's end line (`end_line_text`) and the replies to `allow <lead> all`; shared with the OpenClaw plugin
+#: (`integrations/fixtures/hold/cases.json`, `run_group`).
+RUN_GROUP = {
+    "head": "Sentrook: the run of cron job {job} that held {lead} also held {n} other call(s); none of them ran:",
+    "item": "- {id}: {tool}: {description}{own}",
+    "own_answer": " (it sends or writes: answer it on its own)",
+    "all": "Let {lead} and the calls listed here through once, in one new run of the job: {allow} {lead} all",
+    "each": "Or answer each by its id: {allow} <id>, {deny} <id>. For the reasons: {why} <id>",
+    "covered": "In that run, these listed calls may also go through once: {ids}.",
+    "left": "Not covered, answer each on its own: {ids}.",
+    "none_listed": "No other call of this run has been listed yet, so this answers {lead} alone.",
+    "not_lead": "{id} is one of the calls held in the run that {lead} leads: answer it on its own id, or all of them "
+    "with {allow} {lead} all.",
+}
+
 
 class RunNow:
     """What `answer` needs to start a held call's job again (`run_now.Adapter` on Hermes): `guard(hold)`, why it may
@@ -630,15 +796,15 @@ def _settle_history(state_dir: Path, held: list[Any], decision: str) -> None:
 
 
 def _parse(verb: str, rest: str) -> tuple[str, str, str] | None:
-    """(hold id, answer, mode) from `allow <id> [now|later|always]`, `approve <id>` or `deny <id>`; None when
-    malformed. The mode is `now`, `later` or "" for an `allow` once."""
+    """(hold id, answer, mode) from `allow <id> [now|later|always|all]`, `approve <id>` or `deny <id>`; None when
+    malformed. The mode is `now`, `later`, `all` (the run's group, `answer`) or "" for an `allow` once."""
     words = rest.split()
     if not words or not _ID.fullmatch(words[0]):
         return None
     if verb == "deny":
         return (words[0], passes.DENY, "") if len(words) == 1 else None
     mode = words[1].lower() if len(words) > 1 else ""
-    if len(words) > 2 or mode not in ("", "now", "later", "once", "always"):
+    if len(words) > 2 or mode not in ("", "now", "later", "once", "always", "all"):
         return None
     if mode == "always":
         return words[0], passes.ALLOW_ALWAYS, ""
@@ -699,6 +865,10 @@ def answer(
                     "answers it, as approve did (it sets the grant Sentrook suggested, if any)."
                 )
             return _approve_v1(store, state_dir, data, found, gone, hid, who, now, cmd, record)
+        if mode == "all" and found.get("lead"):
+            if gone:
+                store.save_holds(data)
+            return RUN_GROUP["not_lead"].format(id=hid, lead=found["lead"], allow=cmd("allow"))
         if want not in (found.get("offers") or []):
             if gone:
                 store.save_holds(data)
@@ -732,6 +902,10 @@ def answer(
             )
         except Exception as exc:  # noqa: BLE001 - the hold goes back
             failed = _clean(exc, 160)
+        group: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        left: list[str] = []
+        if entry is not None and mode == "all":
+            group, left = _allow_group(store, state_dir, data, found, who, now)
         if entry is None:
             data["holds"].append(found)
             try:
@@ -779,6 +953,14 @@ def answer(
     _settle_history(
         state_dir, held, "denied_by_user" if want == passes.DENY else "approved_by_user"
     )
+    for member, member_entry in group:
+        _record_group_answer(member, member_entry, who, record)
+        _settle_history(
+            state_dir,
+            member.get("held") or [{"sid": "", "request_id": member.get("request_id")}],
+            "approved_by_user",
+        )
+    group_note = _group_note(mode, found, group, left)
     until = read_time(entry["expires_at"])
     shown = passes.show(until) if until else "?"
     job = _subject(found)
@@ -846,10 +1028,102 @@ def answer(
     }
     if start and why_not is None:
         kind = "started_now" if found.get("acted") else "started"
-        return RUN_NOW_REPLIES[kind].format(**fields)
+        return RUN_NOW_REPLIES[kind].format(**fields) + group_note
     if why_not is None:
-        return RUN_NOW_REPLIES["later"].format(**fields)
-    return RUN_NOW_REPLIES["fallback"].format(**fields, reason=RUN_NOW_REASONS[why_not])
+        return RUN_NOW_REPLIES["later"].format(**fields) + group_note
+    return (
+        RUN_NOW_REPLIES["fallback"].format(**fields, reason=RUN_NOW_REASONS[why_not]) + group_note
+    )
+
+
+def _allow_group(
+    store: Store,
+    state_dir: Path,
+    data: dict[str, Any],
+    lead: dict[str, Any],
+    who: dict[str, Any],
+    now: datetime,
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[str]]:
+    """`allow <lead> all`: a one-use job pass for each waiting hold an end line listed (`shown`) that offers `allow`
+    and whose call does not itself send or write (`acts`); each such hold is answered. Returns ((hold, pass) for each
+    answered, the ids left for their own answer). Called with the holds file locked, after the lead's own pass."""
+    shown = set(lead.get("shown") or [])
+    members = [h for h in data["holds"] if isinstance(h, dict) and h.get("id") in shown]
+    done: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    left: list[str] = []
+    for m in members:
+        if m.get("acts") or passes.ALLOW not in (m.get("offers") or []):
+            left.append(str(m.get("id")))
+            continue
+        try:
+            got = passes.add(
+                state_dir, kind="allow", uses="once", level="once", hold=m, who=who, now=now
+            )
+        except Exception as exc:  # noqa: BLE001 - it keeps waiting
+            logger.warning("sentrook could not set a pass for %s: %s", m.get("id"), exc)
+            got = None
+        if got is None:
+            left.append(str(m.get("id")))
+            continue
+        data["holds"].remove(m)
+        done.append((m, got))
+    if done:
+        try:
+            store.save_holds(data)
+        except Exception as exc:  # noqa: BLE001 - the passes stand; the holds expire unused
+            logger.warning("sentrook could not mark the run's holds answered: %s", exc)
+    return done, left
+
+
+def _record_group_answer(
+    member: dict[str, Any], entry: dict[str, Any], who: dict[str, Any], record: Record
+) -> None:
+    record(
+        {
+            "kind": "passes",
+            "op": "add",
+            "id": entry["id"],
+            "pass_kind": entry["kind"],
+            "uses": entry["uses"],
+            "job_ref": entry.get("job_ref"),
+            "hold_id": member.get("id"),
+            "group_lead": member.get("lead"),
+            "expires_at": entry["expires_at"],
+            "by": who,
+        }
+    )
+    for h in member.get("held") or [{"request_id": member.get("request_id")}]:
+        if isinstance(h, dict) and isinstance(h.get("request_id"), str):
+            record(
+                {
+                    "kind": "resolution",
+                    "request_id": h["request_id"],
+                    "resolution": "hold_allowed",
+                    "decision": "held",
+                    "hold_id": member.get("id"),
+                    "pass_id": entry["id"],
+                    "by": who,
+                }
+            )
+
+
+def _group_note(
+    mode: str,
+    lead: dict[str, Any],
+    group: list[tuple[dict[str, Any], dict[str, Any]]],
+    left: list[str],
+) -> str:
+    """What `allow <lead> all` added to the reply: the listed calls it covered and those left for their own answer."""
+    if mode != "all":
+        return ""
+    if not lead.get("shown"):
+        return " " + RUN_GROUP["none_listed"].format(lead=lead.get("id"))
+    note = ""
+    if group:
+        note += " " + RUN_GROUP["covered"].format(ids=", ".join(str(m.get("id")) for m, _ in group))
+    if left:
+        note += " " + RUN_GROUP["left"].format(ids=", ".join(left))
+    return note
 
 
 def find(state_dir: Path, hold_id: str) -> dict[str, Any] | None:
