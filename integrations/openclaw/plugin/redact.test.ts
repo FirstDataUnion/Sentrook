@@ -647,7 +647,7 @@ test("a key's value that names a field or stands in for one stays; real values u
   assert.ok(Object.values(obj).every((v) => v.startsWith("⟦secret:credential:")), JSON.stringify(obj));
 });
 
-test("a quoted value that stands in for a secret stays; a full token, even with an ellipsis after it, goes", () => {
+test("a quoted value that stands in for a secret stays; a full token, a password, a passphrase or a flag value goes", () => {
   const google = "ya" + "29.";
   const refresh = "1/" + "/0";
   for (const text of [
@@ -662,6 +662,10 @@ test("a quoted value that stands in for a secret stays; a full token, even with 
     '"password": "(redacted)"',
     "token: REDACTED",
     '"api_key": "paste your key here"',
+    '"api_key": "your api key"',
+    `"api_key": "${seeded(10, 23)}..."`,
+    '"password": "••••••••"',
+    '"password": "REDACTED"',
     `{"access_token": "${google}a0...", "refresh_token": "${refresh}g...", "token_type": "Bearer", "expires_in": 3599}`,
   ]) {
     for (const form of forms(text)) assert.equal(r.string(form), form);
@@ -679,6 +683,18 @@ test("a quoted value that stands in for a secret stays; a full token, even with 
     [`"password": "${["correct", "horse", "battery", "staple"].join(" ")}"`, "horse battery"],
     [`"token": "my token is ${r20}"`, r20],
     [`"password": "your new password is ${"Tr0ub4" + "dor9"}"`, "Tr0ub4dor9"],
+    ['"password": "here comes the sun"', "here comes the sun"],
+    ['"password": "secret garden"', "secret garden"],
+    ['"password": "your key is sunshine"', "your key is sunshine"],
+    [`"password": "${"hun" + "ter2"}..."`, "hunter2"],
+    ['"api_key": "nobody knows this secret"', "nobody knows this secret"],
+    ['"api_key": "token Kx"', "token Kx"],
+    [`"api_key": "${seeded(11, 24)}..."`, seeded(11, 24)],
+    ['"session_token": "s%3A' + 'abc..."', "s%3Aabc"],
+    [`"password": "${"!".repeat(10)}"`, "!".repeat(10)],
+    [`--token "${"hun" + "ter2"}..."`, "hunter2"],
+    [`--api-key "${seeded(15, 25)}…"`, seeded(15, 25)],
+    [`mysql -u root -p"${"Tr0ub4" + "dor&3"}..."`, "Tr0ub4dor"],
   ]) {
     for (const form of forms(text).slice(0, 2)) {
       const out = r.string(form);

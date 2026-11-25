@@ -546,8 +546,8 @@ def test_rules_are_the_plugins_rules():
         "_PLACEHOLDER_VALUE",
         "_SHORT_WORD",
         "_REDACTED_WORD",
-        "_SYMBOL_RUN",
-        "_STAND_IN_WORD",
+        "_MASK_RUN",
+        "_PASSWORD_KEY",
         "_TOKEN_RUN",
         "_PLAIN_WORD",
         "_QUOTED_REST",
@@ -555,6 +555,8 @@ def test_rules_are_the_plugins_rules():
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
+    assert redact._CREDENTIAL_NOUNS == plugin._CREDENTIAL_NOUNS
+    assert redact._PLACEHOLDER_WORDS == plugin._PLACEHOLDER_WORDS
     assert redact._CODE_READERS == plugin._CODE_READERS
     # The cue and key rules: access codes, PINs, identifiers and random values.
     assert [(k, rx.pattern) for k, rx, _ in redact._CUES] == [
@@ -824,6 +826,9 @@ STAND_IN_STAY = [
     f'"access_token": "{_GOOGLE}<...>"',
     '"client_secret": "••••••••"',
     "token: REDACTED",
+    '"api_key": "your api key"',
+    f'"api_key": "{_R40[:10]}..."',
+    '"password": "••••••••"',
     f'{{"access_token": "{_GOOGLE}a0...", "refresh_token": "{_REFRESH}g...", "token_type": "Bearer"}}',
 ]
 STAND_IN_REPLACE = [
@@ -834,6 +839,17 @@ STAND_IN_REPLACE = [
     ('"password": "' + "1" * 8 + '"', "1" * 8),
     ('"password": "' + " ".join(["correct", "horse", "battery", "staple"]) + '"', "horse battery"),
     ('"password": "your new password is ' + "Tr0ub4" + 'dor9"', "Tr0ub4dor9"),
+    ('"password": "here comes the sun"', "here comes the sun"),
+    ('"password": "secret garden"', "secret garden"),
+    ('"password": "' + "hun" + 'ter2..."', "hunter2"),
+    ('"api_key": "nobody knows this secret"', "nobody knows this secret"),
+    ('"api_key": "token Kx"', "token Kx"),
+    (f'"api_key": "{_R40[:11]}..."', _R40[:11]),
+    ('"session_token": "s%3A' + 'abc..."', "s%3Aabc"),
+    ('"password": "' + "!" * 10 + '"', "!" * 10),
+    ('--token "' + "hun" + 'ter2..."', "hunter2"),
+    (f'--api-key "{_R40[:15]}…"', _R40[:15]),
+    ('mysql -u root -p"' + "Tr0ub4" + 'dor&3..."', "Tr0ub4dor"),
 ]
 
 

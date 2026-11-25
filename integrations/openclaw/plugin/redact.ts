@@ -141,50 +141,57 @@ const FIELD_NAME_VALUE = /^(?:[a-z]{2,}(?:[_-][a-z]+)*|[A-Z]{2,}(?:[_-][A-Z]+)*|
 const PLACEHOLDER_VALUE = /^x{3,}$/i;
 const SHORT_WORD = /^[a-z]{1,12}$/;
 /**
- * A value that stands in for a secret rather than being one: the word REDACTED (maybe in brackets), or a run of one
- * symbol (`••••••••`, `--------`). A run of one letter or digit is still a value (`11111111` is a password people use).
+ * A value that stands in for a secret rather than being one, under any key: the word REDACTED (maybe in brackets), or a
+ * mask of three or more `*`, `•` or `·`. A run of another symbol, letter or digit may be a password (`!!!!!!!!`).
  */
 const REDACTED_WORD = /^[(\[<{]?redacted[)\]>}]?$/i;
-const SYMBOL_RUN = /^([^A-Za-z0-9\s])\1{2,}$/u;
+const MASK_RUN = /^([*•·])\1{2,}$/;
 /**
- * A phrase that says what it stands for (`short-lived token`, `paste your key here`): words that name a credential or
- * a placeholder. A run of twelve or more token characters in a phrase may be a value, so such a phrase is not one.
+ * A key or cue word that names a password (`password`, `db_pass`, `passphrase`, `pwd`, `pin`): its value is what a
+ * person typed, so neither a short value before an ellipsis nor a phrase is read as a stand-in under it.
  */
-const STAND_IN_WORD = /(?<![A-Za-z0-9])(?:tokens?|keys?|secrets?|passwords?|passphrases?|credentials?|here|your|example|placeholder)(?![A-Za-z0-9])/i;
-const TOKEN_RUN = /[A-Za-z0-9_+/=.~-]{12}/;
+const PASSWORD_KEY = /pass|pwd|(?<![a-z])pin(?![a-z])/i;
 /**
- * A plain word in such a phrase: letters (maybe hyphenated) or a short number, maybe in brackets or before punctuation.
- * A word with a digit among letters or a symbol inside it (`Tr0ub4dor&3`) may be the value itself.
- */
-const PLAIN_WORD = /^[(\[<{"'~*]*(?:[A-Za-z][A-Za-z'’-]*|[0-9]{1,4})[)\]>}",.;:!?*]*$/;
-/**
- * A quoted string's content from where a value starts to the closing quote (escaped or not), and a value cut short
- * with an ellipsis, as docs abridge a token: up to 15 characters, then `...`, `…`, `<...>` or `[...]` (`ya29.a0...`).
- * A full token with an ellipsis after it is longer, so it is still a value.
+ * A quoted string's content from where a value starts to the closing quote (escaped or not), and a token cut short
+ * with an ellipsis, as docs abridge one: up to ten token characters, then `...`, `…`, `<...>` or `[...]`
+ * (`ya29.a0...`, `1//0g…`). A longer start, or a symbol other than `. _ / + -` in it, may be the secret itself.
  */
 const QUOTED_REST = /(?<=["'])[^"'\\\n]{1,200}(?=\\{0,8}["'])/y;
-const ELIDED = /^[^\s"'\\]{0,15}(?:\.{3}|…|<(?:\.{3}|…)>|\[(?:\.{3}|…)\])$/;
+const ELIDED = /^[A-Za-z0-9._/+-]{0,10}(?:\.{3}|…|<(?:\.{3}|…)>|\[(?:\.{3}|…)\])$/;
 /**
- * Plainly a stand-in for a secret, not one: the word REDACTED, a run of one symbol, or a phrase of plain words that
- * names a credential or a placeholder and holds no run of twelve or more token characters (`short-lived token`).
+ * A phrase that says what a token or key is (`short-lived token`, `your api key`, `paste your key here`): two to four
+ * plain words (letters, maybe hyphenated, or a short number), no run of twelve or more token characters, and either up
+ * to three words ending in a credential noun or a placeholder word with a credential noun anywhere in it.
  */
-const standsIn = (v: string): boolean =>
-  REDACTED_WORD.test(v) ||
-  SYMBOL_RUN.test(v) ||
-  (/\s/.test(v) &&
-    STAND_IN_WORD.test(v) &&
-    !TOKEN_RUN.test(v) &&
-    v.split(/\s+/).every((w) => w === "" || PLAIN_WORD.test(w)));
+const TOKEN_RUN = /[A-Za-z0-9_+/=.~-]{12}/;
+const PLAIN_WORD = /^[(\[<{"'~*]*(?:[A-Za-z][A-Za-z'’-]*|[0-9]{1,4})[)\]>}",.;:!?*]*$/;
+const CREDENTIAL_NOUNS = new Set("token tokens key keys secret secrets credential credentials".split(" "));
+const PLACEHOLDER_WORDS = new Set("your here example placeholder".split(" "));
+/** Plainly a stand-in for a secret under any key: the word REDACTED or a mask (`********`). */
+const standsIn = (v: string): boolean => REDACTED_WORD.test(v) || MASK_RUN.test(v);
+/** A phrase that says what a token or key is rather than being one (`CREDENTIAL_NOUNS`). */
+const describesACredential = (v: string): boolean => {
+  const words = v.split(/\s+/).filter((w) => w !== "");
+  if (words.length < 2 || words.length > 4 || TOKEN_RUN.test(v)) return false;
+  if (!words.every((w) => PLAIN_WORD.test(w))) return false;
+  const names = words.map((w) => w.toLowerCase().replace(/[^a-z0-9'’-]/g, ""));
+  if (names.length <= 3 && CREDENTIAL_NOUNS.has(names[names.length - 1])) return true;
+  return names.some((n) => PLACEHOLDER_WORDS.has(n)) && names.some((n) => CREDENTIAL_NOUNS.has(n));
+};
 /**
- * Whether the value at `start`-`end` opens a quoted string that as a whole stands in for a secret: cut short with an
- * ellipsis (`"access_token": "ya29.a0..."`) or `standsIn` (`"short-lived token"`). Only a quoted string counts: an
- * unquoted value before an ellipsis ("the password is hunter2...") is still a value.
+ * Whether the value at `start`-`end`, after the key or cue word at `keyStart`, opens a quoted string that as a whole
+ * stands in for a secret: REDACTED or a mask under any key; under a key that does not name a password, also a token
+ * cut short with an ellipsis (`"access_token": "ya29.a0..."`) or a phrase that says what it is (`"short-lived token"`).
+ * An unquoted value before an ellipsis ("the password is hunter2...") is still a value.
  */
-const quotedStandIn = (text: string, start: number, end: number): boolean => {
+const quotedStandIn = (text: string, keyStart: number, start: number, end: number): boolean => {
   QUOTED_REST.lastIndex = start;
   const m = QUOTED_REST.exec(text);
   if (!m || end > start + m[0].length) return false;
-  return ELIDED.test(m[0]) || standsIn(m[0]);
+  const v = m[0];
+  if (standsIn(v)) return true;
+  if (PASSWORD_KEY.test(text.slice(keyStart, start))) return false;
+  return ELIDED.test(v) || describesACredential(v);
 };
 /**
  * Plainly not a secret in text: a credential field's name or a placeholder for one (`api_key:api_secret` in docs,
@@ -218,6 +225,11 @@ const statedValue = (v: string) =>
 /** Straight after a cue word ("backup key X"): twelve or more characters with letters and digits. */
 const bareValue = (v: string) =>
   v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
+/**
+ * The checks of the key and sentence rules, whose quoted values may stand in for a secret (`quotedStandIn`). A
+ * command-line value is what the command runs with, so the flag rules are not among them.
+ */
+const STAND_IN_CHECKS = new Set<(v: string) => boolean>([unquotedKeyValue, textKeyValue, innerKeyValue, innerQuotedValue, statedValue]);
 
 /**
  * A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names (a path,
@@ -681,7 +693,7 @@ function spansOf(text: string): Array<[number, number, string]> {
       if (shape.group) {
         const idx = m.indices?.groups?.[shape.group];
         // A quoted value cut short in docs: `"access_token": "ya29.a0..."`.
-        if (idx && quotedStandIn(text, idx[0], idx[1])) continue;
+        if (idx && shape.check && STAND_IN_CHECKS.has(shape.check) && quotedStandIn(text, m.index, idx[0], idx[1])) continue;
         if (idx && (!shape.check || shape.check(text.slice(idx[0], idx[1])))) spans.push([idx[0], idx[1], shape.kind]);
       } else {
         spans.push([m.index, m.index + m[0].length, shape.kind]);
