@@ -288,7 +288,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
 | `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
 | `/sentrook-notify here\|off\|status` | Where notices go (held calls, scan failures on unattended runs, [background saves](#background-skill-and-memory-saves)): `here`, sent as a direct message to the agent, sends notices to you in that chat |
-| `/sentrook-allow <id> [later\|always]` | Answer a held call by the id in its notice, within 7 days: let it through once on the job's next run, or with `always` for 30 days on that job (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
+| `/sentrook-allow <id> [now\|later\|always]` | Answer a held call by the id in its notice, within 7 days: run the cron job again now and let the call through once in that run (`later`: on the job's next scheduled run instead), or with `always` for 30 days on that job (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
 | `/sentrook-deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
 | `/sentrook-approve <id>` | The same as `/sentrook-allow <id>`, kept for one release |
 | `/sentrook-passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
@@ -466,8 +466,17 @@ by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats a
   a user). Until then nothing is sent, the call is still held, and `status` and `verify` say notices are not sent.
 - Answer within 7 days, from a direct message (like the other owner commands). The notice lists only the answers
   this hold offers:
-  - `/sentrook-allow <id>`: the job's next run may make the same call once. The held call itself is not run again.
-    (`/sentrook-allow <id> later` does the same.)
+  - `/sentrook-allow <id>`: Sentrook runs the cron job again now (`openclaw cron run <id>`, as you would yourself),
+    and the same call goes through once in that run. Sentrook never runs the held call itself: the job runs as it is,
+    with no extra prompt. When that run ends you get one line: the call went through, the run did not make it, or it
+    made a different call (held as a new `h-` id). The run is started at most once per held call.
+    - Nothing is started, and the call may go through once on the job's next scheduled run instead, when the job is
+      gone, finished, disabled, running right now, or changed since the call was held, or when the plugin is in observe
+      mode. The reply says which.
+    - When the held run had already sent or written something before the held call, a new run would do that again, so
+      `allow` waits for the next scheduled run, and the notice offers `/sentrook-allow <id> now` instead: that runs the
+      whole job again now, and the reply warns that what it already did happens again.
+  - `/sentrook-allow <id> later`: the job's next scheduled run may make the same call once; nothing is started now.
   - `/sentrook-allow <id> always`: the job may make the same call for 30 days. Offered only when Sentrook judges the
     call safe to let through on every run and the call names who or what it acts on.
   - `/sentrook-deny <id>`: the job is refused the same call for 30 days. The agent is told you declined it and to go

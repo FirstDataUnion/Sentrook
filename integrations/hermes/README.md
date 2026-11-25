@@ -258,7 +258,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `revoke <id>` | Remove a grant set by command |
 | `bind add\|remove\|list [channel]` | Manage channel bindings |
 | `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
-| `allow <id> [later\|always]` | Answer a held call by the id in its notice, within 7 days: let it through once on the job's next run, or with `always` for 30 days on that job (see [Held calls](#held-calls-on-unattended-runs)) |
+| `allow <id> [now\|later\|always]` | Answer a held call by the id in its notice, within 7 days: run the cron job again now and let the call through once in that run (`later`: on the job's next scheduled run instead), or with `always` for 30 days on that job (see [Held calls](#held-calls-on-unattended-runs)) |
 | `deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
 | `approve <id>` | The same as `allow <id>`, kept for one release |
 | `passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
@@ -440,8 +440,17 @@ Where nobody can answer a review (the runs above), the call is **held**:
   and the startup log, `status` and `verify` say that notices cannot be sent from that process.
 - Answer within 7 days, from a direct message or the local terminal (like the other owner commands). The notice
   lists only the answers this hold offers:
-  - `/sentrook allow <id>`: the job's next run may make the same call once. The held call itself is not run again.
-    (`/sentrook allow <id> later` does the same.)
+  - `/sentrook allow <id>`: Sentrook runs the cron job again now (`hermes cron run <id>`, as you would yourself), and
+    the same call goes through once in that run. Sentrook never runs the held call itself: the job runs as it is, with
+    no extra prompt. When that run ends you get one line: the call went through, the run did not make it, or it made a
+    different call (held as a new `h-` id). The run is started at most once per held call.
+    - Nothing is started, and the call may go through once on the job's next scheduled run instead, when the job is
+      gone, finished, paused, running right now, or changed since the call was held, or when the plugin is in observe
+      mode. The reply says which.
+    - When the held run had already sent or written something before the held call, a new run would do that again, so
+      `allow` waits for the next scheduled run, and the notice offers `/sentrook allow <id> now` instead: that runs the
+      whole job again now, and the reply warns that what it already did happens again.
+  - `/sentrook allow <id> later`: the job's next scheduled run may make the same call once; nothing is started now.
   - `/sentrook allow <id> always`: the job may make the same call for 30 days. Offered only when Sentrook judges the
     call safe to let through on every run and the call names who or what it acts on.
   - `/sentrook deny <id>`: the job is refused the same call for 30 days. The agent is told you declined it and to go
