@@ -1,15 +1,21 @@
 """Loosening the host's approvals behind enough options to pass the parse limit still takes the floor.
 
-A command over `MAX_PARSE_CHARS` is not parsed. The approval-loosening CLI route then reads the
-command's words split on whitespace, as the other guardrail CLI routes (plugin disable, gateway stop,
-config entry) do, so padding a command with options (`openclaw -x y -x y … config set
-tools.exec.security full`) does not take it past the floor.
+A command over `MAX_PARSE_CHARS` is not parsed (nor is one the parser reads with a syntax error, such
+as zsh's `${(j:,:)arr}`). The approval-loosening CLI route then reads the command without the parser,
+so padding a command with options (`openclaw -x y -x y … config set tools.exec.security full`) does
+not take it past the floor:
 
-It also reads the words as preparation's light split does, which keeps a quoted value whole
-(`config set tools.exec '{"security": "full"}'`) and reads each command of a chain (`cd x && openclaw
-…`) and of a `bash -c` script on its own. Every host CLI form the parsed route finds is checked
-behind the same padding: the cases of `test_approval_loosening.py` and the pinned probes, each with
-its expected tier.
+- as the shell splits it: words after quote removal (a quoted value such as `'{"security": "full"}'`
+  stays one word), each simple command of a chain on its own, `$(…)`, backticks and `bash -c`
+  scripts read as commands, comments and heredoc bodies left out. A reading starts at every word
+  that names a host CLI (after `nice`, `time -p`, `eval`, `{`, `!`, `if … then`). What these find
+  is blocked;
+- split on whitespace: also what a command names inside quotes, heredocs or comments (a prompt, a
+  commit message, a document), which the shell may not run. What only this reading finds is asked,
+  not blocked.
+
+Every host CLI form the parsed route finds is checked behind the same padding: the cases of
+`test_approval_loosening.py` and the pinned probes, each with its expected tier.
 
 Paths and hosts are invented.
 """
@@ -32,10 +38,10 @@ from sentrook.planir.bounds import MAX_CALL_CHARS
 #: Just over the parse limit, well over it, and near the bound on what a call analyses.
 SIZES = [MAX_PARSE_CHARS + 1, 24_000, 95_000]
 
-#: A host CLI's name as a word, also the first of a quoted script: `openclaw`,
-#: `/usr/local/bin/openclaw`, `openclaw@latest`, `hermes`, `hermes_cli.main` (after `python -m`).
+#: A host CLI's name as a word, also the first of a quoted script or a command substitution:
+#: `openclaw`, `/usr/local/bin/openclaw`, `openclaw@latest`, `hermes`, `hermes_cli.main` (after `python -m`).
 _CLI_WORD = re.compile(
-    r"""(?:(?<=[\s'"])|^)(?:\S*/)?(?:openclaw(?:@\S*)?|hermes(?:_cli\.main)?)(?=\s)""",
+    r"""(?:(?<=[\s'"`({!&;|])|^)(?:\S*/)?(?:openclaw(?:@\S*)?|hermes(?:_cli\.main)?)(?=\s)""",
     re.IGNORECASE,
 )
 _UNIT = " -x y"
@@ -89,10 +95,58 @@ def test_openclaw_loosening_behind_padding_takes_the_floor(rest, size):
     "command",
     [
         "cd /tmp && openclaw config set tools.exec.security full",
+        "cd /tmp &&openclaw config set tools.exec.security full",
+        "cd /tmp\nopenclaw config set tools.exec.security full",
         "openclaw status; openclaw config set tools.exec.security full",
+        "true & openclaw config set tools.exec.security full",
+        "{ openclaw config set tools.exec.security full; }",
+        "if true; then openclaw config set tools.exec.security full; fi",
+        "for i in 1; do openclaw config set tools.exec.security full; done",
+        "echo $(openclaw config set tools.exec.security full)",
+        "echo `openclaw config set tools.exec.security full`",
+        "! openclaw config set tools.exec.security full",
+        "nice openclaw config set tools.exec.security full",
+        "time -p openclaw config set tools.exec.security full",
+        "eval openclaw config set tools.exec.security full",
+        "xargs openclaw config set tools.exec.security <<< full",
+        "FOO='a b' openclaw config set tools.exec.security full",
+        "cd /tmp && FOO='a b' openclaw config set tools.exec.security full",
+        "cd /tmp && openclaw -x a#b config set tools.exec.security full",
+        "cd /tmp && openclaw config set tools.exec.security full >/dev/null 2>&1",
+        "cd /tmp && openclaw config set tools.exec.security 'full' # it's fine",
+        "openclaw config set tools.exec.security $'full'",
         "bash -lc 'openclaw config set tools.exec.ask off'",
+        "bash -lc 'true; openclaw config set tools.exec.ask off'",
+        'bash -lc "true; openclaw config set tools.exec.ask off"',
+        "cat > notes.md <<'EOF'\nnot run\nEOF\nopenclaw config set tools.exec.security full",
     ],
-    ids=["after cd", "second command", "shell script"],
+    ids=[
+        "after cd",
+        "after && unspaced",
+        "after a newline",
+        "second command",
+        "after a background job",
+        "brace group",
+        "if then",
+        "for do",
+        "command substitution",
+        "backticks",
+        "negated",
+        "nice",
+        "time -p",
+        "eval",
+        "xargs with a here-string",
+        "quoted assignment before",
+        "quoted assignment after cd",
+        "hash inside an option",
+        "redirects after",
+        "comment after",
+        "ansi-c quoted value",
+        "shell script",
+        "second command of a script",
+        "second command of a double-quoted script",
+        "after a heredoc",
+    ],
 )
 def test_a_padded_loosening_in_a_chain_or_script_takes_the_floor(command, size):
     fires(ex(padded(command, size)))
@@ -170,6 +224,83 @@ def test_reads_and_tightening_behind_padding_stay_silent(raw, size):
     stays_silent(raw(size))
 
 
+#: Filler that takes a command past the parse limit.
+FILL = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 300
+#: A zsh form the parser reads with a syntax error: a short command with it is not parsed either.
+ZSH = "\nprint -r -- ${(j:,:)arr}"
+
+#: Commands that only name a loosening (in a document, a commit message, a prompt, a script's
+#: string): asked when the command is not parsed, never blocked; quiet when it is.
+NAMED_ONLY = [
+    (
+        "heredoc document",
+        "cat > docs/guide.md <<'EOF'\n# Guide\n{F}\nTo turn approvals off:\n\n"
+        "openclaw config set tools.exec.security full\n\nDon't.\nEOF",
+    ),
+    (
+        "heredoc document, mid-line",
+        "cat > docs/guide.md <<'EOF'\n{F}\nRun `openclaw config set tools.exec.ask off` to stop "
+        "prompts.\nEOF",
+    ),
+    (
+        "commit message",
+        'git commit -m "Docs: {F}\nopenclaw config set tools.exec.ask off is refused"',
+    ),
+    ("echo to a file", 'echo "{F}; openclaw config set tools.exec.security full" > notes.txt'),
+    ("hermes prompt", 'hermes chat -q "{F}; then hermes config set approvals.mode off"'),
+    ("hermes prompt naming --yolo", 'hermes chat -q "{F} never pass --yolo"'),
+    ("hermes prompt naming --accept-hooks", 'hermes chat -q "{F} what does --accept-hooks do"'),
+    (
+        "python heredoc string",
+        "python3 - <<'PY'\nprint('''{F}\nopenclaw exec-policy preset yolo\n''')\nPY",
+    ),
+    (
+        "issue body",
+        "gh issue create --title x --body \"{F}\n\nSteps: openclaw approvals allowlist add '*'\"",
+    ),
+    ("comment", "ls\n# {F} openclaw config set tools.exec.security full\nls"),
+]
+
+
+@pytest.mark.parametrize("name, command", NAMED_ONLY, ids=[n for n, _ in NAMED_ONLY])
+def test_a_loosening_named_only_in_quotes_is_quiet_when_parsed(name, command):
+    short = command.format(F="short")
+    assert derive_exec_shape(short).parse_ok
+    stays_silent(ex(short))
+
+
+@pytest.mark.parametrize(
+    "length", ["padded", "short with a syntax error"], ids=["padded", "syntax error"]
+)
+@pytest.mark.parametrize("name, command", NAMED_ONLY, ids=[n for n, _ in NAMED_ONLY])
+def test_a_loosening_named_only_in_quotes_is_asked_when_not_parsed(name, command, length):
+    text = command.format(F=FILL) if length == "padded" else command.format(F="short") + ZSH
+    assert not derive_exec_shape(text).parse_ok
+    reviews(ex(text))
+
+
+def test_a_short_command_with_a_syntax_error_still_blocks_a_real_loosening():
+    command = "openclaw config set tools.exec.security full" + ZSH
+    assert not derive_exec_shape(command).parse_ok
+    fires(ex(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Arithmetic is no heredoc; a heredoc with no closing line is no body.
+        "x=$((1<<EOF))\nopenclaw config set tools.exec.security full\nEOF",
+        "cat <<EOF\nopenclaw config set tools.exec.security full",
+        'echo "<<EOF"\nopenclaw config set tools.exec.security full\nEOF',
+    ],
+    ids=["arithmetic shift", "unclosed heredoc", "quoted heredoc marker"],
+)
+def test_a_heredoc_the_scan_cannot_place_never_lets_a_loosening_through(command):
+    """A heredoc misread could only move a command to the quoted reading (the review tier); these
+    are no heredoc bodies, so the command after them is blocked."""
+    fires(ex(padded(command, MAX_PARSE_CHARS + 1)))
+
+
 # --------------------------------------------------------------------------- every parsed form
 
 
@@ -216,10 +347,11 @@ def _probe_cases() -> list[tuple[str, str, dict]]:
 
 #: Cases whose tier changes when the command is not parsed, with why.
 UNPARSED_TIER = {
-    # The whitespace reading splits a quoted prompt, so a flag named inside one counts: the
-    # stricter reading of a command the scan cannot parse.
-    'hermes chat -q "explain what --yolo and approvals.mode off do"': "block",
-    'hermes chat -q "what does --accept-hooks do"': "block",
+    # The whitespace reading splits a quoted prompt or entry, so what is named inside one is
+    # asked: a command the scan cannot parse is held, not blocked.
+    'hermes chat -q "explain what --yolo and approvals.mode off do"': "review",
+    'hermes chat -q "what does --accept-hooks do"': "review",
+    'openclaw approvals allowlist add "/usr/bin/python3 /opt/tools/report.py"': "review",
 }
 
 

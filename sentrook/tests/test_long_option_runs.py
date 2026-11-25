@@ -125,8 +125,8 @@ LONG = [
             + " set y"
         ),
     ),
-    # An approval loosening behind options, past the parse limit: its words are read whole, also
-    # in the quote-aware split, and each command of a chain.
+    # An approval loosening behind options, past the parse limit: its commands are read without
+    # the parser, as the shell splits them and split on whitespace.
     (
         "openclaw config set behind options",
         lambda d=1: ex(
@@ -144,6 +144,36 @@ LONG = [
     (
         "a chain of openclaw config sets",
         lambda d=1: ex(_repeat("", "openclaw -x y config set a.b c; ", size=SIZE // d)),
+    ),
+    # The reading of an unparsed command, on the shapes that cost it most.
+    *(
+        (f"unparsed: {name}", lambda d=1, make=make: ex(make(SIZE // d)))
+        for name, make in [
+            ("many host CLI words", lambda size: _repeat("", "openclaw ", size=size)),
+            (
+                "many host CLI commands with a verb",
+                lambda size: _repeat("", "openclaw config set a b; ", size=size),
+            ),
+            ("many brace groups", lambda size: _repeat("", "{ openclaw ", size=size)),
+            ("many substitutions", lambda size: _repeat("", "$(openclaw ", size=size)),
+            ("many unclosed quotes", lambda size: _repeat("openclaw ", "'a ", size=size)),
+            (
+                "many heredocs with their own tags",
+                lambda size: "".join(f"cat <<T{i}\nT{i}\n" for i in range(size // 19)),
+            ),
+            (
+                "many unclosed heredocs",
+                lambda size: "".join(f"cat <<T{i}\n" for i in range(size // 14)),
+            ),
+            (
+                "a config patch fed many heredocs",
+                lambda size: (
+                    "openclaw config patch --stdin "
+                    + "".join(f"<<T{i}\nx\nT{i}\n" for i in range(size // 21))
+                ),
+            ),
+            ("many shell scripts", lambda size: _repeat("", "bash -c 'openclaw x'; ", size=size)),
+        ]
     ),
     # A command is parsed up to `MAX_PARSE_CHARS`, and the approval-loosening routes read a parsed
     # command's segments (a longer one's words, as the shapes above): the same shapes at that length.

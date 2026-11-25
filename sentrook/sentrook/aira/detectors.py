@@ -42,7 +42,6 @@ from ..prepare.entities import (
     provider_name,
     repos_named_in,
     resolve_token,
-    shell_segments,
 )
 from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
@@ -2152,6 +2151,162 @@ def _cli_segments(a: CallAnalysis, lists: Lists) -> list[tuple[list[str], str]]:
     return out
 
 
+#: One piece of shell text the parser did not take: blanks, a newline, a redirection that holds `&`,
+#: a control operator (`$(` and a backtick open a command), a here-string or heredoc operator, a
+#: quoted string (an unclosed one runs to the end), an escape, or plain text.
+_SH_PIECE = re.compile(
+    r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<redir>[<>]&|&>>?)|(?P<op>&&|\|\||\$\(|[;&|()`])"
+    r"|(?P<hs><<<)|(?P<hd><<-?)"
+    r"""|(?P<sq>'[^']*'?)|(?P<ansi>\$'[^'\\]*(?:\\.[^'\\]*)*'?)|(?P<dq>"[^"\\]*(?:\\.[^"\\]*)*"?)"""
+    r"""|(?P<esc>\\.?)|(?P<plain>[^\s;&|()`'"\\<>$]+|[<>$])""",
+    re.S,
+)
+_SH_HEREDOC_TAG = re.compile(r"""[ \t]*(?P<q>['"]?)(?P<tag>[\w.-]+)(?P=q)(?=[\s;&|<>]|\Z)""")
+_DQ_ESCAPE = re.compile(r'\\([\\"$`\n])')
+
+
+def _shell_commands(text: str) -> list[list[str]]:
+    """The simple commands of shell text the parser did not take, as words after quote removal (a
+    quoted string stays in its word): split at control operators, newlines, `$(` and backticks,
+    with comments and heredoc bodies left out. One pass over the text.
+
+    A heredoc body ends at a line holding only its tag. One with no such line is read as commands,
+    and no later heredoc is looked for: that keeps the pass linear, and reading too much only adds
+    findings."""
+    commands: list[list[str]] = []
+    words: list[str] = []
+    word: list[str] = []
+    started = False  # an empty quoted string is still a word
+    pending: list[str] = []  # heredoc tags whose bodies start at the next newline
+    heredocs = True
+    pos, n = 0, len(text)
+
+    def end_word() -> None:
+        nonlocal word, started
+        if started:
+            words.append("".join(word))
+        word, started = [], False
+
+    def end_command() -> None:
+        nonlocal words
+        end_word()
+        if words:
+            commands.append(words)
+        words = []
+
+    while pos < n:
+        m = _SH_PIECE.match(text, pos)
+        if m is None:  # pragma: no cover - every character is some piece
+            break
+        kind, piece = m.lastgroup, m.group()
+        if kind == "plain" and not started and piece.startswith("#"):
+            nl = text.find("\n", pos)
+            pos = n if nl < 0 else nl
+            continue
+        pos = m.end()
+        if kind == "ws":
+            end_word()
+        elif kind in ("nl", "op"):
+            end_command()
+            if kind == "nl" and pending:
+                tags, pending = pending, []
+                for tag in tags:
+                    # The body: the lines up to one holding only the tag.
+                    line_at = pos
+                    while line_at < n:
+                        nl = text.find("\n", line_at)
+                        line_end = n if nl < 0 else nl
+                        if text[line_at:line_end].strip() == tag:
+                            pos = min(n, line_end + 1)
+                            break
+                        line_at = line_end + 1
+                    else:
+                        heredocs = False
+                        break
+        elif kind == "hd":
+            end_word()
+            t = _SH_HEREDOC_TAG.match(text, pos)
+            if t is not None and heredocs:
+                pending.append(t.group("tag"))
+                pos = t.end()
+        elif kind == "hs":
+            end_word()
+        else:
+            started = True
+            if kind == "sq":
+                word.append(piece[1:-1] if len(piece) > 1 and piece.endswith("'") else piece[1:])
+            elif kind == "ansi":
+                inner = piece[2:-1] if len(piece) > 2 and piece.endswith("'") else piece[2:]
+                word.append(_unescape(inner))
+            elif kind == "dq":
+                inner = piece[1:-1] if len(piece) > 1 and piece.endswith('"') else piece[1:]
+                word.append(_DQ_ESCAPE.sub(r"\1", inner))
+            elif kind == "esc":
+                if piece == "\\\n":
+                    started = bool(word)  # a line continuation joins, it adds nothing
+                else:
+                    word.append(piece[1:])
+            else:
+                word.append(piece)
+    end_command()
+    return commands
+
+
+def _cli_starts(words: list[str], heads: set[str], strip: str) -> list[int]:
+    """The positions of `words` that name a host CLI (after `strip` is taken off the front), and
+    the first word: where each reading of the command starts."""
+    starts = [i for i, w in enumerate(words) if i and _program_name(w.lstrip(strip)) in heads]
+    return [0, *starts]
+
+
+def _cli_readings(words: list[str], heads: set[str], lists: Lists, strip: str) -> list[list[str]]:
+    """The words of one command read from its start, and from every word that names a host CLI,
+    each up to the next such word (so every word is read once), launchers peeled off: what
+    follows `nice`, `time -p`, `xargs`, `eval`, `{`, `!` or a keyword is read as the command."""
+    out: list[list[str]] = []
+    starts = _cli_starts(words, heads, strip)
+    for lo, hi in zip(starts, [*starts[1:], len(words)], strict=True):
+        reading = words[lo:hi]
+        if lo:
+            reading = [reading[0].lstrip(strip), *reading[1:]]
+        tokens = _cli_tokens(reading, heads, lists)
+        if tokens and tokens[0] in heads:
+            out.append(tokens)
+    return out
+
+
+def _unparsed_cli_readings(
+    command: str, heads: set[str], lists: Lists, depth: int = 0
+) -> list[list[str]]:
+    """The host CLI commands a shell command runs, read without the parser (a command over the
+    parse limit, or one whose parse is not trusted): each simple command of `_shell_commands`,
+    read from its start and from every word that names a host CLI, and the commands of a shell
+    `-c` script (nested up to three deep). Words inside quotes, heredocs and comments are not
+    read (`_quoted_cli_readings` reads them)."""
+    shells = set(lists.strings("installers", "shell_heads"))
+    out: list[list[str]] = []
+    for words in _shell_commands(command):
+        script = _shell_script(words, shells)
+        if script is not None and depth < 3:
+            out.extend(_unparsed_cli_readings(script, heads, lists, depth + 1))
+        out.extend(_cli_readings(words, heads, lists, "{(!"))
+    return out
+
+
+def _quoted_cli_readings(command: str, heads: set[str], lists: Lists) -> list[list[str]]:
+    """The host CLI commands read from the command's words split on whitespace, each from its
+    start and from every word that names a host CLI: also those named inside quotes, heredocs and
+    comments (a prompt, a commit message, a document), which the shell may not run."""
+    words = []
+    for w in command.split():
+        w = _shell_word(w).rstrip(";)`")
+        for q in "'\"":
+            if w.count(q) % 2:
+                w = w.strip(q)
+        words.append(w)
+    return _cli_readings(words, heads, lists, "{(!$`'\"")
+
+
 # Runtime options after which the rest is inline code, not a script path (`node -e '…'`); a
 # short-option cluster holding `e` or `p` (`-pe`) counts too.
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print"})
@@ -3556,7 +3711,13 @@ def _approval_loosening(
     def cli_where(head: str, *extra: str) -> _Where:
         return _Where(frozenset({"tree", "env", "main", *extra}), head, "auto")
 
+    # Set while reading host CLI commands named only inside quotes: what they find is asked.
+    quoted_only = [False]
+
     def cli_hit(line: str, mechanism: str, hits: set[Hit]) -> None:
+        if quoted_only[0]:
+            hits = {(k, v, REVIEW) for k, v, _ in hits}
+            mechanism += " (quoted)"
         report(hits, None, {"match": line[:120], "mechanism": mechanism})
 
     def state_db(value: str) -> bool:
@@ -4049,26 +4210,16 @@ def _approval_loosening(
             printed[index] = rendered
             previous = line
         if not shape.parse_ok:
-            # A command the scan does not parse (one over the parse limit, padded with options
-            # to get there, or one whose parse it does not trust). The host CLIs are read from its
-            # words two ways, and what either finds counts: split on whitespace, as the other
-            # guardrail CLI routes read it, and in preparation's light split, which keeps a quoted
-            # value (`'{"security": "full"}'`) one word and reads each command of a chain (`cd x &&
-            # openclaw …`) on its own. A shell `-c` script in the light split is read as a command.
-            fallback = (
-                _cli_segments(a, lists)
-                if depth == 0
-                else [([_shell_word(w) for w in command.split()], command)]
-            )
-            for words in shell_segments(command):
-                fallback.append((words, " ".join(words)))
-                script = _shell_script(words, shells)
-                if script is not None and depth < 3:
-                    shell(script, cwd, depth + 1)
-            for words, line in fallback:
-                tokens = _cli_tokens(words, cli_heads, lists)
-                if tokens and tokens[0] in cli_heads:
-                    cli(tokens, line, command)
+            # A command the scan does not parse (one over the parse limit, padded with options to
+            # get there, or one whose parse it does not trust): the host CLIs it runs are read
+            # without the parser. What it names only inside quotes, heredocs or comments (a
+            # prompt, a commit message, a document) is asked, not blocked.
+            for tokens in _unparsed_cli_readings(command, cli_heads, lists):
+                cli(tokens, " ".join(tokens[:40]), command)
+            quoted_only[0] = True
+            for tokens in _quoted_cli_readings(command, cli_heads, lists):
+                cli(tokens, " ".join(tokens[:40]), command)
+            quoted_only[0] = False
         # Inline code anywhere in the command (`python3 -c`, `node -e`, a heredoc script).
         code(command, cwd, depth)
         env = _match_any(rules.env, command)
