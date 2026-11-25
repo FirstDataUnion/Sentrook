@@ -371,7 +371,7 @@ def test_deny_on_a_run_that_is_not_a_cron_job_is_refused(h):
     assert out == HELD
     rec = [r for r in h.traffic() if r.get("kind") == "scan"][-1]
     assert rec["hold"]["offers"] == ["allow"]
-    assert "not on a cron job" in slash(h, f"deny {rec['hold']['id']}")
+    assert "no cron job or other source" in slash(h, f"deny {rec['hold']['id']}")
 
 
 # ---- holds repeat, passes list ---------------------------------------------------------------------------------

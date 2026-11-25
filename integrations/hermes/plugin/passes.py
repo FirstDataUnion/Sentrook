@@ -8,9 +8,14 @@ A held call (`hold`) is answered with `allow`, `allow always` or `deny`. Each an
 - `allow always`: a standing pass for the job, for 30 days, with a use count.
 - `deny`: a standing denial for the job, for 30 days. A matching call gets `DECLINED_TEXT` and no notice is sent.
 
-The job is the one Hermes's run metadata names (`current_cron_execution().job_id`), never text from the prompt. A
-hold on a run that is not a cron job has no job to bind to: there `allow` gives a one-use pass bound to the call's
-exact arguments, for 7 days, and nothing else is offered.
+The job is the one Hermes's run metadata names (`current_cron_execution().job_id`), never text from the prompt.
+
+A hold on another unattended run is bound to the run's source instead (`source_of`), when Hermes's run metadata
+names one: a subagent's parent session, a webhook's route, an API-server key's name. Its `allow` is a one-use pass
+for the next matching call from the same source within 7 days (nothing is started), and `allow always` and `deny`
+are bound to the same source. The source is hashed as `session_ref` is (`source_ref`), and never read from the
+prompt or the call. A run with no source the plugin can name has nothing to bind to: there `allow` gives a one-use
+pass bound to the call's exact arguments, for 7 days, and nothing else is offered.
 
 A later call matches on the same terms as a Session answer in a chat (`session_allow`), with the job as the scope:
 a call of the same tool about the same parties (the entities its reasons and description name), scoring no higher,
@@ -48,7 +53,7 @@ from .store import Store, file_lock, read_time
 
 #: How long a standing pass, a denial and a job's one-use pass last.
 PASS_TTL = timedelta(days=30)
-#: How long a one-use pass bound to exact arguments (a hold that is not on a cron job) lasts.
+#: How long a one-use pass that is not on a cron job (bound to a source, or to exact arguments) lasts.
 ARGS_TTL = timedelta(days=7)
 MAX_PASSES = 200
 _ID = re.compile(r"p-[0-9a-f]{6}")
@@ -121,6 +126,59 @@ def job_ref(job_id: str | None) -> str | None:
     return "j_" + hashlib.sha256(job_id.encode()).hexdigest()[:12]
 
 
+#: The kinds of unattended run, other than a cron job, whose answers can be bound to where the run came from: a
+#: heartbeat (its agent; OpenClaw), a webhook or event run (its hook or route), a subagent (its parent session) and
+#: an API-server run (its key's name).
+SOURCE_KINDS = ("heartbeat", "hook", "subagent", "api")
+_SOURCE_PREFIX = {"heartbeat": "a_", "hook": "w_", "subagent": "p_", "api": "k_"}
+#: How the owner's texts name a source: what its passes are on, and who makes its calls.
+_SOURCE_TEXT = {
+    "heartbeat": "the heartbeat of agent {name}",
+    "hook": "webhook {name}",
+    "subagent": "subagents of session {name}",
+    "api": "API key {name}",
+}
+
+
+def source_ref(kind: str, value: str | None) -> str | None:
+    """A source's ref: the kind and the host's value, hashed as `session_ref` is. None with no value."""
+    if not isinstance(value, str) or not value.strip() or kind not in _SOURCE_PREFIX:
+        return None
+    digest = hashlib.sha256(f"{kind}\n{value.strip()}".encode()).hexdigest()[:12]
+    return _SOURCE_PREFIX[kind] + digest
+
+
+def source_of(kind: str, value: str | None, name: str | None = None) -> dict[str, str] | None:
+    """The source of kind `kind` named by the host's `value` (`name` shown, default the value): `{kind, ref,
+    name}`; None with no value."""
+    ref = source_ref(kind, value)
+    if ref is None:
+        return None
+    return {"kind": kind, "ref": ref, "name": str(name if name is not None else value).strip()}
+
+
+def scope_ref(e: Any) -> str | None:
+    """What a pass, denial or hold is bound to: its job's ref, else its source's ref, else None (exact
+    arguments)."""
+    if not isinstance(e, dict):
+        return None
+    src = e.get("source") if isinstance(e.get("source"), dict) else {}
+    ref = e.get("job_ref") or e.get("source_ref") or src.get("ref")
+    return ref if isinstance(ref, str) and ref else None
+
+
+def source_text(kind: Any, name: Any) -> str:
+    """A source as the owner's texts name it, with a name the host's settings chose quoted."""
+    if kind not in _SOURCE_TEXT:
+        return "an unattended run"
+    if kind == "subagent":
+        shown = _clean(name if name is not None else "?", 40)
+    else:
+        bare = re.sub(r"[\[\]()<>|@`]", "", str(name if name is not None else "?"))
+        shown = json.dumps(_clean(bare, 60), ensure_ascii=False)
+    return _SOURCE_TEXT[kind].format(name=shown)
+
+
 def names_nothing(fingerprint: Any) -> bool:
     """The approval fingerprint names nothing the call acts on (`afp1:<kind>` alone, or with only the tool's
     provider), or there is none."""
@@ -173,17 +231,20 @@ def offers(
     risk: float | None,
     block_at: float,
     acted: bool = False,
+    source: bool = False,
 ) -> list[str]:
     """The answers a hold offers, in the notice's order. On a cron job: `allow` when the scanner lets the owner
     pass the call at all, then `allow later` (`allow` starts the job again now), or `allow now` when the held run had
     already acted (`allow` then waits for the next run); `allow always` when the scanner lets it pass for good and
-    the call names its parties below the block line; and `deny`. Elsewhere only `allow` (bound to the exact call)."""
-    if not job_id:
+    the call names its parties below the block line; and `deny`. On another run with a source (`source`): the same
+    without `allow later` or `allow now` (nothing is started). Elsewhere only `allow` (bound to the exact call)."""
+    if not job_id and not source:
         return [ALLOW] if level is not None else []
     out: list[str] = []
     if level is not None:
         out.append(ALLOW)
-        out.append(ALLOW_NOW if acted else ALLOW_LATER)
+        if job_id:
+            out.append(ALLOW_NOW if acted else ALLOW_LATER)
         if level == "always" and named and risk is not None and risk < block_at:
             out.append(ALLOW_ALWAYS)
     out.append(DENY)
@@ -257,7 +318,10 @@ def add(
         pid = f"p-{secrets.token_hex(3)}"
         while pid in taken:
             pid = f"p-{secrets.token_hex(3)}"
-        ttl = PASS_TTL if hold.get("job_ref") else ARGS_TTL
+        # a source's one-use pass lasts as long as a hold may be answered; standing ones as long as a job's
+        source = hold.get("source") if not hold.get("job_ref") else None
+        source = source if isinstance(source, dict) and source.get("ref") else None
+        ttl = PASS_TTL if hold.get("job_ref") or (source and uses != "once") else ARGS_TTL
         entry = {
             "id": pid,
             "kind": kind,
@@ -265,6 +329,9 @@ def add(
             "level": level if kind == "allow" else None,
             "job_id": hold.get("job_id"),
             "job_ref": hold.get("job_ref"),
+            "source_kind": source.get("kind") if source else None,
+            "source_ref": source.get("ref") if source else None,
+            "source_name": source.get("name") if source else None,
             "tool": hold.get("tool"),
             "description": hold.get("description"),
             "match": hold.get("match"),
@@ -488,9 +555,10 @@ def check(
     now: datetime,
     in_run: str | None = None,
 ) -> dict[str, Any] | None:
-    """The denial or pass that settles this held-to-be call, or None. `in_run`: the pass whose started run this call
-    is in (`run_of`); a run-bound pass serves no other run. A denial of the same job and action wins
-    over any pass. A pass applies only to an eligible scan (`session_allow.eligible`) that the pass covers
+    """The denial or pass that settles this held-to-be call, or None. `ref`: the call's job ref, else its source's
+    ref (`scope_ref`), else None (only a pass bound to exact arguments can settle it). `in_run`: the pass whose
+    started run this call is in (`run_of`); a run-bound pass serves no other run. A denial of the same job or source
+    and action wins over any pass. A pass applies only to an eligible scan (`session_allow.eligible`) that the pass covers
     (`covers`) at an `owner_pass` level at or above the pass's own. A one-use pass is used up; a standing one
     counts the use. A file that cannot be read settles nothing (the call is held as before)."""
     store = Store(state_dir)
@@ -502,7 +570,7 @@ def check(
         same = [
             p
             for p in found
-            if p.get("job_ref") == ref
+            if scope_ref(p) == ref
             and isinstance(p.get("match"), dict)
             and p["match"].get("key") == match.get("key")
             # a pass bound to a run the plugin started serves that run only
@@ -561,7 +629,17 @@ def revoke(state_dir: Path, rest: str, now: datetime) -> tuple[str, dict[str, An
     what = "denial" if found["kind"] == "deny" else "pass"
     return (
         f"Revoked {what} {pid}.",
-        {"op": "revoke", "id": pid, "pass_kind": found["kind"], "job_ref": found.get("job_ref")},
+        {
+            "op": "revoke",
+            "id": pid,
+            "pass_kind": found["kind"],
+            "job_ref": found.get("job_ref"),
+            **(
+                {"source_kind": found.get("source_kind"), "source_ref": found["source_ref"]}
+                if found.get("source_ref")
+                else {}
+            ),
+        },
     )
 
 
@@ -570,10 +648,18 @@ def _job(p: dict[str, Any]) -> str:
 
 
 def describe(p: dict[str, Any]) -> str:
-    """One pass or denial, as the list and the dashboard show it."""
+    """One pass or denial, as the list and the dashboard show it; one bound to a source names its kind and name."""
     at = read_time(p.get("expires_at"))
     until = show(at) if at else "?"
     call = f"{_clean(p.get('tool') or '?', 60)}: {_clean(p.get('description') or '?', 120)}"
+    if not p.get("job_ref") and p.get("source_ref"):
+        src = source_text(p.get("source_kind"), p.get("source_name"))
+        if p.get("kind") == "deny":
+            return f"denied from {src} until {until}: {call}"
+        if p.get("uses") == "once":
+            return f"allowed once from {src}, until {until}: {call}"
+        used = int(p.get("use_count") or 0)
+        return f"allowed from {src} until {until}, used {used} time{'s' * (used != 1)}: {call}"
     if p.get("kind") == "deny":
         return f"denied on {_job(p)} until {until}: {call}"
     if p.get("uses") == "once" and p.get("run_bound"):
