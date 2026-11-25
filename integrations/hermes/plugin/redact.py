@@ -96,6 +96,17 @@ _CODE_RECEIVERS = frozenset(
 _DOTTED_READ = re.compile(_DOTTED_NAME)
 
 
+# A credential field's name, as docs, templates and code write it (`api_secret`, `your_api_key`, `apiSecret`,
+# `YOUR_TOKEN_HERE`): words with no digits, lower or upper case joined by `_` or `-`, or camel case with each part
+# three or more letters. `_field_name` also wants it to end in a credential word, maybe before `here`.
+_FIELD_NAME_VALUE = re.compile(
+    r"(?:[a-z]{2,}(?:[_-][a-z]+)*|[A-Z]{2,}(?:[_-][A-Z]+)*|[a-z]{2,}(?:[A-Z][a-z]{2,})+|(?:[A-Z][a-z]{2,}){2,})"
+)
+# A placeholder that masks a value (`xxxxxxxx`), and a short lower-case word (`changeme`, `required`, `basic`).
+_PLACEHOLDER_VALUE = re.compile(r"(?i)x{3,}")
+_SHORT_WORD = re.compile(r"[a-z]{1,12}")
+
+
 def _is_ordinary(v: str) -> bool:
     return bool(_ORDINARY_WORD.fullmatch(v)) or (
         sum(1 for p in v.split("-") if re.fullmatch(r"[a-z]{2,}", p)) >= 2
@@ -106,6 +117,23 @@ def _key_value(v: str) -> bool:
     """Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the
     name of an environment variable (`token: GITHUB_TOKEN`)."""
     return "://" not in v and not _ENV_NAME.fullmatch(v)
+
+
+def _names_a_field(v: str) -> bool:
+    """Plainly not a secret in text: a credential field's name or a placeholder for one (`api_key:api_secret` in
+    docs, `password: your_password`, `token: xxxxxxxx`), or a short lower-case word of three or more different
+    letters (`password=changeme`). A value with a digit, mixed case or a symbol, a longer word, and a run of one
+    letter are still values. A parsed object's value under a credential key is still replaced whole."""
+    if _PLACEHOLDER_VALUE.fullmatch(v) or (_SHORT_WORD.fullmatch(v) and len(set(v)) >= 3):
+        return True
+    if len(v) > 40 or _FIELD_NAME_VALUE.fullmatch(v) is None:
+        return False
+    return _CREDENTIAL_FIELD.search(re.sub(r"(?i)[_-]?here\Z", "", v)) is not None
+
+
+def _text_key_value(v: str) -> bool:
+    """A value after a key in text: a key's value that does not name a field."""
+    return _key_value(v) and not _names_a_field(v)
 
 
 def is_code_read(v: str) -> bool:
@@ -133,19 +161,19 @@ def _unquoted_key_value(v: str) -> bool:
     """An unquoted value after a key: also not code that reads the secret from somewhere
     (`token = creds.get('token')`, cut where its quoted argument starts). A quoted value or one under an
     object key is whole, so it is never code cut short."""
-    return _key_value(v) and not is_code_read(v)
+    return _text_key_value(v) and not is_code_read(v)
 
 
 def _inner_key_value(v: str) -> bool:
     """An upper-case name with a credential word inside it names many things; only a long value counts, and not
     code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key."""
-    return len(v) >= 12 and _key_value(v) and not is_code_read(v)
+    return len(v) >= 12 and _text_key_value(v) and not is_code_read(v)
 
 
 def _inner_quoted_value(v: str) -> bool:
     """The same name with a quoted value: a long value that is not a URL or an environment variable name. A quoted
     value is whole, so code-shaped text in quotes is still a value."""
-    return len(v) >= 12 and _key_value(v)
+    return len(v) >= 12 and _text_key_value(v)
 
 
 def _stated_value(v: str) -> bool:
@@ -157,6 +185,7 @@ def _stated_value(v: str) -> bool:
         and not re.fullmatch(r"[0-9]+", v)
         and not _NAMED_THING.search(v)
         and not is_code_read(v)
+        and not _names_a_field(v)
     )
 
 
@@ -398,7 +427,7 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
             r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
         ),
         "v",
-        _key_value,
+        _text_key_value,
     ),
     (
         # `"password": "words, & symbols"`: in a JSON pair the whole quoted string is the value.
@@ -409,7 +438,7 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
             + r"\\?[\"']\s*:\s*\\?\"(?P<v>[^\"\\\n⟦$*{\[<%][^\"\\\n]{7,199})\\?\""
         ),
         "v",
-        _key_value,
+        _text_key_value,
     ),
     (
         # An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a

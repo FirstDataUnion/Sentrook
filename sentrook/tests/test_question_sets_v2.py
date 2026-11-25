@@ -333,7 +333,7 @@ def test_scan_reports_the_views_it_used(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
     assert pv["views_version"] == {"exposure": "trim-v2", "call": "trim-v2"}
     assert pv["redaction"] == {
-        "version": "redact-v11",
+        "version": "redact-v12",
         "shapes": SHAPES_VERSION,
         "count": 2,
     }
@@ -353,7 +353,7 @@ def test_scan_defaults_stay_on_trim_v1(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE, "call": CALL}
     assert pv["views_version"] == {"exposure": "trim-v1", "call": "trim-v1"}
     assert pv["redaction"] == {
-        "version": "redact-v11",
+        "version": "redact-v12",
         "shapes": SHAPES_VERSION,
         "count": 0,
     }

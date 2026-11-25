@@ -24,7 +24,7 @@ test("the same value gets the same ref; another value another ref", () => {
 });
 
 test("assignments, flags and bearer headers keep their key", () => {
-  assert.match(r.string(`export GITHUB_TOKEN=${"x".repeat(12)}`), /^export GITHUB_TOKEN=⟦secret:credential:/);
+  assert.match(r.string(`export GITHUB_TOKEN=${"k".repeat(12)}`), /^export GITHUB_TOKEN=⟦secret:credential:/);
   assert.match(r.string(`mysql --password ${"p".repeat(10)} db`), /^mysql --password ⟦secret:credential:[0-9a-f]{4}⟧ db$/);
   assert.match(r.string(`Authorization: Bearer ${"t".repeat(30)}`), /^Authorization: Bearer ⟦secret:credential:/);
 });
@@ -604,4 +604,45 @@ test("the cue and key rules stay linear on adversarial input", () => {
     r.string(text);
     assert.ok(performance.now() - start < 3000, text.slice(0, 30));
   }
+});
+
+test("a key's value that names a field or stands in for one stays; real values under the same keys go", () => {
+  for (const text of [
+    "api_key:api_secret",
+    "password: your_password",
+    "token=<token>",
+    '"Authorization: Bearer YOUR_TOKEN"',
+    "Admin API takes api_key:api_secret as basic auth",
+    '"api_key": "your_api_key_here"',
+    "apiKey=apiSecret",
+    "token: xxxxxxxx",
+    "password=changeme",
+    "SENTROOK_SECRET_TOKEN=your_secret_token",
+  ]) {
+    for (const form of forms(text)) assert.equal(r.string(form), form);
+  }
+  const live = "sk-" + "live-" + seeded(24, 13);
+  const ghp = "gh" + "p_" + seeded(36, 11);
+  const r40 = seeded(40, 12);
+  const troubador = "Tr0ub4" + "dor&3";
+  for (const [text, value] of [
+    [`api_key: ${live}`, live],
+    [`password: ${troubador}`, troubador.slice(0, 9)],
+    [`token=${ghp}`, ghp],
+    [`secret=${r40}`, r40],
+    [`"api_key": "${r40}"`, r40],
+    ["password=hunter2hunter2", "hunter2hunter2"],
+    ["password=Sunshine", "Sunshine"],
+    ["token=correcthorsebattery", "correcthorsebattery"],
+    ["api_key=api_secret2", "api_secret2"],
+  ]) {
+    for (const form of forms(text)) {
+      const out = r.string(form);
+      assert.ok(!out.includes(value), form);
+      assert.ok(out.includes("⟦secret:"), out);
+    }
+  }
+  // A parsed object's value under a credential key is what the call sends, whatever it looks like.
+  const obj = r.value({ api_key: "api_secret", password: "sunshine" }) as Record<string, string>;
+  assert.ok(Object.values(obj).every((v) => v.startsWith("⟦secret:credential:")), JSON.stringify(obj));
 });

@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v11): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v12): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
 named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
@@ -102,7 +102,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v11"
+    assert REDACTION_VERSION == "redact-v12"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -536,6 +536,9 @@ def test_rules_are_the_plugins_rules():
         "_DOTTED_READ",
         "_CODE_ARG_READ",
         "_CODE_NAME_ARG_READ",
+        "_FIELD_NAME_VALUE",
+        "_PLACEHOLDER_VALUE",
+        "_SHORT_WORD",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
@@ -743,3 +746,54 @@ def test_object_parity_with_the_hermes_plugin():
         dumped = json.dumps(plugin.value(obj), ensure_ascii=False)
         theirs = json.loads(re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, dumped))
         assert second_pass(obj)[0] == theirs, obj
+
+
+# A key's value that names a credential field or stands in for one, or is a short lower-case word (redact-v12).
+FIELD_NAME_STAY = [
+    "api_key:api_secret",
+    "Admin API takes api_key:api_secret as basic auth",
+    "password: your_password",
+    "token=<token>",
+    '"Authorization: Bearer YOUR_TOKEN"',
+    '"api_key": "your_api_key_here"',
+    "apiKey=apiSecret",
+    "token: xxxxxxxx",
+    "password=changeme",
+    "SENTROOK_SECRET_TOKEN=your_secret_token",
+]
+_R40 = "aB3dE5fG7h" + "Kq9Lm2Np4R" + "sT6uV8wX1y" + "Zc0De2Fg4H"
+FIELD_NAME_REPLACE = [
+    ("api_key: " + "sk-" + "live-" + _R40[:24], _R40[:24]),
+    ("password: " + "Tr0ub4" + "dor&3", "Tr0ub4dor"),
+    ("token=" + "gh" + "p_" + _R40[:36], _R40[:36]),
+    ("secret=" + _R40, _R40),
+    ("password=hunter2hunter2", "hunter2hunter2"),
+    ("token=correcthorsebattery", "correcthorsebattery"),
+    ("api_key=api_secret2", "api_secret2"),
+]
+
+
+@pytest.mark.parametrize("text", FIELD_NAME_STAY)
+def test_a_field_name_under_a_key_is_not_a_secret(text):
+    for form in (text, _as_result(text)):
+        assert redact_text(form) == (form, 0)
+
+
+@pytest.mark.parametrize(("text", "secret"), FIELD_NAME_REPLACE)
+def test_a_real_value_under_the_same_key_is_still_replaced(text, secret):
+    for form in (text, _as_result(text)):
+        out, n = redact_text(form)
+        assert n >= 1 and secret not in out, out
+
+
+def test_field_names_match_the_hermes_plugin():
+    plugin = _plugin_module().Redactor("standard", "parity")
+    for text in FIELD_NAME_STAY + [t for t, _ in FIELD_NAME_REPLACE]:
+        for form in (text, _as_result(text)):
+            theirs = re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, plugin.string(form))
+            assert redact_text(form)[0] == theirs, form
+
+
+def test_an_object_value_under_a_credential_key_is_still_replaced_whole():
+    out, n = second_pass({"api_key": "api_secret", "password": "sunshine"})
+    assert n == 2 and out == {"api_key": P, "password": P}
