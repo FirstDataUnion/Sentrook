@@ -132,21 +132,43 @@ const isCodeRead = (v: string): boolean => {
  */
 const keyValue = (v: string) => !v.includes("://") && !/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v);
 /**
+ * A credential field's name, as docs, templates and code write it (`api_secret`, `your_api_key`, `apiSecret`,
+ * `YOUR_TOKEN_HERE`): words with no digits, lower or upper case joined by `_` or `-`, or camel case with each part
+ * three or more letters. `namesAField` also wants it to end in a credential word, maybe before `here`.
+ */
+const FIELD_NAME_VALUE = /^(?:[a-z]{2,}(?:[_-][a-z]+)*|[A-Z]{2,}(?:[_-][A-Z]+)*|[a-z]{2,}(?:[A-Z][a-z]{2,})+|(?:[A-Z][a-z]{2,}){2,})$/;
+/** A placeholder that masks a value (`xxxxxxxx`), and a short lower-case word (`changeme`, `required`, `basic`). */
+const PLACEHOLDER_VALUE = /^x{3,}$/i;
+const SHORT_WORD = /^[a-z]{1,12}$/;
+/**
+ * Plainly not a secret in text: a credential field's name or a placeholder for one (`api_key:api_secret` in docs,
+ * `password: your_password`, `token: xxxxxxxx`), or a short lower-case word of three or more different letters
+ * (`password=changeme`). A value with a digit, mixed case or a symbol, a longer word, and a run of one letter are still
+ * values. A parsed object's value under a credential key is still replaced whole.
+ */
+const namesAField = (v: string): boolean => {
+  if (PLACEHOLDER_VALUE.test(v) || (SHORT_WORD.test(v) && new Set(v).size >= 3)) return true;
+  if (v.length > 40 || !FIELD_NAME_VALUE.test(v)) return false;
+  return CREDENTIAL_FIELD.test(v.replace(/[_-]?here$/i, ""));
+};
+/** A value after a key in text: a key's value that does not name a field. */
+const textKeyValue = (v: string) => keyValue(v) && !namesAField(v);
+/**
  * An unquoted value after a key: also not code that reads the secret from somewhere (`token = creds.get('token')`,
  * cut where its quoted argument starts). A quoted value or one under an object key is whole, so it is never code cut
  * short.
  */
-const unquotedKeyValue = (v: string) => keyValue(v) && !isCodeRead(v);
+const unquotedKeyValue = (v: string) => textKeyValue(v) && !isCodeRead(v);
 /**
  * An upper-case name with a credential word inside it names many things; only a long value counts, and not code that
  * reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key.
  */
-const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v) && !isCodeRead(v);
+const innerKeyValue = (v: string) => v.length >= 12 && textKeyValue(v) && !isCodeRead(v);
 /** The same name with a quoted value: a quoted value is whole, so one shaped like code is still a value. */
-const innerQuotedValue = (v: string) => v.length >= 12 && keyValue(v);
+const innerQuotedValue = (v: string) => v.length >= 12 && textKeyValue(v);
 /** After "password is" or "token:": six or more characters that are not words, a number or code that reads one. */
 const statedValue = (v: string) =>
-  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !isCodeRead(v);
+  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !isCodeRead(v) && !namesAField(v);
 /** Straight after a cue word ("backup key X"): twelve or more characters with letters and digits. */
 const bareValue = (v: string) =>
   v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
@@ -299,14 +321,14 @@ const SHAPES: Shape[] = [
       "gi",
     ),
     group: "v",
-    check: keyValue,
+    check: textKeyValue,
   },
   {
     // `"password": "words, & symbols"`: in a JSON pair the whole quoted string is the value.
     kind: "credential",
     re: new RegExp(`${CREDENTIAL_KEY}\\\\?["']\\s*:\\s*\\\\?"(?<v>[^"\\\\\\n⟦$*{[<%][^"\\\\\\n]{7,199})\\\\?"`, "gi"),
     group: "v",
-    check: keyValue,
+    check: textKeyValue,
   },
   {
     // An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a

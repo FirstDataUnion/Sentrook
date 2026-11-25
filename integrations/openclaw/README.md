@@ -796,7 +796,8 @@ gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:�
 header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
 hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
-kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. Your
+kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
+`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too. Your
 files, messages and tool output can still contain other personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
