@@ -1125,8 +1125,9 @@ const plugin = {
               jobId,
               source,
               match,
-              acted: !!run.acted,
-              runKey: jobId ? runKeyOf(jobId, jobRunId).runKey : null,
+              // a sub-agent's hold counts what the cron run itself had already sent or written
+              acted: !!run.acted || (jobRun !== null && !!store.loadRun(jobRun.run_id).acted),
+              ...(jobId ? runIdentity(jobId, jobRunId) : { runKey: null, runStart: null }),
               acts: passes.acts(built.toolKind, resp),
               jobRun: jobRun ? store.loadRun(jobRun.run_id) : null,
             });
@@ -1348,6 +1349,17 @@ const plugin = {
     }
 
     /**
+     * The run of cron job `jobId` as a hold keeps it: its key (`runKeyOf`) and when it started, from its running
+     * receipt, else when the plugin first heard of the agent run (its first hook); null when neither is known.
+     */
+    function runIdentity(jobId: string, runId: string | undefined): { runKey: string | null; runStart: Date | null } {
+      const { runKey, startedAt } = runKeyOf(jobId, runId);
+      if (startedAt) return { runKey, runStart: startedAt };
+      const seen = store.loadRun(runId).seenAtMs;
+      return { runKey, runStart: typeof seen === "number" ? new Date(seen) : null };
+    }
+
+    /**
      * The record of a run the plugin started for an answer, when this run of `jobId` is it (passes.runOf); earlier such
      * runs of the job that ended unseen get their outcome line now.
      */
@@ -1424,11 +1436,11 @@ const plugin = {
         if (!groups.length) return;
         const target = store.loadNotify();
         const outbound = outboundOf();
-        for (const [lead, members] of groups) {
+        for (const [lead, members, canAll] of groups) {
           let notice: Json = { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
           if (target && outbound?.loadAdapter) {
             notice = { status: "queued", target: target.channel };
-            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`), "run end line");
+            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), "run end line");
           } else if (target) {
             notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
           }
@@ -1634,6 +1646,8 @@ const plugin = {
         match: passes.Match;
         acted?: boolean;
         runKey?: string | null;
+        /** When the held run started, for closing earlier runs' groups (`hold.staleGroups`); null when not known. */
+        runStart?: Date | null;
         acts?: boolean;
         jobRun?: RunContext | null;
       },
@@ -1675,8 +1689,8 @@ const plugin = {
       if (ref && target) {
         // an earlier run of the job that ended where the plugin could not see it: its end line goes out first
         try {
-          for (const [lead, members] of hold.staleGroups(cfg.stateDir, ref, bound.runKey ?? null, now)) {
-            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`), "earlier run's end line");
+          for (const [lead, members, canAll] of hold.staleGroups(cfg.stateDir, ref, bound.runKey ?? null, bound.runStart ?? null, now)) {
+            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), "earlier run's end line");
           }
         } catch (err) {
           // those holds stay listed in status

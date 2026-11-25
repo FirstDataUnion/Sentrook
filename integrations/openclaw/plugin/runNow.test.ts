@@ -632,3 +632,19 @@ test("allow on a sub-agent's hold starts the job, and the started run's sub-agen
   assert.equal(notices(r).at(-1), fill(RUN_NOW.outcomes.passed, { job: "job-j" }));
   assert.deepEqual((await childCall(r, 3)).out, HELD, "the pass was used up in the started run");
 });
+
+test("allow on a sub-agent's hold waits for the next run when the cron run had already sent something", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  // the cron run's own session sends something that is allowed, then a sub-agent's call is held
+  reply = { risk: 10, enforced: null };
+  assert.equal((await r.call(1, { id: "cs" })).out, undefined);
+  reply = { ...NAMED };
+  const { out, rec } = await childCall(r, 1);
+  assert.deepEqual(out, HELD);
+  assert.equal(holds()[0].acted, true);
+  const answer = await r.command("sentrook-allow", rec.hold.id);
+  assert.deepEqual(cliCalls(), [], "the run had already sent something: allow waits for the next run");
+  const [p] = stored();
+  assert.equal(answer, fill(RUN_NOW.replies.fallback, { job: "job-j", pass: p.id, until: untilOf(p), reason: RUN_NOW.reasons.acted }));
+});

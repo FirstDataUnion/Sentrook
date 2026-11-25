@@ -383,11 +383,21 @@ function liveRuns(data: PassesFile, now: Date): Entry[] {
 /**
  * Stores a pass (`kind` allow) or denial (deny) set from `hold`; returns the entry, or null when the file cannot be
  * read. `uses`: once or standing. `runBound`: a one-use pass for a run the plugin is about to start, with its record in
- * `runs`.
+ * `runs`. `runWith`: a one-use pass that serves only the run started for the run-bound pass with that id
+ * (`allow <lead> all`), and ends with it.
  */
 export function add(
   stateDir: string,
-  b: { kind: "allow" | "deny"; uses: "once" | "standing"; level: Level | null; hold: Entry; by: Entry; now: Date; runBound?: boolean },
+  b: {
+    kind: "allow" | "deny";
+    uses: "once" | "standing";
+    level: Level | null;
+    hold: Entry;
+    by: Entry;
+    now: Date;
+    runBound?: boolean;
+    runWith?: string | null;
+  },
   beforeWrite: () => void = () => {},
 ): Entry | null {
   return withFileLock(file(stateDir), () => {
@@ -421,6 +431,7 @@ export function add(
       use_count: 0,
       last_used_at: null,
     };
+    if (b.runWith) entry.run_with = b.runWith;
     const runs = liveRuns(data, b.now);
     if (b.runBound) {
       // an earlier started run of the job whose end was never seen must not capture this one
@@ -476,7 +487,9 @@ export function check(
         typeof p.match === "object" &&
         p.match.key === match.key &&
         // a pass bound to a run the plugin started serves that run only (`inRun`, from runOf)
-        (!p.run_bound || (inRun !== null && p.id === inRun)),
+        (!p.run_bound || (inRun !== null && p.id === inRun)) &&
+        // and so does a pass set to go with it (`allow <lead> all`)
+        (!p.run_with || (inRun !== null && p.run_with === inRun)),
     );
     let hit = ref !== null ? (same.find((p) => p.kind === "deny") ?? null) : null;
     if (hit === null && eligible(resp)) {
@@ -610,7 +623,11 @@ export function started(stateDir: string, id: string, runId: string | null): voi
 export function notStarted(stateDir: string, id: string): void {
   changeRun(stateDir, id, (data, rec) => {
     data.runs = (data.runs as Entry[]).filter((r) => r !== rec);
-    for (const p of data.passes as Entry[]) if (p && p.id === id) delete p.run_bound;
+    for (const p of data.passes as Entry[]) {
+      if (p && p.id === id) delete p.run_bound;
+      // the passes set to go with it wait for the job's next run with it
+      if (p && p.run_with === id) delete p.run_with;
+    }
   });
 }
 
@@ -623,10 +640,12 @@ function isRun(rec: Entry, runKey: string | null, startedAt: Date | null): boole
   return runKey !== rec.not_run && after;
 }
 
-/** Marks a started run ended and drops its pass if the run did not use it. */
+/** Marks a started run ended and drops its passes the run did not use: its own and those set to go with it (`run_with`). */
 function endRun(data: PassesFile, rec: Entry): void {
   rec.ended = true;
-  data.passes = (data.passes as Entry[]).filter((p) => !(p && p.id === rec.id && p.run_bound));
+  data.passes = (data.passes as Entry[]).filter(
+    (p) => !(p && ((p.id === rec.id && p.run_bound) || (rec.id && p.run_with === rec.id))),
+  );
 }
 
 /**

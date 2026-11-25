@@ -36,11 +36,14 @@
  * - One notice per cron run: the first hold of a run (`runKey`, a sub-agent of the run included) sends the notice and
  *   leads the run's group; a later hold of another action in the same run joins the group (`lead`) and sends nothing
  *   then. When the run ends (`endOfRun`), one line lists the group's holds that no line listed yet, by tool and
- *   description, with their ids. `/sentrook-allow <lead> all` then answers the lead and every hold a line listed
- *   (`shown`) in one started run: each gets a one-use pass of its own and is still gated by its own scan. A hold whose
- *   call itself sends or writes (`acts`) is never covered by `all`: it is answered on its own id. A hold that joins
- *   after its run's line went out gets a notice of its own. A group whose run never ended where the plugin could see
- *   it gets its line when the job's next run makes its first hold (`staleGroups`).
+ *   description, with their ids (`listed`); holds whose lead was answered or expired first are listed too, with no
+ *   `all`. `/sentrook-allow <lead> all` then answers the lead and every hold of its group a line listed, in one started
+ *   run: each gets a one-use pass of its own that serves only that run (`run_with`), and is still gated by its own
+ *   scan. A hold whose call itself sends or writes (`acts`) is never covered by `all`: it is answered on its own id;
+ *   and when a covered call, like the lead, came after its run had sent or written something, nothing is started
+ *   (the passes wait for the next run, unless `now`). A hold that joins after its run's line went out gets a notice of
+ *   its own. A group of a run that started before the current one and never ended where the plugin could see it gets
+ *   its line when the job's next run makes its first hold (`staleGroups`).
  * - After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next changed
  *   (a new hold or an answer).
  *
@@ -370,7 +373,7 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
   let id = `h-${randomBytes(3).toString("hex")}`;
   while (taken.has(id)) id = `h-${randomBytes(3).toString("hex")}`;
   const lead = runLead(data, ref, hold.runKey ?? null);
-  if (lead) lead.group = [...(Array.isArray(lead.group) ? lead.group : []), id].slice(-MAX_HELD);
+  if (lead) lead.group = [...(Array.isArray(lead.group) ? lead.group : []), id];
   data.holds.push({
     v: 2,
     id,
@@ -426,32 +429,65 @@ function runLead(data: HoldsFile, ref: string | null, runKey: string | null): En
   return (data.holds.find((h) => openLead(h, ref) && h.run_key === runKey) as Entry | undefined) ?? null;
 }
 
-/** The waiting holds of `lead`'s group that no end line has listed yet. */
-function unlisted(data: HoldsFile, lead: Entry): Entry[] {
-  const shown = new Set(Array.isArray(lead.shown) ? lead.shown : []);
-  const ids = (Array.isArray(lead.group) ? lead.group : []).filter((i: unknown) => !shown.has(i));
-  const byId = new Map(data.holds.filter((h): h is Entry => !!h && typeof h === "object").map((h) => [h.id, h]));
-  return ids.filter((i: unknown) => byId.has(i)).map((i: unknown) => byId.get(i)!);
+/** The waiting holds that joined the group of lead `leadId` (of job `ref`) and no end line has listed yet. */
+function unlisted(data: HoldsFile, leadId: unknown, ref: unknown): Entry[] {
+  return data.holds.filter(
+    (h): h is Entry => !!h && typeof h === "object" && (h as Entry).v === 2 && (h as Entry).lead === leadId && (h as Entry).job_ref === ref && !(h as Entry).listed,
+  );
 }
 
-/** A group's lead and the holds its end line lists. */
-export type Group = [lead: Entry, members: Entry[]];
+/** Every waiting hold of `lead`'s group (same lead id and job), listed or not. */
+function groupOf(data: HoldsFile, lead: Entry): Entry[] {
+  return data.holds.filter(
+    (h): h is Entry => !!h && typeof h === "object" && (h as Entry).v === 2 && (h as Entry).lead === lead.id && (h as Entry).job_ref === lead.job_ref,
+  );
+}
 
 /**
- * Marks `lead`'s end line as sent and its unlisted holds as shown; (lead, holds to list), or null when there is nothing
- * to list.
+ * A group to list: the lead (or what is left of it, `{id, job_id, job_ref}`, when it was answered or expired first),
+ * the holds to list, and whether `all` is offered (only while the lead waits).
+ */
+export type Group = [lead: Entry, members: Entry[], canAll: boolean];
+
+/** Marks `members` listed; copies of them. */
+function list(members: Entry[]): Entry[] {
+  for (const m of members) m.listed = true;
+  return members.map((m) => ({ ...m }));
+}
+
+/**
+ * Marks `lead`'s end line as sent and its unlisted holds as listed (`shown` on the lead); the group to list, or null
+ * when there is nothing to list.
  */
 function closeGroup(data: HoldsFile, lead: Entry, now: Date): Group | null {
   lead.end_line_at = iso(now);
-  const members = unlisted(data, lead);
+  const members = unlisted(data, lead.id, lead.job_ref);
   if (!members.length) return null;
-  lead.shown = [...(Array.isArray(lead.shown) ? lead.shown : []), ...members.map((m) => m.id)].slice(-MAX_HELD);
-  return [{ ...lead }, members.map((m) => ({ ...m }))];
+  lead.shown = [...(Array.isArray(lead.shown) ? lead.shown : []), ...members.map((m) => m.id)];
+  return [{ ...lead }, list(members), true];
 }
 
 /**
- * Cron run `runKey` of job `ref` ended: its group's end line is due. Returns (lead, holds to list) for the line
- * (`endLineText`), and marks them listed; [] when the run had no lead or nothing more was held.
+ * The unlisted holds of job `ref` whose lead no longer waits (answered or expired before the run's end line), for
+ * which `keep` holds, grouped by their lead: they are listed too, with no `all` (nothing leads them now).
+ */
+function orphans(data: HoldsFile, ref: string, keep: (h: Entry) => boolean): Group[] {
+  const waiting = new Set(data.holds.filter((h): h is Entry => !!h && typeof h === "object").map((h) => h.id));
+  const byLead = new Map<string, Entry[]>();
+  for (const h of data.holds) {
+    if (!h || typeof h !== "object") continue;
+    const e = h as Entry;
+    if (e.v !== 2 || e.job_ref !== ref || !e.lead || waiting.has(e.lead) || e.listed || !keep(e)) continue;
+    const key = String(e.lead);
+    byLead.set(key, [...(byLead.get(key) ?? []), e]);
+  }
+  return [...byLead].map(([lead, members]): Group => [{ id: lead, job_id: members[0]!.job_id ?? null, job_ref: ref }, list(members), false]);
+}
+
+/**
+ * Cron run `runKey` of job `ref` ended: its group's end line is due. Returns each group to list (`endLineText`), now
+ * marked listed; [] when the run had no group or nothing more was held. Holds whose lead was answered or expired first
+ * are listed too (`orphans`).
  */
 export function endOfRun(stateDir: string, ref: string | null, runKey: string | null, now: Date): Group[] {
   if (!ref || !runKey) return [];
@@ -465,27 +501,35 @@ export function endOfRun(stateDir: string, ref: string | null, runKey: string | 
       const closed = closeGroup(data, h, now);
       if (closed) out.push(closed);
     }
+    out.push(...orphans(data, ref, (h) => h.run_key === runKey));
     store.saveHolds(data);
     return out;
   });
 }
 
 /**
- * The groups of job `ref`'s earlier runs whose end was never seen: their end lines are due before run `runKey` makes
- * its first notice. Same shape as `endOfRun`.
+ * The groups of job `ref`'s runs that started before run `runKey` (started at `startedAt`) and whose end was never
+ * seen: their end lines are due before that run makes its first notice. A run that started later (one still going
+ * while a late call of an earlier run is held) is left alone; so is everything when the run's start is unknown. Same
+ * shape as `endOfRun`.
  */
-export function staleGroups(stateDir: string, ref: string | null, runKey: string | null, now: Date): Group[] {
-  if (!ref || !runKey) return [];
+export function staleGroups(stateDir: string, ref: string | null, runKey: string | null, startedAt: Date | null, now: Date): Group[] {
+  if (!ref || !runKey || startedAt === null) return [];
+  const earlier = (h: Entry): boolean => {
+    const at = readTime(h.held_at);
+    return h.run_key != null && h.run_key !== runKey && at !== null && at.getTime() < startedAt.getTime();
+  };
   return withFileLock(holdsFile(stateDir), () => {
     const store = new Store(stateDir);
     const data = store.loadHolds();
     if (data === null) return [];
     const out: Group[] = [];
     for (const h of data.holds) {
-      if (!openLead(h, ref) || h.run_key == null || h.run_key === runKey || !(Array.isArray(h.group) && h.group.length)) continue;
+      if (!openLead(h, ref) || !(Array.isArray(h.group) && h.group.length) || !earlier(h)) continue;
       const closed = closeGroup(data, h, now);
       if (closed) out.push(closed);
     }
+    out.push(...orphans(data, ref, earlier));
     if (out.length) store.saveHolds(data);
     return out;
   });
@@ -511,10 +555,10 @@ export const RUN_GROUP: Record<string, string> = {
 
 /**
  * The run's end line: the holds of `lead`'s group no line listed yet, each by its id, tool and description (as the
- * notice shows them, and no more), and how to answer them. `all` is offered only when at least one listed call does
- * not itself send or write (`acts`) and offers allow.
+ * notice shows them, and no more), and how to answer them. `all` is offered only while the lead waits (`canAll`) and
+ * at least one listed call does not itself send or write (`acts`) and offers allow.
  */
-export function endLineText(lead: Entry, members: Entry[], cmd: (verb: string) => string): string {
+export function endLineText(lead: Entry, members: Entry[], cmd: (verb: string) => string, canAll = true): string {
   const t = RUN_GROUP;
   const lines = [passes.fill(t.head!, { job: inert(lead.job_id, 40), n: String(members.length), lead: String(lead.id) })];
   for (const m of members) {
@@ -527,7 +571,7 @@ export function endLineText(lead: Entry, members: Entry[], cmd: (verb: string) =
       }),
     );
   }
-  if (members.some((m) => !m.acts && Array.isArray(m.offers) && m.offers.includes(passes.ALLOW))) {
+  if (canAll && members.some((m) => !m.acts && Array.isArray(m.offers) && m.offers.includes(passes.ALLOW))) {
     lines.push(passes.fill(t.all!, { allow: cmd("allow"), lead: String(lead.id) }));
   }
   lines.push(passes.fill(t.each!, { allow: cmd("allow"), deny: cmd("deny"), why: cmd("why") }));
@@ -783,13 +827,18 @@ export async function answer(
       save();
       return { done: refusal(found, want, id, cmd) };
     }
+    // `all`: the waiting holds of this lead's group an end line listed, that offer allow and whose call does not itself
+    // send or write
+    const covered =
+      mode === "all" ? groupOf(data, found).filter((m) => m.listed && !m.acts && Array.isArray(m.offers) && m.offers.includes(passes.ALLOW)) : [];
     if (want === passes.ALLOW && found.job_ref && mode !== "later") {
       try {
         whyNot = runNow ? runNow.guard(found) : "unavailable";
       } catch {
         whyNot = "unknown";
       }
-      if (whyNot === null && found.acted && mode !== "now") whyNot = "acted";
+      // a covered call that came after its run had acted counts as the lead's would
+      if (whyNot === null && (found.acted || covered.some((m) => m.acted)) && mode !== "now") whyNot = "acted";
       start = whyNot === null;
     }
     // The hold is marked answered first, so a failure never leaves two passes for one answer.
@@ -833,7 +882,8 @@ export async function answer(
       }
       return { done: `Not set: the passes file could not be written (${failed || "unreadable"}); ${id} is still waiting.` };
     }
-    const { group, left } = mode === "all" ? allowGroup(stateDir, store, data, found, by, now, beforeWrite) : { group: [], left: [] };
+    const { group, left } =
+      mode === "all" ? allowGroup(stateDir, store, data, found, covered, by, now, beforeWrite, start ? String(entry.id) : null) : { group: [], left: [] };
     return { found, entry, group, left };
   });
   if ("done" in outcome) return none(outcome.done);
@@ -912,47 +962,56 @@ export async function answer(
 }
 
 /**
- * `allow <lead> all`: a one-use job pass for each waiting hold an end line listed (`shown`) that offers allow and whose
- * call does not itself send or write (`acts`); each such hold is answered. Returns ((hold, pass) for each answered, the
- * ids left for their own answer). Called with the holds file locked, after the lead's own pass.
+ * `allow <lead> all`: a one-use job pass for each hold in `covered` (listed, offering allow, not `acts`), which serves
+ * only the run started for the lead's pass (`runWith`; with no run started, the job's next run, as the lead's own
+ * pass). The holds are marked answered first, so a failure never leaves two passes for one hold; a hold whose pass
+ * could not be set goes back. Returns ((hold, pass) for each answered, the listed ids left for their own answer).
+ * Called with the holds file locked, after the lead's own pass.
  */
 function allowGroup(
   stateDir: string,
   store: Store,
   data: HoldsFile,
   lead: Entry,
+  covered: Entry[],
   by: Entry,
   now: Date,
   beforeWrite: () => void,
+  runWith: string | null,
 ): { group: Array<[Entry, Entry]>; left: string[] } {
-  const shown = new Set(Array.isArray(lead.shown) ? lead.shown : []);
-  const members = data.holds.filter((h): h is Entry => !!h && typeof h === "object" && shown.has((h as Entry).id));
+  const left = groupOf(data, lead)
+    .filter((m) => m.listed && !covered.includes(m))
+    .map((m) => String(m.id));
+  if (!covered.length) return { group: [], left };
+  data.holds = data.holds.filter((h) => !covered.includes(h as Entry));
+  try {
+    beforeWrite();
+    store.saveHolds(data);
+  } catch {
+    // nothing set for them; they keep waiting
+    data.holds.push(...covered);
+    return { group: [], left: [...left, ...covered.map((m) => String(m.id))] };
+  }
   const group: Array<[Entry, Entry]> = [];
-  const left: string[] = [];
-  for (const m of members) {
-    if (m.acts || !(Array.isArray(m.offers) && m.offers.includes(passes.ALLOW))) {
-      left.push(String(m.id));
-      continue;
-    }
+  const back: Entry[] = [];
+  for (const m of covered) {
     let got: Entry | null = null;
     try {
-      got = passes.add(stateDir, { kind: "allow", uses: "once", level: "once", hold: m, by, now }, beforeWrite);
+      got = passes.add(stateDir, { kind: "allow", uses: "once", level: "once", hold: m, by, now, runWith }, beforeWrite);
     } catch {
-      got = null; // it keeps waiting
+      got = null; // it goes back to waiting
     }
-    if (!got) {
-      left.push(String(m.id));
-      continue;
-    }
-    data.holds = data.holds.filter((h) => h !== m);
-    group.push([m, got]);
+    if (got) group.push([m, got]);
+    else back.push(m);
   }
-  if (group.length) {
+  if (back.length) {
+    data.holds.push(...back);
     try {
       store.saveHolds(data);
     } catch {
-      // the passes stand; the holds expire unused
+      // those holds are gone with no pass: held again on the next run
     }
+    left.push(...back.map((m) => String(m.id)));
   }
   return { group, left };
 }

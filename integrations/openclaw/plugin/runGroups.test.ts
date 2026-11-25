@@ -20,6 +20,7 @@ import { clearScanTokenCache } from "./auth.ts";
 import * as hold from "./hold.ts";
 import plugin from "./index.ts";
 import * as passes from "./passes.ts";
+import { Store } from "./store.ts";
 
 const FIXTURES = JSON.parse(readFileSync(fileURLToPath(new URL("../../fixtures/hold/cases.json", import.meta.url)), "utf8"));
 const SEND = FIXTURES.notices[0];
@@ -78,7 +79,13 @@ function putJob(job: Record<string, unknown> = JOB, state: Record<string, unknow
   conn.close();
 }
 
-/** OpenClaw's receipt for a run of job-j, running. */
+function finish(runId: string): void {
+  const conn = db();
+  conn.prepare("UPDATE cron_run_receipts SET status = 'ok', finished_at_ms = ? WHERE request_run_id = ?").run(Date.now(), runId);
+  conn.close();
+}
+
+/** OpenClaw's receipt for a run of job-j: running until `finish`. */
 function receipt(runId: string, startedAt = Date.now()): void {
   const conn = db();
   conn
@@ -221,7 +228,17 @@ const CATEGORY: Record<string, string> = {
   exec: "runs_code_or_installer",
   web_fetch: "fetches_remote_content",
   read: "reads_local_data",
+  process: "runs_code_or_installer",
   message: "sends_data_off_host",
+};
+
+/** Run `n` of job-j's agent run as first seen at `ms` (its start when no receipt names one). */
+function startAt(n: number, ms: number, job = "job-j"): void {
+  new Store(stateDir).mergeRun(`r-cron-${job}-${n}`, { seenAtMs: ms });
+}
+const stored = () => {
+  const file = path.join(stateDir, "passes.json");
+  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).passes : [];
 };
 
 /** One call of `tool` in run `n` of `job`: each tool is a different action. */
@@ -386,6 +403,7 @@ test("a run whose end was not seen gets its end line when the next run holds", a
   const { r, ids } = await threeHolds();
   const [lead] = ids as [string, string, string];
   const before = notices(r).length;
+  startAt(2, Date.now() + 5_000);
   await groupCall(r, 2, "read", "c5");
   const sent = notices(r).slice(before);
   assert.equal(sent.length, 2, "the earlier run's end line, then the new run's notice");
@@ -415,4 +433,74 @@ test("a sub-agent of the run joins the run's group", async () => {
   assert.deepEqual(out, HELD);
   assert.equal(holds().find((h: any) => h.id === rec.hold.id).lead, first.rec.hold.id);
   assert.equal(notices(r).length, 1);
+});
+
+// ---- review findings ----------------------------------------------------------------------------------------
+
+test("calls of a lead answered before the end line are still listed, with no all", async () => {
+  const { r, ids } = await threeHolds();
+  const [lead, second, third] = ids as [string, string, string];
+  await r.command("sentrook-deny", lead);
+  await r.end(1);
+  const line = notices(r).at(-1)!;
+  assert.equal(line.split("\n")[0], passes.fill(GROUP.head!, { job: "job-j", n: "2", lead }));
+  assert.ok(line.includes(`- ${second}: `) && line.includes(`- ${third}: `), line);
+  assert.ok(!line.includes(passes.fill(GROUP.all!, { allow: "/sentrook-allow", lead })), "nothing leads them now");
+  assert.ok(holds().every((h: any) => h.listed), "listed on each hold");
+  await r.end(1);
+  assert.equal(notices(r).at(-1), line, "listed once");
+});
+
+test("passes from all serve only the started run", async () => {
+  const { r, ids } = await threeHolds();
+  const [lead, second] = ids as [string, string, string];
+  await r.end(1);
+  await r.command("sentrook-allow", `${lead} all`);
+  const byHold = Object.fromEntries(stored().map((p: any) => [p.hold_id, p]));
+  assert.equal(byHold[second].run_with, byHold[lead].id);
+  // the started run makes only the lead's call and ends: the listed call's pass ends with it
+  receipt("cron-request.started-1");
+  assert.equal((await groupCall(r, 2, "exec", "c0")).out, undefined);
+  await r.end(2);
+  finish("cron-request.started-1");
+  assert.deepEqual((await groupCall(r, 3, "web_fetch", "c1")).out, HELD, "a later run does not get a pass meant for the started run");
+  assert.deepEqual(stored(), []);
+});
+
+test("all waits for the next run when a listed call came after the run acted", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  const lead = (await groupCall(r, 1, "exec", "c0")).rec.hold.id;
+  // the run sends something that is allowed, then holds another call
+  reply = { risk: 10, enforced: null, tool_description: { category: "sends_data_off_host" } };
+  const sentOk = await r.call(1, { id: "cs" });
+  assert.equal(sentOk.out, undefined);
+  const { out } = await groupCall(r, 1, "web_fetch", "c1");
+  assert.deepEqual(out, HELD);
+  await r.end(1);
+  const answer = await r.command("sentrook-allow", `${lead} all`);
+  assert.deepEqual(cliCalls(), [], "a listed call came after the run sent something: nothing is started now");
+  assert.ok(answer.includes("next"), answer);
+  // the passes wait for the job's next run, with the lead's
+  assert.ok(stored().every((p: any) => !p.run_with && !p.run_bound), JSON.stringify(stored()));
+});
+
+test("a late call of an earlier run does not close the current run's group", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  const t1 = Date.now() - 60_000;
+  startAt(1, t1);
+  startAt(2, t1 + 30_000);
+  await groupCall(r, 1, "read", "c9");
+  await r.end(1);
+  const lead2 = (await groupCall(r, 2, "exec", "c0")).rec.hold.id;
+  await groupCall(r, 2, "web_fetch", "c1");
+  const before = notices(r).length;
+  // run 1 holds a late call while run 2 is still going
+  const { out } = await groupCall(r, 1, "process", "c7");
+  assert.deepEqual(out, HELD);
+  const head = GROUP.head!.split("{")[0]!;
+  assert.ok(!notices(r).slice(before).some((n) => n.includes(head) && n.includes(lead2)), notices(r).slice(before).join("\n---\n"));
+  await r.end(2);
+  assert.equal(notices(r).at(-1)!.split("\n")[0], passes.fill(GROUP.head!, { job: "job-j", n: "1", lead: lead2 }));
 });
