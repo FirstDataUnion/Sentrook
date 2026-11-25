@@ -218,14 +218,18 @@ def owner_attends(
 CHILD_PROMPT_PLATFORMS = ATTENDED_PLATFORMS | frozenset({"tui", "desktop"})
 
 
-def children_auto_approved(cfg: dict[str, Any]) -> bool:
-    """`delegation.subagent_auto_approve` is on: where nothing can show a sub-agent's prompt, Hermes's own callback
-    for the sub-agent's thread approves it, with nobody asked. A sub-agent never asks then: its reviews are held."""
+def children_auto_approved(cfg: dict[str, Any], env: dict[str, str] | None = None) -> bool:
+    """`delegation.subagent_auto_approve` is on, read as Hermes reads it (a string by its words, anything else by its
+    truth): where nothing can show a sub-agent's prompt, Hermes's own callback for the sub-agent's thread approves it,
+    with nobody asked. A sub-agent never asks then: its reviews are held. A config the plugin could not read, or one
+    Hermes is told to ignore (`HERMES_IGNORE_USER_CONFIG`), counts as on."""
+    if not cfg or _truthy(env or {}, "HERMES_IGNORE_USER_CONFIG"):
+        return True
     delegation = cfg.get("delegation")
     value = delegation.get("subagent_auto_approve") if isinstance(delegation, dict) else None
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
-    return value is True
+    return bool(value)
 
 
 def asks_for_children(

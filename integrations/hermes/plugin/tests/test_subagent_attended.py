@@ -35,6 +35,10 @@ def h(harness, monkeypatch):
     fake.reply = dict(NAMED)
     fake.facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(fake.facts))
+    # Hermes's config as the plugin reads it: sub-agent prompts not approved by Hermes itself
+    monkeypatch.setattr(
+        plugin, "hermes_config", lambda: {"delegation": {"subagent_auto_approve": False}}
+    )
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", OWNER)
     for k in ("HERMES_CRON_SESSION", "HERMES_YOLO_MODE"):
         monkeypatch.delenv(k, raising=False)
@@ -201,7 +205,26 @@ def test_a_deny_from_the_subagents_own_thread_is_nobodys_answer_and_falls_back_t
     assert res["decision"] == "held" and res["hold"]["id"]
 
 
-@pytest.mark.parametrize("value", [True, "true"])
+def test_a_deny_nobody_gave_is_not_the_owners_even_when_no_hold_can_be_made(h):
+    delegate(h, platform="tui", facts={"platform": "tui"})
+    out, _rec = child_send(h)
+    plugin._child_prompts.clear()  # asked before a restart: the plugin no longer has what a hold needs
+    answer(h, out, "deny", "sub-P1-1", surface="cli")
+    assert resolutions(h)[-1]["decision"] == "blocked"
+
+
+@pytest.mark.parametrize("config", [{}, None])
+def test_a_subagent_is_held_when_the_plugin_cannot_read_hermess_config(h, monkeypatch, config):
+    delegate(h)
+    if config is None:
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+    else:
+        monkeypatch.setattr(plugin, "hermes_config", lambda: config)
+    out, _rec = child_send(h)
+    assert out == HELD
+
+
+@pytest.mark.parametrize("value", [True, "true", 1])
 def test_a_subagent_is_held_when_hermes_approves_subagent_prompts_by_itself(h, monkeypatch, value):
     delegate(h)
     monkeypatch.setattr(

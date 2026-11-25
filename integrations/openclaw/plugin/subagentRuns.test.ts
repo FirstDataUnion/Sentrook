@@ -99,12 +99,12 @@ interface Parent {
 /** The owner's direct message on Telegram. */
 const OWNER_DM: Parent = { key: DM_KEY, trigger: "user", requester: { senderIsOwner: true, channel: "telegram", senderId: OWNER } };
 
-function registered() {
+function registered(pluginConfig: Record<string, unknown> = {}) {
   const on: Record<string, any[]> = {};
   const commands: Record<string, any> = {};
   const sent: any[] = [];
   plugin.register({
-    pluginConfig: {},
+    pluginConfig,
     registrationMode: "full",
     config: { tools: { exec: { mode: "full" } } },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
@@ -224,6 +224,15 @@ test("the owner's allow on such a hold lets the next matching call from a subage
 test("a strong signal with no owner pass is held with no pass offered, not asked", async () => {
   reply = { ...NAMED, owner_pass: null };
   const r = await withNotify();
+  await r.spawn(OWNER_DM, CHILD);
+  const { out, rec } = await r.childSend(CHILD);
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.decision, "held");
+});
+
+test("a subagent is held even when approval.scheduledIntentKinds leaves subagents out", async () => {
+  const r = registered({ approval: { scheduledIntentKinds: ["cron"] } });
+  await r.command("sentrook-notify", "here");
   await r.spawn(OWNER_DM, CHILD);
   const { out, rec } = await r.childSend(CHILD);
   assert.deepEqual(out, HELD);

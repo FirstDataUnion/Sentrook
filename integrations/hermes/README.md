@@ -451,8 +451,8 @@ server, cron, webhooks and A2A peers, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)).
 
 A subagent you start from your own direct message on a chat platform, the TUI or the desktop app is attended too:
-Hermes shows its approval prompt in that chat (also after your turn has ended, while the subagent still runs), and
-you answer it there as you would any other. A prompt nobody answers in time, one Hermes cannot show or withdraws,
+Hermes shows its approval prompt in that chat (on a chat platform also after your turn has ended, while the
+subagent still runs), and you answer it there as you would any other. A prompt nobody answers in time, one Hermes cannot show or withdraws,
 or one the subagent's own thread answers because no chat could show it, holds the call instead, bound to the chat
 that started the subagent. In the local terminal and over ACP Hermes answers a subagent's prompts itself, so there a
 subagent's reviews are held, and so they are everywhere while `delegation.subagent_auto_approve` is on (Hermes would

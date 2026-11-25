@@ -598,7 +598,7 @@ def _scan_one(
         if built["subagent"]
         and not loop_save
         and not background_run
-        and not children_auto_approved(host_cfg)
+        and not children_auto_approved(host_cfg, env)
         else None
     )
     in_parent_chat = parent_chat is not None and not is_unattended(
@@ -1923,6 +1923,8 @@ def on_post_approval_response(**kw: Any) -> None:
                 held = _child_prompt_fallback(cfg, traffic, store, str(review["request_id"]))
                 if held is not None:
                     final = "held"
+                elif unseen:
+                    final = "blocked"  # nobody was asked: not the owner's denial"
             else:
                 _child_prompts.pop(str(review["request_id"]), None)
         answer_key = str(kw.get("session_key") or "default")

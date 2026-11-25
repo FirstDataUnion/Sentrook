@@ -549,8 +549,8 @@ by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats a
 
 A subagent's review is held even when your own direct chat started it: OpenClaw (2026.11) refuses a plugin's
 approval request from a subagent's run, so no prompt could reach you there. The hold is bound to the chat that
-started the subagent (see below). If you remove `subagent` from `approval.scheduledIntentKinds`, a subagent's review
-asks instead, OpenClaw refuses that prompt, and the call is blocked with no hold.
+started the subagent (see below). This holds whatever `approval.scheduledIntentKinds` says: a prompt OpenClaw refuses
+would only block the call, with no hold and no notice.
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
 - You get one notice as a direct message. It says only that a call was held, which run (a cron job by its id, and
