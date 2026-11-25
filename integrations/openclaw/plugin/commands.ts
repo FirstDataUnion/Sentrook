@@ -35,6 +35,7 @@ import {
 } from "./history.ts";
 import { OWNER_ROUTES, refusal } from "./owner.ts";
 import * as report from "./report.ts";
+import * as runNow from "./runNow.ts";
 import { channelOf, chatKindOfTurn, PLUGIN_VERSION, sessionRef } from "./planir.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as setup from "./setup.ts";
@@ -62,6 +63,8 @@ export interface CommandContext {
   session?: string;
   /** The chat the command came from (channel, sender, account, thread); unset on the command line. */
   chat?: hold.NotifyContext;
+  /** How `allow` starts a held call's job again (runNow.ts); a test replaces it. */
+  runNow?: hold.RunNow;
   /** OpenClaw's config as it is now (its MCP servers), for `setup`. */
   hostConfig?: unknown;
   /** OpenClaw's state directory as the gateway started with it (its job store), for `setup`. */
@@ -182,11 +185,12 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   },
   allow: {
     command: "sentrook-allow",
-    args: "<id> [later|always]",
+    args: "<id> [now|later|always]",
     description:
-      "Answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: let it through once " +
-      "on the job's next run (later: the same), or with always for 30 days on that job, where the notice offers it; " +
-      "the held call is not run again",
+      "Answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: run the cron job again " +
+      "now, letting the call through once in that run (now: even when the held run had already sent or written " +
+      "something; later: on the job's next scheduled run instead), or with always for 30 days on that job, where the " +
+      "notice offers it; Sentrook never runs the held call itself",
     cliRest: true,
     run: (ctx, rest) => answerText(ctx, "allow", rest),
   },
@@ -333,7 +337,11 @@ async function answerText(ctx: CommandContext, verb: "allow" | "deny" | "approve
   if (!ctx.owner) return refusal(verb);
   const o = ctx.owner;
   const cfg = configOf(ctx);
-  const done = hold.answer(cfg.stateDir, verb, rest, o.by, new Date(), CMD, o.record, o.beforeWrite);
+  // allow on a cron job's hold starts the job again now, unless a guard applies (runNow.ts). OpenClaw's state
+  // directory as the gateway started with it, not from `.env`, which the agent can write.
+  const starter =
+    ctx.runNow ?? new runNow.Adapter(ctx.openclawDir ?? openclawDir(ctx.env), cfg.mode === "observe", runNow.runChild, runNow.openclawCommand(), cfg.stateDir);
+  const done = await hold.answer(cfg.stateDir, verb, rest, o.by, new Date(), CMD, o.record, o.beforeWrite, starter);
   if (done.decision) await hold.settle(cfg.stateDir, done.held, done.decision);
   return done.reply;
 }

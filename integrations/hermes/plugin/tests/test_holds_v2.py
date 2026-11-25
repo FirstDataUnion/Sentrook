@@ -83,17 +83,18 @@ DECLINED = {"action": "block", "message": FIXTURES["declined_text"]}
 
 
 def test_allow_lets_the_jobs_next_run_make_the_same_send_once(h):
+    """With no job in Hermes's job file nothing is started (`test_run_now`): the pass waits for the next run."""
     out, rec = run(h, 1)
     assert out == HELD
     hid = rec["hold"]["id"]
     assert rec["hold"]["offers"] == [
         "allow",
+        "allow later",
         "deny",
     ]  # the scanner offers it once: never always
     reply = slash(h, f"allow {hid}")
-    assert reply.startswith(
-        "Job job-j may make this call once: on its next run, or if the held run retries it."
-    )
+    assert reply.startswith("Job job-j may make this call once, on its next scheduled run, until ")
+    assert "It was not run again now: the job no longer exists." in reply
     [p] = stored_passes(h)
     assert (p["kind"], p["uses"], p["level"], p["job_id"]) == ("allow", "once", "once", "job-j")
     assert holds(h) == []
@@ -105,12 +106,11 @@ def test_allow_lets_the_jobs_next_run_make_the_same_send_once(h):
     assert out == HELD and rec["decision"] == "held"
 
 
-def test_allow_later_is_the_same_until_the_plugin_can_start_the_run(h):
+def test_allow_later_waits_for_the_jobs_next_run(h):
     _out, rec = run(h, 1)
     reply = slash(h, f"allow {rec['hold']['id']} later")
-    assert reply.startswith(
-        "Job job-j may make this call once: on its next run, or if the held run retries it."
-    )
+    assert reply.startswith("Job job-j may make this call once, on its next scheduled run, until ")
+    assert "not run again now" not in reply
     assert run(h, 2)[0] is None
 
 
@@ -118,7 +118,7 @@ def test_allow_always_lets_three_later_runs_through_and_counts_them(h):
     h.reply = dict(ALWAYS)
     _out, rec = run(h, 1)
     hid = rec["hold"]["id"]
-    assert rec["hold"]["offers"] == ["allow", "allow always", "deny"]
+    assert rec["hold"]["offers"] == ["allow", "allow later", "allow always", "deny"]
     reply = slash(h, f"allow {hid} always")
     [p] = stored_passes(h)
     assert reply.startswith("Job job-j may make this call until ")
@@ -263,7 +263,7 @@ def test_two_stores_of_one_directory_share_a_sessions_lock(tmp_path):
 def test_a_call_that_names_nothing_is_offered_allow_once_bound_to_its_arguments(h):
     h.reply = {**ALWAYS, "approval_fingerprint": "afp1:message_send"}
     _out, rec = run(h, 1)
-    assert rec["hold"]["offers"] == ["allow", "deny"]
+    assert rec["hold"]["offers"] == ["allow", "allow later", "deny"]
     assert "names nothing" in slash(h, f"allow {rec['hold']['id']} always")
     slash(h, f"allow {rec['hold']['id']}")
     # run 2 sends other words ("Daily brief 2"): other arguments, so it is held
@@ -322,9 +322,9 @@ def test_a_non_owner_is_refused(h, monkeypatch, verb):
 @pytest.mark.parametrize(
     ("raw", "reply"),
     [
-        ("allow", "usage: /sentrook allow <id> [later|always]"),
-        ("allow h-zzzzzz", "usage: /sentrook allow <id> [later|always]"),
-        ("allow h-1a2b3c sometimes", "usage: /sentrook allow <id> [later|always]"),
+        ("allow", "usage: /sentrook allow <id> [now|later|always]"),
+        ("allow h-zzzzzz", "usage: /sentrook allow <id> [now|later|always]"),
+        ("allow h-1a2b3c sometimes", "usage: /sentrook allow <id> [now|later|always]"),
         ("deny h-1a2b3c always", "usage: /sentrook deny <id>"),
         ("deny p-1a2b3c", "usage: /sentrook deny <id>"),
         (

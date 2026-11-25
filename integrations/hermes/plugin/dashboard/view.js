@@ -796,17 +796,21 @@
       var answers = offers
         ? offers.map(function (o) {
             if (o === "allow") {
-              return onJob
-                ? command(cmd("allow") + " " + h.id, "Let this call through once, on the job's next run.")
-                : command(cmd("allow") + " " + h.id, "Let this exact call through once, within 7 days.");
+              if (!onJob) return command(cmd("allow") + " " + h.id, "Let this exact call through once, within 7 days.");
+              // with "allow now" offered, the held run had already sent or written something: allow waits
+              return offers.indexOf("allow now") >= 0
+                ? command(cmd("allow") + " " + h.id, "Let this call through once, on the job's next scheduled run.")
+                : command(cmd("allow") + " " + h.id, "Run the job again now, letting this call through once.");
             }
+            if (o === "allow later") return command(cmd("allow") + " " + h.id + " later", "Let it through once on the job's next scheduled run instead.");
+            if (o === "allow now") return command(cmd("allow") + " " + h.id + " now", "Run the whole job again now, repeating what it already sent or wrote.");
             if (o === "allow always") return command(cmd("allow") + " " + h.id + " always", "Let this job make this call for 30 days.");
             return command(cmd("deny") + " " + h.id, "Refuse it on this job for 30 days, with no more notices.");
           })
         : [command(cmd("approve") + " " + h.id, "Approve within 24 hours of the hold.")];
       var help = offers
         ? offers.length
-          ? "Answer within 7 days of the hold; the held call itself does not run again. " + cmd("passes") + " lists what your answers set."
+          ? "Answer within 7 days of the hold. Sentrook never runs the held call itself: allow runs the job again. " + cmd("passes") + " lists what your answers set."
           : "Sentrook offers no way to let this call through. Leave it and it expires; the call never runs."
         : h.grant
           ? "Approving sets this grant for 30 days, so the next run is allowed: " + h.grant + ". The held call itself does not run again."
@@ -849,7 +853,7 @@
     var cmd = cmdOf(model);
     var state = model.state || {};
     return howto("Passes and denials", firstLine(state.passes), [
-      el("p", { text: "Your answers to held calls. A pass lets one cron job make the call it was held for: once, on the job's next run, or for 30 days with allow always. A denial refuses it on that job for 30 days, with no more notices. A pass never covers a call that scores higher, carries a new warning, involves another party, or that Sentrook enforces." }),
+      el("p", { text: "Your answers to held calls. A pass lets one cron job make the call it was held for: once, in the run allow started or on the job's next run, or for 30 days with allow always. A denial refuses it on that job for 30 days, with no more notices. A pass never covers a call that scores higher, carries a new warning, involves another party, or that Sentrook enforces." }),
       el("pre", { class: "srk-pre", text: state.passes || "–" }),
       el("div", { class: "srk-cmds" }, [
         command(cmd("passes"), "List passes and denials, with their use counts."),

@@ -19,6 +19,8 @@ provides_hooks:
   - pre_tool_call
   - post_tool_call
   - post_approval_response
+  # the end of a cron run the plugin started for an owner's allow: the owner's outcome line
+  - on_session_end
 # The agent's read-only setup report, and its setup proposal (items for the owner's /sentrook setup screen; it sets
 # nothing). Hermes turns plugin toolsets on everywhere; the plugin's own pre_tool_call refuses both outside the
 # owner's own direct chat.

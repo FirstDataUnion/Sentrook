@@ -10,9 +10,14 @@ process with no terminal. There the plugin holds the call:
   offers. Hermes copies what `send_message` sends into the agent's own transcript, so the notice carries
   nothing a steered agent could use; the owner reads the risk, reasons and suggested grant with `why <id>`;
 - the owner answers within 7 days (`answer`):
-  - `allow <id>` (also `allow <id> later`): a one-use pass for this job and action, used by the job's next
-    run (`passes`). The held call itself is not run again. Until the plugin can start the job's run itself,
-    both forms wait for the next run; `_run_now` is where that will plug in.
+  - `allow <id>`: a one-use pass for this job and action, bound to a new run of the job, which the plugin starts
+    now (`run_now`). The held call itself is never run by the plugin: the job runs again, and the same call goes
+    through once in that run. When the run ends, the owner gets one line saying what happened (`passes.outcome_text`).
+    Nothing is started, and the pass waits for the job's next run, when the job cannot be started now (the reply says
+    why: observe mode, the job gone, finished, paused, running or changed since the hold), or when the held run had
+    already sent or written something before the held call (`acted`): a new run would do that again, so only
+    `allow <id> now` starts it then. A hold is answered once, so it starts at most one run.
+  - `allow <id> later`: the same pass, for the job's next run; nothing is started.
   - `allow <id> always`: a standing pass for this job and action, for 30 days. Offered only when the scan's
     `owner_pass` is `always` and the call names its parties.
   - `deny <id>`: a standing denial for this job and action, for 30 days. A matching call is refused with a
@@ -163,10 +168,14 @@ def where_text(
 
 #: The notice's line for each answer a hold offers; `{c}` is the command, `{id}` the hold's id.
 _OFFER_LINES = {
-    passes.ALLOW: "- let this call through once, on the job's next run: {c} {id}",
+    passes.ALLOW: "- run the job again now, letting this call through once: {c} {id}",
+    passes.ALLOW_LATER: "- let it through once on the job's next scheduled run instead: {c} {id} later",
+    passes.ALLOW_NOW: "- run the whole job again now, repeating what it already sent or wrote: {c} {id} now",
     passes.ALLOW_ALWAYS: "- let this job make this call for 30 days: {c} {id} always",
     passes.DENY: "- refuse it on this job for 30 days, with no more notices: {c} {id}",
 }
+#: `allow` on a hold whose run had already acted: it waits for the next run (`allow now` starts one).
+_NEXT_RUN_LINE = "- let this call through once, on the job's next scheduled run: {c} {id}"
 #: A hold that is not on a cron job: `allow` is bound to the exact call.
 _EXACT_LINE = "- let this exact call through once, within 7 days: {c} {id}"
 
@@ -195,7 +204,13 @@ def notice_text(
     if offers:
         lines.append("Reply within 7 days:")
         for verb in offers:
-            line = _EXACT_LINE if verb == passes.ALLOW and not on_job else _OFFER_LINES[verb]
+            line = (
+                _EXACT_LINE
+                if verb == passes.ALLOW and not on_job
+                else _NEXT_RUN_LINE
+                if verb == passes.ALLOW and passes.ALLOW_NOW in offers
+                else _OFFER_LINES[verb]
+            )
             lines.append(line.format(c=cmd("deny" if verb == passes.DENY else "allow"), id=hold_id))
     else:
         lines.append("Sentrook offers no way to let this call through.")
@@ -285,9 +300,15 @@ def create(
     level: str | None = None,
     offers: list[str] | None = None,
     description: str = "",
+    job_digest: str | None = None,
+    acted: bool = False,
+    run_key: str | None = None,
 ) -> tuple[str | None, bool]:
     """Stores a new hold, or counts a repeat of a waiting one (`_repeat_of`); returns its id (None when the file
-    cannot be read: the call is still held, but cannot be answered) and whether it was a repeat (no new notice)."""
+    cannot be read: the call is still held, but cannot be answered) and whether it was a repeat (no new notice).
+    `job_digest`: the job's settings as `run_now.digest` gives them; `acted`: the held run had sent or written
+    something before the held call; `run_key`: the held run, which never counts as one started for an answer. A
+    repeat keeps the first notice's digest, takes the latest run, and has acted when any of its runs had."""
     store = Store(state_dir)
     ref = passes.job_ref(job_id)
     match = match or {}
@@ -304,6 +325,10 @@ def create(
             same["held"] = [*(same.get("held") or []), {"sid": sid, "request_id": request_id}][
                 -MAX_HELD:
             ]
+            # the job as it was at the first notice (unreadable then: unknown for good), so an edit since still
+            # counts as a change
+            same["run_key"] = run_key
+            same["acted"] = bool(same.get("acted")) or acted
             store.save_holds(data)
             return str(same["id"]), True
         taken = {h.get("id") for h in data["holds"] if isinstance(h, dict)}
@@ -331,6 +356,9 @@ def create(
                 "expires_at": _iso(now + HOLD_TTL),
                 "hint": hint,
                 "notice": notice,
+                "job_digest": job_digest,
+                "acted": acted,
+                "run_key": run_key,
             }
         )
         data["holds"] = data["holds"][-MAX_HOLDS:]
@@ -404,10 +432,60 @@ def _approve_v1(
     return f"Approved {hid}. {reply} The held call is not run again; the next run is scanned with this grant."
 
 
-def _run_now(found: dict[str, Any]) -> str | None:
-    """Starts the held call's job again now, for `allow`; returns None when it did, else why not (then the pass
-    waits for the job's next run). This plugin does not start runs yet: every `allow` waits."""
-    return "not available"
+#: Why `allow` did not start the job now (`run_now`); the shared fixture's `run_now.reasons`.
+RUN_NOW_REASONS = {
+    "observe": "Sentrook is in observe mode",
+    "unknown": "Sentrook could not read the job, so it cannot check that the job is unchanged since the hold",
+    "missing": "the job no longer exists",
+    "paused": "the job is paused",
+    "terminal": "the job has finished and is not scheduled to run again",
+    "running": "the job is running now, or a run started for an earlier answer has not finished",
+    "changed": "the job was changed since the call was held",
+    "acted": "the held run had already sent or written something before this call, and a new run would do it again",
+    "unavailable": "Sentrook cannot start the job from here",
+    "failed": "starting it failed",
+}
+#: The owner's reply to `allow` on a cron job's hold; the shared fixture's `run_now.replies`.
+RUN_NOW_REPLIES = {
+    "started": "Running job {job} again now; this call will be let through once in that run. Undo: {passes} revoke {pass}.",
+    "started_now": (
+        "Running job {job} again now; this call will be let through once in that run. The whole job runs again, so "
+        "what it already sent or wrote before this call happens again. Undo: {passes} revoke {pass}."
+    ),
+    "later": (
+        "Job {job} may make this call once, on its next scheduled run, until {until}. Sentrook does not run the held "
+        "call itself. Undo: {passes} revoke {pass}."
+    ),
+    "fallback": (
+        "Job {job} may make this call once, on its next scheduled run, until {until}. It was not run again now: "
+        "{reason}. Undo: {passes} revoke {pass}."
+    ),
+}
+#: The owner's line when a run started for an answer ends; the shared fixture's `run_now.outcomes`.
+OUTCOMES = {
+    "passed": "Sentrook: cron job {job} ran again, and the call you allowed went through once.",
+    "passed_held": (
+        "Sentrook: cron job {job} ran again, and the call you allowed went through once. It also made a different "
+        "call, held as {hold}."
+    ),
+    "held": (
+        "Sentrook: cron job {job} ran again but did not make the call you allowed; it made a different call, held "
+        "as {hold}."
+    ),
+    "none": "Sentrook: cron job {job} ran again without using your answer.",
+}
+
+
+class RunNow:
+    """What `answer` needs to start a held call's job again (`run_now.Adapter` on Hermes): `guard(hold)`, why it may
+    not be started now or None; `start(hold)`, (started, the host's run id or None, why not: `unavailable` when this
+    process has no way to start it)."""
+
+    def guard(self, hold: dict[str, Any]) -> str | None:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def start(self, hold: dict[str, Any]) -> tuple[bool, str | None, str]:  # pragma: no cover
+        raise NotImplementedError
 
 
 def _refusal(found: dict[str, Any], want: str, hid: str, cmd: Cmd) -> str:
@@ -435,7 +513,7 @@ def _refusal(found: dict[str, Any], want: str, hid: str, cmd: Cmd) -> str:
     if level != "always":
         return (
             "Not set: Sentrook offers to let this call through on every run only when it judges that safe, "
-            f"and for this one it offers it once. {cmd('allow')} {hid} lets it through on the job's next run."
+            f"and for this one it offers it once. {cmd('allow')} {hid} lets it through once."
         )
     match = found.get("match") or {}
     if not match.get("named"):
@@ -474,17 +552,20 @@ def _settle_history(state_dir: Path, held: list[Any], decision: str) -> None:
             logger.warning("sentrook could not update a held call's history: %s", exc)
 
 
-def _parse(verb: str, rest: str) -> tuple[str, str] | None:
-    """(hold id, answer) from `allow <id> [later|always]`, `approve <id>` or `deny <id>`; None when malformed."""
+def _parse(verb: str, rest: str) -> tuple[str, str, str] | None:
+    """(hold id, answer, mode) from `allow <id> [now|later|always]`, `approve <id>` or `deny <id>`; None when
+    malformed. The mode is `now`, `later` or "" for an `allow` once."""
     words = rest.split()
     if not words or not _ID.fullmatch(words[0]):
         return None
     if verb == "deny":
-        return (words[0], passes.DENY) if len(words) == 1 else None
+        return (words[0], passes.DENY, "") if len(words) == 1 else None
     mode = words[1].lower() if len(words) > 1 else ""
-    if len(words) > 2 or mode not in ("", "later", "once", "always"):
+    if len(words) > 2 or mode not in ("", "now", "later", "once", "always"):
         return None
-    return words[0], passes.ALLOW_ALWAYS if mode == "always" else passes.ALLOW
+    if mode == "always":
+        return words[0], passes.ALLOW_ALWAYS, ""
+    return words[0], passes.ALLOW, "" if mode == "once" else mode
 
 
 def answer(
@@ -495,17 +576,22 @@ def answer(
     now: datetime,
     cmd: Cmd,
     record: Record,
+    run_now: RunNow | None = None,
 ) -> str:
-    """`allow <id> [later|always]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers,
-    removes the hold and records the answer; the reply says what was set and how to undo it."""
+    """`allow <id> [now|later|always]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers,
+    removes the hold and records the answer; the reply says what was set and how to undo it. On a cron job's hold,
+    `allow` also starts the job again now through `run_now` unless a guard applies (see the module note)."""
     parsed = _parse(verb, rest)
     if parsed is None:
         form = {
             "deny": f"{cmd('deny')} <id>",
             "approve": f"{cmd('approve')} <id>",
-        }.get(verb, f"{cmd('allow')} <id> [later|always]")
+        }.get(verb, f"{cmd('allow')} <id> [now|later|always]")
         return f"usage: {form}, with the id from Sentrook's notice (h- and 6 hex digits)"
-    hid, want = parsed
+    hid, want, mode = parsed
+    #: Whether this answer starts the job again now, else why not (None: not asked to, `later` or not a job).
+    start = False
+    why_not: str | None = None
     store = Store(state_dir)
     entry: dict[str, Any] | None = None
     with _LOCK, file_lock(state_dir / "holds.json"):
@@ -540,6 +626,15 @@ def answer(
             if gone:
                 store.save_holds(data)
             return _refusal(found, want, hid, cmd)
+        if want == passes.ALLOW and found.get("job_ref") and mode != "later":
+            try:
+                why_not = run_now.guard(found) if run_now is not None else "unavailable"
+            except Exception as exc:  # noqa: BLE001 - not started; the pass waits
+                logger.warning("sentrook could not check the held call's job: %s", exc)
+                why_not = "unknown"
+            if why_not is None and found.get("acted") and mode != "now":
+                why_not = "acted"
+            start = why_not is None
         # The hold is marked answered first, so a failure never leaves two passes for one answer.
         data["holds"].remove(found)
         try:
@@ -556,6 +651,7 @@ def answer(
                 hold=found,
                 who=who,
                 now=now,
+                run_bound=start,
             )
         except Exception as exc:  # noqa: BLE001 - the hold goes back
             failed = _clean(exc, 160)
@@ -614,11 +710,59 @@ def answer(
             f"The next identical call from an unattended run may go through once, until {shown}. Sentrook "
             f"does not run the held call itself. {undo}"
         )
-    _run_now(found)  # the seam for starting the job now; until then the pass waits for the next run
-    return (
-        f"{job} may make this call once: on its next run, or if the held run retries it. Sentrook does not "
-        f"run the held call itself. {undo}"
-    )
+    if start and run_now is not None:
+        try:
+            started, run_id, failed = run_now.start(found)
+        except Exception as exc:  # noqa: BLE001 - not started; the pass waits
+            started, run_id, failed = False, None, _clean(exc, 200)
+        try:
+            if started:
+                passes.started(state_dir, entry["id"], run_id)
+            else:
+                passes.not_started(state_dir, entry["id"])
+        except Exception as exc:  # noqa: BLE001 - the pass stands as set
+            logger.warning("sentrook could not record the run started for %s: %s", hid, exc)
+        if not started:
+            # a guard reason the host itself gave, `unavailable`, or else a failure
+            why_not = failed if failed != "failed" and failed in RUN_NOW_REASONS else "failed"
+        record(
+            {
+                "kind": "run_now",
+                "op": "start",
+                "hold_id": hid,
+                "pass_id": entry["id"],
+                "job_ref": entry.get("job_ref"),
+                "started": started,
+                **({"run_id": run_id} if run_id else {}),
+                **({"reason": why_not, "detail": _clean(failed, 200)} if not started else {}),
+                "by": who,
+            }
+        )
+    elif why_not is not None:
+        record(
+            {
+                "kind": "run_now",
+                "op": "start",
+                "hold_id": hid,
+                "pass_id": entry["id"],
+                "job_ref": entry.get("job_ref"),
+                "started": False,
+                "reason": why_not,
+                "by": who,
+            }
+        )
+    fields = {
+        "job": _clean(found.get("job_id"), 40),
+        "pass": entry["id"],
+        "passes": cmd("passes"),
+        "until": shown,
+    }
+    if start and why_not is None:
+        kind = "started_now" if found.get("acted") else "started"
+        return RUN_NOW_REPLIES[kind].format(**fields)
+    if why_not is None:
+        return RUN_NOW_REPLIES["later"].format(**fields)
+    return RUN_NOW_REPLIES["fallback"].format(**fields, reason=RUN_NOW_REASONS[why_not])
 
 
 def find(state_dir: Path, hold_id: str) -> dict[str, Any] | None:

@@ -69,7 +69,8 @@ since the version the catalog pins.
 - **Held calls: every answer now does something.** Before, `/sentrook approve <id>` only set the grant Sentrook
   suggested, and on scheduled runs it never suggests one, so approving set nothing and the job was held again the next
   day. A hold on a cron job now offers, in its notice, only the answers that apply:
-  - `/sentrook allow <id>`: the job's next run may make the same call once (`allow <id> later` does the same).
+  - `/sentrook allow <id>`: the job runs again now and may make the same call once in that run (see below);
+    `allow <id> later` lets the job's next scheduled run make it once instead.
   - `/sentrook allow <id> always`: the job may make the same call for 30 days, with a use count. Offered only when
     the scan's `owner_pass` says the call may be let through for good and the call names its parties. A scan with
     no `owner_pass` (a scanner that predates it) offers no pass at all: only `deny`.
@@ -84,6 +85,17 @@ since the version the catalog pins.
   that names nothing is matched on its exact arguments and offered `allow` once only. A hold on a run that is not a
   cron job offers only `allow`, bound to the exact arguments, for 7 days. Answering never sets the suggested grant:
   `/sentrook why <id>` shows its command.
+- **`allow` runs the job again now.** On a held call of a cron job, `/sentrook allow <id>` sets a one-use pass bound
+  to a new run of the job and starts it at once with `hermes cron run <job>` through Hermes's `hermes` launcher (in a
+  process of its own; Hermes's `cron.jobs.trigger_job` where the launcher is missing), with no extra prompt. The held
+  call is never run by the plugin. The pass serves only that run: the job's first run that starts after the answer,
+  other than the held run. When it ends (`on_session_end`, else the job's next scan), the owner gets one line: the
+  call went through, the run did not make it, or it made a different call (held as `h-…`); a pass that run did not
+  use ends with it. One run per hold. Nothing is started, and the pass waits for the next scheduled run, when the job
+  is gone, finished, paused, running, or changed since the hold (a digest of its settings is kept on the hold), or in
+  observe mode; the reply says which. When the held run had already sent or written something before the held call,
+  plain `allow` waits for the next run and the notice offers `/sentrook allow <id> now`, which starts the whole job
+  again with a warning that it repeats what it did. The command's output goes to `run-now.log` in the state folder.
 - **Holds** can be answered for 7 days (was 24 hours). A repeat of a waiting hold (same job and call, no higher
   risk, no new warning) updates it and sends no new notice; `status` and `why` say how many times it was held.
   `holds.json` is version 2 and keeps no raw arguments; holds stored before stay answerable as before until they
