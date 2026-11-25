@@ -23,12 +23,24 @@ from typing import Any
 _BASENAME_PREFIX = r"(?<![A-Za-z0-9_])"
 
 #: ...and must not run into a longer word either. `.` and `-` are allowed after, on purpose:
-#: `id_rsa.pub`, `.env.local` and `credentials-draft` are all the sensitive thing. `shadowsocks`
-#: and `credentials_backup` do not match.
+#: `id_rsa.pub`, `.env.local` and `id_rsa-old` are all the sensitive thing. `id_rsa_backup` does
+#: not match. Word basenames (`credentials`, `shadow`) are stricter, see `_WORD_SUFFIX`.
 _BASENAME_SUFFIX = r"(?![A-Za-z0-9_])"
 
+#: A *word* basename is also an ordinary word ("credentials", "shadow"), so in free text it counts only where it
+#: reads as a file name: right after a path separator, a quote, one of `=@<>{,:` (`-d @credentials`, `< credentials`,
+#: `{credentials,config}`, `host:credentials`), or at the very start, optionally with a leading dot (`.credentials`,
+#: which may also follow a space). Prose ("the account credentials, not") and attribute access in code
+#: (`self.credentials`) have none of these. A whole shell argument (`cat credentials`) is tested on its own, so it
+#: starts the text (`path_classes.derive_path_roles`).
+_WORD_PREFIX = r"(?:(?<=[/\\'\"`=@<>{,:])\.?|(?<=<\s)\.?|(?<![\s\S])\.?|(?<=\s)\.)"
+
+#: ...and is the whole name or its stem: `credentials.json` and `credentials/` count, `credentials-guide.md` and
+#: `credentials_backup` are other files.
+_WORD_SUFFIX = r"(?![A-Za-z0-9_-])"
+
 #: Keys that make a mapping in the YAML a path group.
-GROUP_KEYS = frozenset({"patterns", "basenames", "includes"})
+GROUP_KEYS = frozenset({"patterns", "basenames", "words", "includes"})
 
 
 def basename_pattern(basename: str) -> str:
@@ -40,6 +52,11 @@ def basename_pattern(basename: str) -> str:
     return _BASENAME_PREFIX + re.escape(basename) + _BASENAME_SUFFIX
 
 
+def word_pattern(word: str) -> str:
+    """Regex source matching `word` as a file or directory name, not as a word in prose (`_WORD_PREFIX`)."""
+    return _WORD_PREFIX + re.escape(word) + _WORD_SUFFIX
+
+
 def _alternation(fragments: list[str]) -> str:
     """Join into one non-capturing group (embeddable inside a larger pattern without renumbering
     groups). An empty group compiles to a pattern that never matches."""
@@ -48,18 +65,25 @@ def _alternation(fragments: list[str]) -> str:
 
 @dataclass(frozen=True)
 class PathList:
-    """One named group of path patterns, plus optional literal basenames."""
+    """One named group of path patterns, plus optional literal basenames and word basenames."""
 
     name: str
     patterns: tuple[str, ...]
     basenames: tuple[str, ...]
+    words: tuple[str, ...] = ()
 
     @cached_property
     def fragment(self) -> str:
         """Regex *source* for this group — embeddable, never anchored. Cached: the hot path reads it
         once per group per call, and reassembling a ~1 kB alternation costs more than matching
         `ls -la` against it."""
-        return _alternation([*self.patterns, *(basename_pattern(b) for b in self.basenames)])
+        return _alternation(
+            [
+                *self.patterns,
+                *(basename_pattern(b) for b in self.basenames),
+                *(word_pattern(w) for w in self.words),
+            ]
+        )
 
     @cached_property
     def regex(self) -> re.Pattern[str]:
@@ -67,7 +91,7 @@ class PathList:
 
     @property
     def empty(self) -> bool:
-        return not self.patterns and not self.basenames
+        return not self.patterns and not self.basenames and not self.words
 
     def search(self, subject: str) -> bool:
         return bool(self.regex.search(subject))
@@ -82,6 +106,7 @@ def _leaf(name: str, raw: dict[str, Any]) -> PathList:
         name=name,
         patterns=tuple(str(p) for p in raw.get("patterns") or ()),
         basenames=tuple(str(b) for b in raw.get("basenames") or ()),
+        words=tuple(str(w) for w in raw.get("words") or ()),
     )
 
 
@@ -116,6 +141,9 @@ def compile_groups(raw: dict[str, Any]) -> dict[str, PathList]:
                     ),
                     basenames=tuple(
                         dict.fromkeys([*own.basenames, *(b for g in included for b in g.basenames)])
+                    ),
+                    words=tuple(
+                        dict.fromkeys([*own.words, *(w for g in included for w in g.words)])
                     ),
                 )
     if pending:
