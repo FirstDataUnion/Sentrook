@@ -285,9 +285,28 @@ _DENIED_NAMES = frozenset(
         "user.md",
         "tools.md",
         "heartbeat.md",
+        "cmakelists.txt",
+        "lefthook.json",
+        "nodemon.json",
+        "project.json",
+        "kernel.json",
+        "keybindings.json",
     }
 )
-_DENIED_WORDS = ("settings", "config", "mcp", "hooks", "requirements", "constraints")
+_DENIED_WORDS = (
+    "settings",
+    "config",
+    "mcp",
+    "hooks",
+    "requirements",
+    "constraints",
+    # agent instruction files and their variants (`CLAUDE.local.md`, `AGENTS.override.md`)
+    "claude",
+    "agents",
+    "gemini",
+    "hermes",
+    "skill",
+)
 #: Calls that write a file at their path argument.
 _WRITE_CALLS = frozenset({"write_text", "write_bytes", "write_file", "patch"})
 #: Extensions of files a write may create: data, never read as code or configuration.
@@ -464,8 +483,8 @@ def _plain_keys(values: list[tuple[str, bool]] | None) -> bool:
 
 def _harmless_opaque(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str | None:
     """The few forms of an opaque builtin that change nothing: `__import__("re")` of a local module (returns
-    `import:re`), `"k" in globals()` and `globals().get("k")` (`read`), and `exec(open("/dev/null").read())`
-    (`noop`). None for any other use."""
+    `import:re`), `"k" in globals()` (`read`), and `exec(open("/dev/null").read())` (`noop`). None for any
+    other use: `globals().get(k)` hands back any global, the interpreter's builtins included."""
     call = parents.get(node)
     if not (isinstance(call, ast.Call) and call.func is node):
         return None
@@ -476,6 +495,7 @@ def _harmless_opaque(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str | N
                 isinstance(arg, ast.Constant)
                 and isinstance(arg.value, str)
                 and arg.value in _LOCAL_MODULES
+                and "." not in arg.value  # `__import__("os.path")` returns `os`
                 and arg.value not in _RESTRICTED
                 and arg.value != "__future__"
             ):
@@ -489,10 +509,6 @@ def _harmless_opaque(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str | N
             and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
         ):
             return "read"
-        if isinstance(parent, ast.Attribute) and parent.attr == "get":
-            outer = parents.get(parent)
-            if isinstance(outer, ast.Call) and outer.func is parent:
-                return "read"
         return None
     if node.id == "exec" and len(call.args) == 1 and not call.keywords:
         read = call.args[0]
@@ -725,8 +741,10 @@ class _Reader:
         if not (isinstance(call, ast.Call) and call.func is node and not call.args):
             return None
         sub = self.parents.get(call)
-        if not (isinstance(sub, ast.Subscript) and sub.value is call):
-            return None
+        if not (
+            isinstance(sub, ast.Subscript) and sub.value is call and isinstance(sub.ctx, ast.Store)
+        ):
+            return None  # `globals()["run"]` read back is whatever an earlier program left
         key = sub.slice
         if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
             return None
@@ -801,8 +819,11 @@ class _Reader:
 
     def _write_allowed(self, path: ast.expr) -> bool:
         """A data file outside dot-directories whose name is not on the deny list (`_DENIED_NAMES`). Parts of
-        the path the program computes are unknown: the known start and end must pass, and a name the program
-        completes must not be able to end as a denied one."""
+        the path the program computes are unknown: the known start and end must pass, a name the program
+        completes must not be able to end as a denied one, and no string anywhere in the path (a middle
+        `join` argument, a `/` operand) may name a dot-directory."""
+        if not self._no_dot_parts(path, frozenset()):
+            return False
         exact = self._values(path, frozenset())
         if exact is not None and all(e for _, e in exact):
             return all(_allowed_path(t, t) for t, _ in exact)
@@ -813,6 +834,33 @@ class _Reader:
         return all(_allowed_path(p, None) for p in prefixes or [""]) and all(
             _allowed_path(None, t) for t in suffixes
         )
+
+    def _no_dot_parts(self, expr: ast.expr, seen: frozenset[str]) -> bool:
+        """No string in `expr` (or in what the names in it are set to) has a part starting with a dot, other
+        than `.`, `..` and the code tool's scratch space."""
+        self._parents_of_path = {
+            child: node for node in ast.walk(expr) for child in ast.iter_child_nodes(node)
+        }
+        for node in ast.walk(expr):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                text = _SCRATCH_DOT_DIR.sub("/scratch/", node.value)
+                parts = text.split("/")
+                last = parts[-1]
+                parent = self._parents_of_path.get(node)
+                appended = (
+                    isinstance(parent, ast.BinOp)
+                    and isinstance(parent.op, ast.Add)
+                    and parent.right is node
+                ) or isinstance(parent, ast.JoinedStr)
+                if appended and len(parts) == 1 and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", last):
+                    continue  # an extension added to a computed name (`k + ".json"`): the name rules judge it
+                if any(p.startswith(".") and p not in (".", "..") for p in parts):
+                    return False
+            elif isinstance(node, ast.Name) and node.id not in seen:
+                for b in self.bindings.get(node.id) or []:
+                    if b is not None and not self._no_dot_parts(b, seen | {node.id}):
+                        return False
+        return True
 
     def _path_suffixes(self, expr: ast.expr, seen: frozenset[str]) -> list[str] | None:
         """The known end of each value the path `expr` can take."""
@@ -1693,8 +1741,10 @@ def _plain_globals_key(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str |
     if not (isinstance(call, ast.Call) and call.func is node and not call.args):
         return None
     sub = parents.get(call)
-    if not (isinstance(sub, ast.Subscript) and sub.value is call):
-        return None
+    if not (
+        isinstance(sub, ast.Subscript) and sub.value is call and isinstance(sub.ctx, ast.Store)
+    ):
+        return None  # `globals()["run"]` read back is whatever an earlier program left
     key = sub.slice
     if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
         return None
