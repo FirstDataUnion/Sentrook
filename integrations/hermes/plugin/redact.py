@@ -37,6 +37,12 @@ _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
 # The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
 # `(token=X)`), so one secret gets one placeholder however the sentence around it goes on.
 _VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
+# A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote,
+# another separator or another key (`?password=X&page=2`, `a=1,b=2`, `cmd; next`, `X&&next`), after code's closing
+# bracket (`getToken();`) and before an HTML `&amp;`; anywhere else they are part of it (`password=Tr0ub4dor&3`).
+_VALUE_CHAR = r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'&,;<>`\\])(?!amp;|[A-Za-z_][A-Za-z0-9_.-]{0,40}[=:]))"
+# Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value.
+_NOT_A_PORT = r"(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\s\"'&,;<>`\\]))"
 # A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -468,13 +474,21 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     (
         # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
         # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
-        # escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside.
+        # escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside, and
+        # `&`, `,` and `;` end the value only where `_VALUE_CHAR` says (`password=Tr0ub4dor&3` is one value).
         "credential",
         re.compile(
-            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:[^\s\"'&,;<>`\\]{6,}"
+            r"(?i)"
+            + _CREDENTIAL_KEY
+            + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            + _NOT_A_PORT
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:"
+            + _VALUE_CHAR
+            + "{6,}"
             + _VALUE_END
-            + r"|[^\s\"'&,;<>`\\]{5}"
+            + "|"
+            + _VALUE_CHAR
+            + "{5}"
             + _VALUE_END
             + r"(?=[.:!?)\]])))"
         ),
@@ -483,11 +497,14 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     ),
     (
         # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation
-        # included, as in a JSON pair or under an object key.
+        # included, as in a JSON pair or under an object key, and so are `&`, `,` and `;` (`PASSWORD='a&b;c'`).
         "credential",
         re.compile(
-            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
+            r"(?i)"
+            + _CREDENTIAL_KEY
+            + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            + _NOT_A_PORT
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'<>`\\]{7,})(?=\\?[\"'])"
         ),
         "v",
         _text_key_value,
@@ -511,7 +528,9 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.]"
+            + _VALUE_CHAR
+            + "{6,}"
             + _VALUE_END
             + r")"
         ),
@@ -525,7 +544,7 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'<>`\\]{6,}"
             + _VALUE_END
             + r")"
         ),

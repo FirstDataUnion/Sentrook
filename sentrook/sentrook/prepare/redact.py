@@ -1,6 +1,7 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v13`; `redact-v12` replaced a quoted key's
-value that stands in for a secret as if it were one (`"access_token": "ya29.a0..."`, `"token": "REDACTED"`),
-`redact-v11` replaced a key's value
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v14`; `redact-v13` ended an unquoted key's
+value at `&`, `,` or `;` and a quoted one too (`password=Tr0ub4dor&3`), so the rest of it stayed raw, `redact-v12`
+replaced a quoted key's value that stands in for a secret as if it were one (`"access_token": "ya29.a0..."`,
+`"token": "REDACTED"`), `redact-v11` replaced a key's value
 that names a credential field or stands in for one, or is a short lower-case word, as if it were a secret
 (`api_key:api_secret` quoted from docs, `password: your_password`), `redact-v10` left raw an access code
 or PIN named by a cue word, a passport number, and a random value under a key or header that gives no hint,
@@ -43,7 +44,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v13"
+REDACTION_VERSION = "redact-v14"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -82,6 +83,12 @@ _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
 #: The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
 #: `(token=X)`).
 _VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
+#: A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote,
+#: another separator or another key (`?password=X&page=2`, `a=1,b=2`, `cmd; next`, `X&&next`), after code's closing
+#: bracket (`getToken();`) and before an HTML `&amp;`; anywhere else they are part of it (`password=Tr0ub4dor&3`).
+_VALUE_CHAR = r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'&,;<>`\\])(?!amp;|[A-Za-z_][A-Za-z0-9_.-]{0,40}[=:]))"
+#: Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value.
+_NOT_A_PORT = r"(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\s\"'&,;<>`\\]))"
 #: A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -412,23 +419,35 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
     ),
     # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash; a port
-    # after a host (`x.token:8443/`) is not a value. Trailing punctuation stays outside.
+    # after a host (`x.token:8443/`) is not a value. Trailing punctuation stays outside, and `&`, `,` and `;`
+    # end the value only where `_VALUE_CHAR` says (`password=Tr0ub4dor&3` is one value).
     (
         re.compile(
-            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:[^\s\"'&,;<>`\\]{6,}"
+            r"(?i)"
+            + _CREDENTIAL_KEY
+            + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            + _NOT_A_PORT
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:"
+            + _VALUE_CHAR
+            + "{6,}"
             + _VALUE_END
-            + r"|[^\s\"'&,;<>`\\]{5}"
+            + "|"
+            + _VALUE_CHAR
+            + "{5}"
             + _VALUE_END
             + r"(?=[.:!?)\]])))"
         ),
         _unquoted_key_value,
     ),
-    # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included.
+    # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation, `&`, `,` and `;`
+    # included.
     (
         re.compile(
-            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
+            r"(?i)"
+            + _CREDENTIAL_KEY
+            + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            + _NOT_A_PORT
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'<>`\\]{7,})(?=\\?[\"'])"
         ),
         _text_key_value,
     ),
@@ -448,7 +467,9 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.]"
+            + _VALUE_CHAR
+            + "{6,}"
             + _VALUE_END
             + r")"
         ),
@@ -460,7 +481,7 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'<>`\\]{6,}"
             + _VALUE_END
             + r")"
         ),

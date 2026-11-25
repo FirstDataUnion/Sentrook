@@ -50,6 +50,14 @@ const PROSE_CUES = "password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
  * `(token=X)`), so one secret gets one placeholder however the sentence around it goes on.
  */
 const VALUE_END = `[^\\s"'&,;<>\`\\\\.:!?)\\]]`;
+/**
+ * A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, another
+ * separator or another key (`?password=X&page=2`, `a=1,b=2`, `cmd; next`, `X&&next`), after code's closing bracket
+ * (`getToken();`) and before an HTML `&amp;`; anywhere else they are part of it (`password=Tr0ub4dor&3`).
+ */
+const VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[&,;](?=[^\\s"'&,;<>\`\\\\])(?!amp;|[A-Za-z_][A-Za-z0-9_.-]{0,40}[=:]))`;
+/** Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value. */
+const NOT_A_PORT = `(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\\s"'&,;<>\`\\\\]))`;
 /** A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. */
 const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>\\\\]{5,199}[^\\s\"'`⟦⟧$<>\\\\.,;:!?)\\]])";
 /**
@@ -359,11 +367,12 @@ const SHAPES: Shape[] = [
   {
     // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     // Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
-    // escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside.
+    // escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside, and
+    // `&`, `,` and `;` end the value only where `VALUE_CHAR` says (`password=Tr0ub4dor&3` is one value).
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
-        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:[^\\s"'&,;<>\`\\\\]{6,}${VALUE_END}|[^\\s"'&,;<>\`\\\\]{5}${VALUE_END}(?=[.:!?)\\]])))`,
+        `${NOT_A_PORT}(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:${VALUE_CHAR}{6,}${VALUE_END}|${VALUE_CHAR}{5}${VALUE_END}(?=[.:!?)\\]])))`,
       "gi",
     ),
     group: "v",
@@ -371,11 +380,11 @@ const SHAPES: Shape[] = [
   },
   {
     // `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included,
-    // as in a JSON pair or under an object key.
+    // as in a JSON pair or under an object key, and so are `&`, `,` and `;` (`PASSWORD='a&b;c'`).
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
-        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'&,;<>\`\\\\]{7,})(?=\\\\?["'])`,
+        `${NOT_A_PORT}(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'<>\`\\\\]{7,})(?=\\\\?["'])`,
       "gi",
     ),
     group: "v",
@@ -395,7 +404,7 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*` +
-        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.]${VALUE_CHAR}{6,}${VALUE_END})`,
       "g",
     ),
     group: "v",
@@ -407,7 +416,7 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
-        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'<>\`\\\\]{6,}${VALUE_END})`,
       "g",
     ),
     group: "v",

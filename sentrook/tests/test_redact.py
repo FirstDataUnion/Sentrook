@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v13): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v14): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
 named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
@@ -23,6 +23,7 @@ from sentrook.prepare.redact import (
     protected_spans,
     redact_text,
     second_pass,
+    secret_spans,
 )
 
 P = PLACEHOLDER
@@ -108,7 +109,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v13"
+    assert REDACTION_VERSION == "redact-v14"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -554,6 +555,8 @@ def test_rules_are_the_plugins_rules():
         "_ELIDED",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
+    for name in ("_VALUE_END", "_VALUE_CHAR", "_NOT_A_PORT"):
+        assert getattr(redact, name) == getattr(plugin, name), name
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
     assert redact._CREDENTIAL_NOUNS == plugin._CREDENTIAL_NOUNS
     assert redact._PLACEHOLDER_WORDS == plugin._PLACEHOLDER_WORDS
@@ -870,6 +873,57 @@ def test_a_full_value_under_the_same_key_is_still_replaced(text, secret):
 def test_stand_ins_match_the_hermes_plugin():
     plugin = _plugin_module().Redactor("standard", "parity")
     for text in STAND_IN_STAY + [t for t, _ in STAND_IN_REPLACE]:
+        for form in (text, _as_result(text)):
+            theirs = re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, plugin.string(form))
+            assert redact_text(form)[0] == theirs, form
+
+
+# Where a key's value ends (redact-v14): `&`, `,` and `;` end a link's query value, a list item or a command, but in an
+# assignment, an `.env` line or a quoted value they are part of the value. Values are built at run time.
+_AMP, _P9 = "Tr0ub4" + "dor&3", "Tr0ub4" + "dor"
+BOUNDARY_WHOLE = [
+    (f"password={_AMP}", _AMP),
+    (f"password='{_AMP}'", _AMP),
+    (f"export DB_PASSWORD={_AMP}", _AMP),
+    ("password=" + "ab" + "&cdefgh12", "ab&cdefgh12"),
+    ("token=" + "Xy7kQ" + ";9pLm2Wz", "Xy7kQ;9pLm2Wz"),
+    ("password=" + "Pa55" + ",word99", "Pa55,word99"),
+    (f"password: {_AMP}", _AMP),
+    (f'"password": "{_AMP}"', _AMP),
+    (f"SENTROOK_SECRET_TOKEN={_AMP}xyz", _AMP + "xyz"),
+    (f"password={_AMP};", _AMP),
+    (f"export DB_PASSWORD={_AMP}; echo ok", _AMP),
+]
+BOUNDARY_BOUNDED = [
+    (f"GET /login?password={_P9}&page=2", _P9),
+    (f"curl -d 'user=a&password={_P9}&remember=1'", _P9),
+    (f"curl -d 'password={_P9}&remember=1'", _P9),
+    (f"a=1,b=2,token={_R40[:11]},c=3", _R40[:11]),
+    (f"token={_R40[:11]}, next", _R40[:11]),
+    (f"TOKEN={_R40[:11]}&&echo ok", _R40[:11]),
+    (f"https://app.example/cb#access_token={_R40[:11]}&token_type=Bearer", _R40[:11]),
+]
+
+
+@pytest.mark.parametrize(("text", "secret"), BOUNDARY_WHOLE + BOUNDARY_BOUNDED)
+def test_a_value_is_replaced_whole_and_what_follows_it_stays(text, secret):
+    assert redact_text(text) == (text.replace(secret, P), 1)
+
+
+def test_one_value_is_one_span_however_it_is_written():
+    for text in (
+        f"password={_AMP}",
+        f"password: {_AMP}",
+        f'"password": "{_AMP}"',
+        f"password='{_AMP}'",
+    ):
+        (span,) = secret_spans(text)
+        assert text[span[0] : span[1]] == _AMP
+
+
+def test_value_boundaries_match_the_hermes_plugin():
+    plugin = _plugin_module().Redactor("standard", "parity")
+    for text, _ in BOUNDARY_WHOLE + BOUNDARY_BOUNDED:
         for form in (text, _as_result(text)):
             theirs = re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, plugin.string(form))
             assert redact_text(form)[0] == theirs, form
