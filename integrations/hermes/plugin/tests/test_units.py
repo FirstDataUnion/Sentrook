@@ -126,7 +126,7 @@ def test_redaction_matches_the_openclaw_plugin():
     r = Redactor("standard", "test-salt")
     gh = "ghp_" + "a" * 36
     assert r.string(f"token is {gh} ok").startswith("token is ⟦secret:github:")
-    assert r.string("export GITHUB_TOKEN=" + "x" * 12).startswith(
+    assert r.string("export GITHUB_TOKEN=" + "k" * 12).startswith(
         "export GITHUB_TOKEN=⟦secret:credential:"
     )
     assert r.string("mysql --password " + "p" * 10 + " db").endswith(" db")

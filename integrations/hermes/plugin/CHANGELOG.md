@@ -6,6 +6,12 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- A credential field's name is no longer redacted as if it were a secret. In text, a value after a password, token
+  or API-key key that names such a field or stands in for one (`api_key:api_secret` quoted from an API's docs,
+  `password: your_password`, `apiKey=apiSecret`, `token: xxxxxxxx`) or is a short lower-case word
+  (`password=changeme`) stays, so a call that quotes documentation is not scored as sending a secret. Values with a
+  digit, mixed case or a symbol, vendor shapes such as `sk-live-…` and `ghp_…`, and longer values are redacted as
+  before, and so is any value under a credential key in a parsed object.
 - **`hermes sentrook login`: sign in instead of copying credentials.** It prints a link and a code; open the link on
   any device, sign in or create a free FIDU account, and approve. Hermes then stores this machine's scan credentials
   with its own writer, and the command runs the same checks as `verify`. Restart Hermes afterwards. Signing in again
