@@ -14,7 +14,7 @@ from pathlib import Path
 from re import _parser as sre_parse  # type: ignore[attr-defined]
 
 import pytest
-from linear_time import assert_linear
+from linear_time import FACTOR, assert_linear
 
 from sentrook.cli import main as cli_main
 from sentrook.prepare import redact_import
@@ -166,15 +166,93 @@ def test_no_shape_matches_the_shapes_file_itself():
     assert redact_text(text) == (text, 0)
 
 
-def _adversarial(regex: str, divisor: int) -> None:
-    """Near-misses back to back, the shape's prefix repeated, and a long run of its body that never
-    ends the way the shape needs; at 1/`divisor` of the full size."""
+#: A repeat with an upper limit, `{100,4096}`, caps each match attempt at that many characters. Where
+#: match attempts start every few characters inside a run the shape can match (a prefix made of its
+#: own body characters, `EAAM` in `EAA[MC](?i:[a-z0-9]{100,4096})`), each one scans up to the cap: the
+#: cost grows with the square of the run while the run is a few caps long and linearly (run x cap) once
+#: it is much longer. The growth check compares 1/4 and full size, so a run that is under a few caps at
+#: 1/4 size reads 5-12x by where the cap falls, not by super-linear matching. Every part of the
+#: adversarial input is at least this many caps long at 1/4 size, which keeps such a part near 5x.
+CAP_RUNS = 6
+
+
+def _largest_cap(regex: str) -> int:
+    """The largest upper limit of a repeat in `regex`; 0 when it has no bounded repeat."""
+    largest = 0
+
+    def walk(items) -> None:
+        nonlocal largest
+        for op, av in items:
+            name = str(op)
+            if name in ("MAX_REPEAT", "MIN_REPEAT"):
+                if av[1] != sre_parse.MAXREPEAT:
+                    largest = max(largest, av[1])
+                walk(av[2])
+            elif name == "SUBPATTERN":
+                walk(av[-1])
+            elif name == "BRANCH":
+                for alt in av[1]:
+                    walk(alt)
+            elif name in ("ASSERT", "ASSERT_NOT"):
+                walk(av[1])
+
+    walk(sre_parse.parse(regex))
+    return largest
+
+
+def _repeats(base: int, floor: int, unit: str) -> int:
+    """How many times `unit` repeats at full size: `base`, or more when that is under `floor`
+    characters, then rounded up to a multiple of FACTOR so the quarter size is not short of it."""
+    return max(base, -(-floor // (len(unit) * FACTOR)) * FACTOR)
+
+
+def _adversarial_texts(regex: str, divisor: int) -> list[str]:
+    """Near-misses apart and back to back, the shape's prefix repeated, and a long run of its body that
+    never ends the way the shape needs; at 1/`divisor` of the full size. Each part is at least
+    `CAP_RUNS` caps long at 1/4 size; the sizes depend on the shape, never on `divisor`."""
     value = example(regex)
     cut = value[:-1]
-    redact_text((cut + " ") * (20_000 // len(value) // divisor))
-    redact_text(cut * (20_000 // len(value) // divisor))
-    redact_text(value[:6] * (6_000 // divisor))
-    redact_text((cut + value[-2] * (6_000 // divisor) + "!") * 6)
+    floor = CAP_RUNS * FACTOR * _largest_cap(regex)  # characters at full size
+    near = 20_000 // len(value)
+    run = _repeats(6_000, floor, value[-2])
+    return [
+        (cut + " ") * (_repeats(near, floor, cut + " ") // divisor),
+        cut * (_repeats(near, floor, cut) // divisor),
+        value[:6] * (_repeats(6_000, floor, value[:6]) // divisor),
+        (cut + value[-2] * (run // divisor) + "!") * max(1, 36_000 // run),
+    ]
+
+
+def _adversarial(regex: str, divisor: int) -> None:
+    for text in _adversarial_texts(regex, divisor):
+        redact_text(text)
+
+
+@pytest.mark.parametrize(
+    ("regex", "cap"),
+    [
+        (r"EAA[MC](?i:[a-z0-9]{100,4096})", 4096),
+        (r"(?:fo1_[\w-]{43}|fm2_[a-zA-Z0-9+\/]{100,4096}={0,3})", 4096),
+        (r"(?:ab{2,5}){1,7}", 7),
+        (r"x(?=[a-z]{1,9})", 9),
+        (r"QQ\w*?z", 0),
+        (r"ghp_[0-9a-zA-Z]{36}", 36),
+    ],
+)
+def test_largest_cap(regex: str, cap: int):
+    assert _largest_cap(regex) == cap
+
+
+@pytest.mark.parametrize("shape", SHAPES, ids=IDS)
+def test_adversarial_parts_are_several_caps_long_at_quarter_size(shape):
+    """Both sizes the growth check times sit well past the shape's cap, so it reads how the matching
+    grows and not where the cap falls."""
+    cap = _largest_cap(shape.regex)
+    texts = _adversarial_texts(shape.regex, FACTOR)
+    assert all(len(text) >= CAP_RUNS * cap for text in texts)
+    cut = example(shape.regex)[:-1]
+    body_run = texts[-1].split("!")[0].removeprefix(cut)
+    assert len(body_run) >= CAP_RUNS * cap
 
 
 def test_bounded_time_on_adversarial_input():
