@@ -277,7 +277,10 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
     edit_text = "\n".join(p for p in edit_parts if p) or content
 
     role_text = text if normalised == text else text + "\n" + normalised
-    text_groups = derive_path_roles(role_text, groups)
+    # The shapes add the groups a whole argument names (`cat credentials`), which free text alone does not show.
+    argv_roles = {g for s in (shape, decoded_shape) if s is not None for g in s.path_roles}
+    text_found = set(derive_path_roles(role_text, groups))
+    text_groups = [name for name in groups if name in text_found or name in argv_roles]
 
     return CallAnalysis(
         call=call,
