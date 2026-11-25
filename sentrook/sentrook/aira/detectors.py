@@ -4958,6 +4958,70 @@ def _privileged_group_switches(a: CallAnalysis, lists: Lists) -> list[str]:
     return out
 
 
+#: `NAME=value` with the value as one shell word: double-quoted, single-quoted or bare.
+_ASSIGNMENT_VALUE_RE = re.compile(
+    r"(?<![\w$-])([A-Za-z_][A-Za-z0-9_]*)=(\"(?:[^\"\\]|\\.)*\"|'[^']*'|[^\s;&|()<>]*)"
+)
+_KEEPS_PATH = frozenset({"$PATH", "${PATH}"})
+#: The variables the allowed folders are read relative to (`~` is `$HOME`).
+_PATH_BASE_VARS = frozenset({"HOME", "VIRTUAL_ENV"})
+#: A read of `PATH` (`$PATH`, `${PATH}`, `${PATH:+...}`), which leaves it unchanged.
+_PATH_REFERENCE_RE = re.compile(r"\$PATH\b|\$\{PATH[^}]*\}")
+#: `path` as a word, allowing quotes or backslashes between its letters.
+_PATH_SPELLED_RE = re.compile(r"(?i)(?<![\w./-])p[\\'\"]*a[\\'\"]*t[\\'\"]*h(?![\w./-])")
+
+
+def _benign_path_entry(entry: str, lists: Lists) -> bool:
+    """A virtualenv's `bin` or a standard per-user bin folder (`privilege.yaml`, `user_bin_dirs`)."""
+    if "$(" in entry or "`" in entry:
+        return False
+    for home in ("${HOME}", "$HOME"):
+        if entry.startswith(home + "/"):
+            entry = "~" + entry[len(home) :]
+    entry = entry.replace("${VIRTUAL_ENV}", "$VIRTUAL_ENV").rstrip("/")
+    if entry in set(lists.strings("privilege", "user_bin_dirs")):
+        return True
+    parent, _, last = entry.rpartition("/")
+    if last != "bin" or not parent:
+        return False
+    name = parent.rpartition("/")[2]
+    return name in set(lists.strings("privilege", "venv_dir_names")) or name.endswith(
+        tuple(lists.strings("privilege", "venv_dir_suffixes"))
+    )
+
+
+def _path_prepends_are_benign(text: str, shadow: set[str], lists: Lists) -> bool:
+    """Every assignment to a shadowing variable keeps `$PATH` and adds only venv or user bin folders.
+
+    `PATH=~/.venv/bin:$PATH` is how a virtualenv is activated; `PATH=/tmp/x:$PATH` and a `PATH`
+    replaced outright are not this. A single-quoted value keeps `$PATH` literal, so it does not count.
+    """
+    matches = list(_ASSIGNMENT_VALUE_RE.finditer(text))
+    if any(m.group(1) in _PATH_BASE_VARS for m in matches):
+        return False  # the folder `~/.local/bin` or `$VIRTUAL_ENV/bin` names is moved first
+    shadow_matches = [m for m in matches if m.group(1) in shadow]
+    if not shadow_matches:
+        return False
+    # Anything else that still spells the variable (`P\ATH=`, `'PATH'=`, `read PATH`, zsh `path=(`)
+    # is a change this reading cannot check, so the command keeps firing.
+    rest = text
+    for m in reversed(shadow_matches):
+        rest = rest[: m.start()] + " " + rest[m.end() :]
+    if _PATH_SPELLED_RE.search(_PATH_REFERENCE_RE.sub(" ", rest)):
+        return False
+    for value in (m.group(2) for m in shadow_matches):
+        if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+            value = value[1:-1]
+        elif value.startswith("'"):
+            return False
+        entries = value.split(":")
+        if not _KEEPS_PATH & set(entries):
+            return False
+        if not all(e in _KEEPS_PATH or _benign_path_entry(e, lists) for e in entries):
+            return False
+    return True
+
+
 def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C8: sudo/doas/su (pack `host_gated`), a switch into a root-equivalent group, setuid/setcap,
     loader preload and PATH shadowing."""
@@ -5010,7 +5074,9 @@ def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
         )
         f.add(REACH, reach).add(CONCEALMENT, conceal)
         out.append(f)
-    shadowing = bool(vars_seen & shadow)
+    shadowing = bool(vars_seen & shadow) and not _path_prepends_are_benign(
+        a.scan_text, shadow, lists
+    )
     utilities = set(lists.strings("privilege", "system_utilities"))
     system_dirs = tuple(lists.strings("privilege", "system_dirs"))
     odd_heads = [
