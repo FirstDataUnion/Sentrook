@@ -83,12 +83,38 @@ _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
 #: The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
 #: `(token=X)`).
 _VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
+#: What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
+#: maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
+#: `&9x=1`), or a word with more after it, which is a command or a statement (`;curl${IFS}…`, `;npm publish`,
+#: `;next()`). A tail that runs to the end of the text or starts with a digit is part of the value (`Tr0ub4dor&3`).
+_SEPARATOR_ENDS = (
+    r"(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});"
+    r"|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]"
+    r"|[0-9][A-Za-z0-9_.\[\]%-]{0,40}="
+    r"|[A-Za-z][A-Za-z0-9_.-]{1,40}[\s$|();&<>`{]"
+)
 #: A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote,
-#: another separator or another key (`?password=X&page=2`, `a=1,b=2`, `cmd; next`, `X&&next`), after code's closing
-#: bracket (`getToken();`) and before an HTML `&amp;`; anywhere else they are part of it (`password=Tr0ub4dor&3`).
-_VALUE_CHAR = r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'&,;<>`\\])(?!amp;|[A-Za-z_][A-Za-z0-9_.-]{0,40}[=:]))"
+#: another separator or `_SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part
+#: of it (`password=Tr0ub4dor&3`).
+_VALUE_CHAR = r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'&,;<>`\\])(?!" + _SEPARATOR_ENDS + "))"
+#: In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
+#: there, from its first character.
+_QUERY_VALUE_CHAR = (
+    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[,;](?=[^\s\"'&,;<>`\\])(?!" + _SEPARATOR_ENDS + "))"
+)
 #: Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value.
 _NOT_A_PORT = r"(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\s\"'&,;<>`\\]))"
+_QUERY_VALUE = re.compile(
+    r"[\s\S](?:"
+    + _QUERY_VALUE_CHAR
+    + "{6,}"
+    + _VALUE_END
+    + "|"
+    + _QUERY_VALUE_CHAR
+    + "{5}"
+    + _VALUE_END
+    + r"(?=[.:!?)\]]))"
+)
 #: A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -321,6 +347,19 @@ def _bare_value(v: str) -> bool:
 _STAND_IN_CHECKS = frozenset(
     {_unquoted_key_value, _text_key_value, _inner_key_value, _inner_quoted_value, _stated_value}
 )
+
+
+#: The checks of the rules whose unquoted value may hold `&` (`_VALUE_CHAR`).
+_UNQUOTED_CHECKS = frozenset({_unquoted_key_value, _inner_key_value})
+
+
+def _query_value_end(text: str, key_start: int, start: int, end: int) -> int | None:
+    """Where the value at `start`-`end` ends when its key, at `key_start`, is in a link's query (follows `?`, `&` or
+    `#`): at its first `&`. None when what is left is too short to be a value."""
+    if key_start == 0 or text[key_start - 1] not in "?&#" or "&" not in text[start:end]:
+        return end
+    m = _QUERY_VALUE.match(text, start)
+    return None if m is None else m.end()
 
 
 def _flag_value(v: str) -> bool:
@@ -836,6 +875,8 @@ def _spans(text: str, *, cues: bool = True) -> list[tuple[int, int]]:
             s, e = m.span("v")
             if check in _STAND_IN_CHECKS and _quoted_stand_in(text, m.start(), s, e):
                 continue  # a quoted value cut short in docs: `"access_token": "ya29.a0..."`
+            if check in _UNQUOTED_CHECKS and (e := _query_value_end(text, m.start(), s, e)) is None:
+                continue
             if e > s and (check is None or check(text[s:e])):
                 spans.append((s, e))
     if cues:
@@ -864,6 +905,8 @@ def protected_spans(text: str) -> list[tuple[int, int]]:
     for pattern, check in _CONTEXT:
         for m in pattern.finditer(text):
             s, e = m.span("v")
+            if check in _UNQUOTED_CHECKS and (e := _query_value_end(text, m.start(), s, e)) is None:
+                continue
             if (
                 e > s
                 and not (check in _STAND_IN_CHECKS and _quoted_stand_in(text, m.start(), s, e))

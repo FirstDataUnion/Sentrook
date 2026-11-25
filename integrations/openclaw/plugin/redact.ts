@@ -51,13 +51,33 @@ const PROSE_CUES = "password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
  */
 const VALUE_END = `[^\\s"'&,;<>\`\\\\.:!?)\\]]`;
 /**
- * A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, another
- * separator or another key (`?password=X&page=2`, `a=1,b=2`, `cmd; next`, `X&&next`), after code's closing bracket
- * (`getToken();`) and before an HTML `&amp;`; anywhere else they are part of it (`password=Tr0ub4dor&3`).
+ * What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
+ * maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
+ * `&9x=1`), or a word with more after it, which is a command or a statement (`;curl${IFS}…`, `;npm publish`,
+ * `;next()`). A tail that runs to the end of the text or starts with a digit is part of the value (`Tr0ub4dor&3`).
  */
-const VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[&,;](?=[^\\s"'&,;<>\`\\\\])(?!amp;|[A-Za-z_][A-Za-z0-9_.-]{0,40}[=:]))`;
+const SEPARATOR_ENDS =
+  String.raw`(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});` +
+  String.raw`|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]` +
+  String.raw`|[0-9][A-Za-z0-9_.\[\]%-]{0,40}=` +
+  String.raw`|[A-Za-z][A-Za-z0-9_.-]{1,40}[\s$|();&<>` + "`" + "{]";
+/**
+ * A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, another
+ * separator or `SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
+ * (`password=Tr0ub4dor&3`).
+ */
+const VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[&,;](?=[^\\s"'&,;<>\`\\\\])(?!${SEPARATOR_ENDS}))`;
+/**
+ * In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
+ * there, from its first character.
+ */
+const QUERY_VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[,;](?=[^\\s"'&,;<>\`\\\\])(?!${SEPARATOR_ENDS}))`;
 /** Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value. */
 const NOT_A_PORT = `(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\\s"'&,;<>\`\\\\]))`;
+const QUERY_VALUE = new RegExp(
+  `[\\s\\S](?:${QUERY_VALUE_CHAR}{6,}${VALUE_END}|${QUERY_VALUE_CHAR}{5}${VALUE_END}(?=[.:!?)\\]]))`,
+  "y",
+);
 /** A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. */
 const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>\\\\]{5,199}[^\\s\"'`⟦⟧$<>\\\\.,;:!?)\\]])";
 /**
@@ -238,6 +258,18 @@ const bareValue = (v: string) =>
  * command-line value is what the command runs with, so the flag rules are not among them.
  */
 const STAND_IN_CHECKS = new Set<(v: string) => boolean>([unquotedKeyValue, textKeyValue, innerKeyValue, innerQuotedValue, statedValue]);
+/** The checks of the rules whose unquoted value may hold `&` (`VALUE_CHAR`). */
+const UNQUOTED_CHECKS = new Set<(v: string) => boolean>([unquotedKeyValue, innerKeyValue]);
+/**
+ * Where the value at `start`-`end` ends when its key, at `keyStart`, is in a link's query (follows `?`, `&` or `#`):
+ * at its first `&`. null when what is left is too short to be a value.
+ */
+const queryValueEnd = (text: string, keyStart: number, start: number, end: number): number | null => {
+  if (keyStart === 0 || !"?&#".includes(text[keyStart - 1]) || !text.slice(start, end).includes("&")) return end;
+  QUERY_VALUE.lastIndex = start;
+  const m = QUERY_VALUE.exec(text);
+  return m ? start + m[0].length : null;
+};
 
 /**
  * A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names (a path,
@@ -703,7 +735,13 @@ function spansOf(text: string): Array<[number, number, string]> {
         const idx = m.indices?.groups?.[shape.group];
         // A quoted value cut short in docs: `"access_token": "ya29.a0..."`.
         if (idx && shape.check && STAND_IN_CHECKS.has(shape.check) && quotedStandIn(text, m.index, idx[0], idx[1])) continue;
-        if (idx && (!shape.check || shape.check(text.slice(idx[0], idx[1])))) spans.push([idx[0], idx[1], shape.kind]);
+        let end = idx ? idx[1] : 0;
+        if (idx && shape.check && UNQUOTED_CHECKS.has(shape.check)) {
+          const queryEnd = queryValueEnd(text, m.index, idx[0], idx[1]);
+          if (queryEnd === null) continue;
+          end = queryEnd;
+        }
+        if (idx && end > idx[0] && (!shape.check || shape.check(text.slice(idx[0], end)))) spans.push([idx[0], end, shape.kind]);
       } else {
         spans.push([m.index, m.index + m[0].length, shape.kind]);
       }

