@@ -12,7 +12,9 @@ since the version the catalog pins.
   …` got another placeholder. What follows a value is still kept where it is something else: another parameter in a
   link's query or a form body (`?password=…&page=2`, `user=a&password=…&remember=1`), the next key of a list or a
   connection string (`a=1,b=2`, `;Initial Catalog=…`), an HTML entity (`&quot;`), and a command or statement after the
-  value (`…; echo ok`, `…;npm publish`, `…&&next`, `…;return x`), so the scanner still sees it.
+  value (`…; echo ok`, `…;npm publish`, `…&&next`, `…;$(…)`, `…;./run.sh`, `…;return x`), so the scanner still sees
+  it; in double quotes a value ends where `$(` starts. A lone command word at the end of a line after a value
+  (`TOKEN=…;make`) is read as part of the value, as a password's tail would be.
 - A quoted example value that only stands in for a secret is no longer redacted as if it were one, so docs and notes
   that show a token file's shape can be saved into a skill or memory without being scored as saving a secret. Kept
   under any key: the word `REDACTED` and a mask of `*`, `•` or `·` (`"••••••••"`). Kept only in a quoted value under a

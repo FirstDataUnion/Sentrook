@@ -1,5 +1,5 @@
 """The scanner's second redaction pass over the v2 Jev views (`redact-v14`; `redact-v13` ended an unquoted key's
-value at `&`, `,` or `;` and a quoted one too (`password=Tr0ub4dor&3`), so the rest of it stayed raw, `redact-v12`
+value at `&`, `,` or `;` and a quoted one too (`password=<value>&<rest>`), so the rest of it stayed raw, `redact-v12`
 replaced a quoted key's value that stands in for a secret as if it were one (`"access_token": "ya29.a0..."`,
 `"token": "REDACTED"`), `redact-v11` replaced a key's value
 that names a credential field or stands in for one, or is a short lower-case word, as if it were a secret
@@ -85,23 +85,36 @@ _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
 _VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
 #: What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
 #: maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
-#: `&9x=1`), or a word with more after it, which is a command or a statement (`;curl${IFS}…`, `;npm publish`,
-#: `;next()`). A tail that runs to the end of the text or starts with a digit is part of the value (`Tr0ub4dor&3`).
+#: `&9x=1`), a word with more after it on its line, which is a command or a statement (`;curl${IFS}…`, `;npm publish`, `;next()`),
+#: a word with quotes or an escape inside it (`;cu''rl`, `;c\url`), or a command led by a symbol: a substitution or a
+#: variable (`;$(…)`, `;$SHELL`, `;${IFS}`), a subshell or a group (`;(…)`, `;{…}`), a path (`;./run.sh`, `;../bin/x`,
+#: `;/bin/sh`, `;~/x.sh`) or a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a
+#: digit, is part of the value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
 _SEPARATOR_ENDS = (
     r"(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});"
     r"|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]"
     r"|[0-9][A-Za-z0-9_.\[\]%-]{0,40}="
-    r"|[A-Za-z][A-Za-z0-9_.-]{1,40}[\s$|();&<>`{]"
+    r"|[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|()<>`{]|\\t|\$[{(])"
+    r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
+    r"|\$[(A-Za-z_{]|[({]|\.\.?/|/[A-Za-z]|~/|(?<=;)#"
 )
-#: A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote,
-#: another separator or `_SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part
-#: of it (`password=Tr0ub4dor&3`).
-_VALUE_CHAR = r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'&,;<>`\\])(?!" + _SEPARATOR_ENDS + "))"
+#: A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, `&&`
+#: or `;;`, or `_SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
+#: (`password=<value>&<rest>`, `password=<value>,;<rest>`).
+_VALUE_CHAR = (
+    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'<>`\\])(?!(?<=&)&|(?<=;);|"
+    + _SEPARATOR_ENDS
+    + "))"
+)
 #: In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
 #: there, from its first character.
 _QUERY_VALUE_CHAR = (
-    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[,;](?=[^\s\"'&,;<>`\\])(?!" + _SEPARATOR_ENDS + "))"
+    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[,;](?=[^\s\"'&<>`\\])(?!(?<=;);|" + _SEPARATOR_ENDS + "))"
 )
+#: The rest of a quoted value after its first character: in single quotes anything up to the closing quote; in double
+#: quotes, where a shell runs a command substitution, not `$(` (`password="<value>;$(…)"` keeps the command visible).
+_SQ_CHAR = r"[^\s\"'<>`\\]"
+_DQ_CHAR = r"(?:[^\s\"'<>`\\$]|\$(?!\())"
 #: Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value.
 _NOT_A_PORT = r"(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\s\"'&,;<>`\\]))"
 _QUERY_VALUE = re.compile(
@@ -459,7 +472,7 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
     # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash; a port
     # after a host (`x.token:8443/`) is not a value. Trailing punctuation stays outside, and `&`, `,` and `;`
-    # end the value only where `_VALUE_CHAR` says (`password=Tr0ub4dor&3` is one value).
+    # end the value only where `_VALUE_CHAR` says (`password=<value>&3` is one value).
     (
         re.compile(
             r"(?i)"
@@ -486,7 +499,11 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
             + _CREDENTIAL_KEY
             + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
             + _NOT_A_PORT
-            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'<>`\\]{7,})(?=\\?[\"'])"
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:(?<='.)"
+            + _SQ_CHAR
+            + "{7,}|"
+            + _DQ_CHAR
+            + r"{7,}))(?=\\?[\"'])"
         ),
         _text_key_value,
     ),
@@ -520,9 +537,15 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.](?:(?<='.)"
+            + _SQ_CHAR
+            + "{6,}"
             + _VALUE_END
-            + r")"
+            + "|"
+            + _DQ_CHAR
+            + r"{6,}(?!\$\()"
+            + _VALUE_END
+            + r"))"
         ),
         _inner_quoted_value,
     ),

