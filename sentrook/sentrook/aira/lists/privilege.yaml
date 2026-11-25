@@ -2,7 +2,7 @@
 # elevation itself); the preload, setuid and shadowing arms are always on because they hide what the
 # command is from everyone, host included.
 
-version: 2
+version: 3
 
 # Wrappers that elevate (exec_shape strips them and sets `privileged`), and heads that do.
 elevation_wrappers:
@@ -57,6 +57,21 @@ preload_vars:
 # `/tmp/bin/sudo`). `system_utilities` are the basenames; `system_dirs` are where they belong.
 shadowing_vars:
   - PATH
+# A `PATH=` assignment does not count as shadowing when its value keeps `$PATH` and every other
+# folder in it is a virtualenv's `bin` or a standard per-user bin folder: that is how a venv is
+# activated and how user-installed tools are reached. A folder is a venv `bin` when it ends in
+# `<name>/bin` with <name> in `venv_dir_names` or ending in one of `venv_dir_suffixes`. `$HOME` and
+# `${HOME}` are read as `~`, `${VIRTUAL_ENV}` as `$VIRTUAL_ENV`, and a trailing `/` is ignored.
+venv_dir_names:
+  - venv
+  - .venv
+venv_dir_suffixes:
+  - -venv
+user_bin_dirs:
+  - $VIRTUAL_ENV/bin
+  - ~/.local/bin
+  - ~/.cargo/bin
+  - ~/go/bin
 system_utilities:
   - ls
   - cat
