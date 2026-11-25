@@ -9,6 +9,10 @@ it ever blocking or asking, use [observe mode](#observe-mode) instead.
 
 The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstDataUnion/Sentrook/issues>.
 
+**The short path:** install (steps 1 and 2), sign in (step 3), restart the gateway, then ask your agent to **help you
+set up Sentrook** (step 5). The agent checks the install, asks what is routine for you, and prepares your setup list;
+you read it and approve. The rest of this guide is the reference behind that, and the manual route if you prefer it.
+
 ## Requirements
 
 - OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5 and 2026.11.8. Older releases refuse
@@ -114,7 +118,32 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 `openclaw plugins list` should show `sentrook` as enabled, with a 2.0 version.
 
-## 5. First scan
+## 5. Set up with your agent
+
+Once you are signed in and the gateway has restarted, start a new chat with your agent (a direct message, webchat or
+the Control UI, not a group chat; OpenClaw reads skills when a session starts) and say:
+
+> Help me set up Sentrook.
+
+The plugin gives the agent two skills for this (see [Agent skills](#agent-skills)). It will:
+
+1. check the install with `openclaw sentrook verify` and explain anything that fails;
+2. ask, one question at a time, what you use it for: the services and websites it calls, the folders it works in,
+   any channel a scheduled job reports to, the names of API keys it uses, and any MCP servers or plugins;
+3. explain where notices go and how to choose (`/sentrook-notify here`, sent as a direct message on the chat you want
+   them in);
+4. add what you told it to your setup list. It can only propose: it never sets anything and never runs Sentrook's
+   commands itself.
+
+Then send `/sentrook-setup` yourself. It lists each item in Sentrook's own words, with a code at the end. Read the
+list, and send `/sentrook-setup apply <code>` for everything, or `/sentrook-setup apply <code> 1,3` for some.
+Ask the agent to explain any item first if you are unsure. Expect to come back to this: when Sentrook keeps asking
+about the same thing, ask the agent again ("Sentrook keeps asking about X") and it will help you find the grant.
+
+If something does not work as described here, the install is still new: note the command you ran and what it printed
+(never the credentials) and report it at <https://github.com/FirstDataUnion/Sentrook/issues>.
+
+## 6. First scan
 
 Ask the agent for something small that uses a tool, such as "list the files in your workspace". Then look at what
 Sentrook recorded:
@@ -129,7 +158,10 @@ it found (hosts, files, recipients, channels).
 
 If the history is empty, the agent has not made a tool call since the restart.
 
-## 6. Tell Sentrook what is normal for you
+## 7. Tell Sentrook what is normal for you, by hand
+
+Step 5 does this with your agent's help. This section is the same thing done yourself, and the reference for what
+the items mean.
 
 Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
 work stops asking for approval:

@@ -22,7 +22,9 @@ and logged but nothing is blocked or asked, is one setting away. The 1.x line (e
 | [OpenClaw](https://github.com/openclaw/openclaw) | [integrations/openclaw/README.md](integrations/openclaw/README.md) |
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | [integrations/hermes/README.md](integrations/hermes/README.md) |
 
-Each guide covers install, signing in, a first scan, channel bindings and grants, the plugin's commands, enforce and
+The quickest route on either host: install, sign in, then ask your agent to "help me set up Sentrook". The plugin ships
+skills that let the agent check the install, ask what is routine for you and prepare your setup list; you read it and
+approve. Each guide covers install, signing in, a first scan, channel bindings and grants, the plugin's commands, enforce and
 observe mode, what is sent to the scan service, and uninstalling.
 
 ## Repository layout
