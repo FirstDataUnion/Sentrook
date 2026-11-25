@@ -185,7 +185,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   },
   allow: {
     command: "sentrook-allow",
-    args: "<id> [now|later|always]",
+    args: "<id> [now|later|always|all]",
     description:
       "Answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: run the cron job again " +
       "now, letting the call through once in that run (now: even when the held run had already sent or written " +

@@ -582,3 +582,72 @@ def test_a_job_edited_after_the_first_notice_counts_as_changed_even_after_a_repe
     reply = slash(h, f"allow {hid}")
     assert f"It was not run again now: {RUN_NOW['reasons']['changed']}." in reply
     assert h.started == []
+
+
+# ---- a cron run's sub-agents ----------------------------------------------------------------------------------
+
+
+def child_call(h, n, job="job-j", started_at=None):
+    """A send from a sub-agent of run `n` of `job`: the run's session starts its turn in the run, then the child's
+    own turn and call, where Hermes gives no cron execution."""
+    parent = f"cron-{job}-{n}"
+    in_run(h, n, job, started_at)
+    turn(h, sid={"session_id": parent, "task_id": parent})
+    h.ctx.current_cron_execution = lambda: None
+    sid = f"sub-{parent}"
+    h.ctx.hooks["pre_llm_call"](
+        turn_id=f"t-{sid}",
+        user_message="Post the brief.",
+        platform="subagent",
+        sender_id="",
+        parent_session_id=parent,
+        session_id=sid,
+        task_id=sid,
+    )
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name="send_message",
+        args={"action": "send", "target": "discord:#ops-reports", "message": f"Daily brief {n}"},
+        tool_call_id="c1",
+        turn_id=f"t-{sid}",
+        session_id=sid,
+        task_id=sid,
+    )
+    hold.wait_for_notices()
+    return out, [r for r in h.traffic() if r.get("kind") == "scan"][-1]
+
+
+def test_allow_on_a_sub_agents_hold_starts_the_job_and_its_sub_agent_passes_once(h):
+    out, rec = child_call(h, 1)
+    assert out == HELD
+    hid = rec["hold"]["id"]
+    assert "allow" in rec["hold"]["offers"]
+    slash(h, f"allow {hid}")
+    assert h.started == ["job-j"], "the job is started again"
+    out, rec = child_call(h, 2, started_at=datetime.now(UTC) + timedelta(seconds=5))
+    assert out is None and rec["decision"] == "allowed_by_pass"
+    out, rec = child_call(h, 3, started_at=datetime.now(UTC) + timedelta(seconds=10))
+    assert out == HELD, "the pass was used up in the started run"
+
+
+def test_allow_on_a_sub_agents_hold_waits_when_the_run_had_already_sent(h):
+    # the cron run's own session sends something that is allowed, then a sub-agent's call is held
+    parent = "cron-job-j-1"
+    in_run(h, 1)
+    turn(h, sid={"session_id": parent, "task_id": parent})
+    h.reply = {"risk": 10, "enforced": None}
+    assert (
+        h.ctx.hooks["pre_tool_call"](
+            tool_name="send_message",
+            args={"action": "send", "target": "discord:#ops-reports", "message": "x"},
+            tool_call_id="cs",
+            turn_id=f"t-{parent}",
+            session_id=parent,
+            task_id=parent,
+        )
+        is None
+    )
+    h.reply = dict(NAMED)
+    out, rec = child_call(h, 1)
+    assert out == HELD
+    slash(h, f"allow {rec['hold']['id']}")
+    assert h.started == [], "the run had already sent something: allow waits for the next run"

@@ -47,7 +47,7 @@ import * as setup from "./setup.ts";
 import * as proposals from "./proposals.ts";
 import * as setupReport from "./setupReport.ts";
 import * as snooze from "./snooze.ts";
-import { type HistoryEntry, type RunContext, type Session, Store } from "./store.ts";
+import { type HistoryEntry, type JobRunLink, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
 type Json = Record<string, unknown>;
@@ -514,6 +514,7 @@ const plugin = {
         jobId: ctx?.jobId,
         ...patch,
       });
+      safely("job run link", () => keepJobRun(runId, ctx));
       // A cron run's job target, kept once, at the first agent hook: before any of the run's tool calls.
       if (runId && ctx?.trigger === "cron" && !store.loadRun(runId).jobDeliveryRead) {
         let kept: cronDelivery.DeliverySnapshot | null = null;
@@ -537,6 +538,26 @@ const plugin = {
         fn();
       } catch (err) {
         api.logger.warn(`${LOG} ${name} failed: ${String(err)}`);
+      }
+    };
+
+    /**
+     * Keeps the cron run a session serves now (`Store.jobRunOf`), from the run's own agent hooks: the job OpenClaw's
+     * run metadata names (`hold.cronJobId`) and the run's id. Another run in the same session (the owner's chat after
+     * a cron run in the main session) drops it, as does the cron run's end (`agent_end`). A sub-agent spawned while it
+     * stands takes it (`subagent_spawned`), so its holds and passes are the job's.
+     */
+    const keepJobRun = (runId: string | undefined, ctx: any): void => {
+      const key = ctx?.sessionKey;
+      if (!runId || typeof key !== "string" || !key) return;
+      const jobId = hold.cronJobId(ctx, store.loadRun(runId));
+      const cur = store.jobRunOf(key);
+      if (jobId) {
+        if (cur?.job_id !== jobId || cur.run_id !== runId || cur.via !== "cron") {
+          store.setJobRun(key, { job_id: jobId, run_id: runId, via: "cron" });
+        }
+      } else if (cur?.via === "cron" && cur.run_id !== runId) {
+        store.setJobRun(key, null);
       }
     };
 
@@ -605,6 +626,10 @@ const plugin = {
           const child = event?.childSessionKey ?? ctx?.childSessionKey;
           const parent = ctx?.requesterSessionKey ?? event?.requesterSessionKey;
           if (child && parent) store.setParent(child, parent);
+          // A sub-agent of a cron run (or of one of its sub-agents) belongs to the run's job: the link is taken from
+          // the parent session as the plugin keeps it now, never from text.
+          const link = child && parent ? store.jobRunOf(parent) : null;
+          if (link && child !== parent) store.setJobRun(child, { job_id: link.job_id, run_id: link.run_id, via: "subagent" });
         }),
       );
     }
@@ -1065,12 +1090,18 @@ const plugin = {
         } else if (unattended) {
           // Nobody can answer a review here: the owner's denial or pass for this job and action settles it
           // (passes.ts); otherwise the call waits for the owner (hold.ts).
-          const jobId = hold.cronJobId(ctx, run);
+          // A sub-agent of a cron run (or of one of its sub-agents): the job's own holds and passes apply, with the
+          // run's key and start (`jobRunOf`). Until OpenClaw reports the spawn, its parent session is its source.
+          const jobRun = triggerKind === "subagent" && hold.cronJobId(ctx, run) === null ? jobRunOf(ctx) : null;
+          const jobId = jobRun ? jobRun.job_id : hold.cronJobId(ctx, run);
+          /** The agent run whose run key and start the job's holds and passes use: the cron run's own. */
+          const jobRunId = jobRun ? jobRun.run_id : runId;
           // Off a cron job, where the run came from, when OpenClaw names it: the answers are bound to it.
           const source = jobId === null ? runSource(triggerKind, ctx, built) : null;
           const match = passes.matchOf(event.toolName, resp, event?.params ?? {}, store.salt(), jobId === null && source === null);
-          // A run the plugin started for an owner's allow (runNow.ts): its pass serves this run only.
-          const rerun = jobId ? startedRun(cfg, jobId, runId) : null;
+          // A run the plugin started for an owner's allow (runNow.ts): its pass serves this run only, its sub-agents
+          // included.
+          const rerun = jobId ? startedRun(cfg, jobId, jobRunId) : null;
           const rerunId = typeof rerun?.id === "string" ? rerun.id : null;
           let settled: Json | null = null;
           try {
@@ -1094,8 +1125,11 @@ const plugin = {
               jobId,
               source,
               match,
-              acted: !!run.acted,
-              runKey: jobId ? runKeyOf(jobId, runId).runKey : null,
+              // a sub-agent's hold counts what the cron run itself had already sent or written
+              acted: !!run.acted || (jobRun !== null && !!store.loadRun(jobRun.run_id).acted),
+              ...(jobId ? runIdentity(jobId, jobRunId) : { runKey: null, runStart: null }),
+              acts: passes.acts(built.toolKind, resp),
+              jobRun: jobRun ? store.loadRun(jobRun.run_id) : null,
             });
             if (rerunId && typeof held?.id === "string") noteRun(cfg, rerunId, { held: held.id });
           }
@@ -1259,8 +1293,26 @@ const plugin = {
     }
 
     /**
-     * The unattended run a call belongs to, as the owner's notices name it: a cron job by its id, else the run (one of
-     * OpenClaw's background runs by what it is), with its source when a hold's answers are bound to one.
+     * The cron run a sub-agent's call belongs to: the link its session took from its parent session when OpenClaw
+     * reported the spawn (`subagent_spawned`), the parent being the cron run's own session or another sub-agent of
+     * it. OpenClaw gives a sub-agent's run no cron metadata of its own (no trigger, no provenance), and the parent is
+     * known only from the spawn hooks' requester session key. Null when the spawn is not reported yet, or the parent
+     * was not serving a cron run then. Never from the prompt or the session key's text.
+     */
+    function jobRunOf(ctx: any): JobRunLink | null {
+      try {
+        const link = store.jobRunOf(ctx?.sessionKey);
+        return link?.via === "subagent" ? link : null;
+      } catch (err) {
+        api.logger.warn(`${LOG} could not read the sub-agent's cron run: ${String(err)}`);
+        return null;
+      }
+    }
+
+    /**
+     * The unattended run a call belongs to, as the owner's notices name it: a cron job by its id (`subagent`: a call
+     * of a sub-agent of the job's run), else the run (one of OpenClaw's background runs by what it is), with its
+     * source when a hold's answers are bound to one.
      */
     function unattendedRun(
       sref: string,
@@ -1269,6 +1321,7 @@ const plugin = {
       kind: selfEdit.SelfEditKind | null = null,
       boundJob?: string | null,
       source: passes.Source | null = null,
+      subagent = false,
     ): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
@@ -1282,7 +1335,7 @@ const plugin = {
       const hostJob = boundJob !== undefined ? boundJob : hold.cronJobId(null, run);
       const job = hostJob ? { id: hostJob, name: tagged?.id === hostJob ? tagged.name : null } : boundJob !== undefined ? null : tagged;
       const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
-      return { where: hold.whereText(name, sref, job?.id, job?.name, job ? null : source), jobId: job?.id ?? null };
+      return { where: hold.whereText(name, sref, job?.id, job?.name, job ? null : source, subagent && !!job), jobId: job?.id ?? null };
     }
 
     /**
@@ -1293,6 +1346,17 @@ const plugin = {
       const found = runNow.activeRun(ocDir, jobId);
       if (found) return found;
       return { runKey: runId ? `agent:${runId}` : null, startedAt: null };
+    }
+
+    /**
+     * The run of cron job `jobId` as a hold keeps it: its key (`runKeyOf`) and when it started, from its running
+     * receipt, else when the plugin first heard of the agent run (its first hook); null when neither is known.
+     */
+    function runIdentity(jobId: string, runId: string | undefined): { runKey: string | null; runStart: Date | null } {
+      const { runKey, startedAt } = runKeyOf(jobId, runId);
+      if (startedAt) return { runKey, runStart: startedAt };
+      const seen = store.loadRun(runId).seenAtMs;
+      return { runKey, runStart: typeof seen === "number" ? new Date(seen) : null };
     }
 
     /**
@@ -1345,18 +1409,62 @@ const plugin = {
       });
     }
 
-    // The end of a cron run the plugin started for an owner's allow: the owner gets one line on how it went.
+    // The end of a cron run: the owner gets one line listing the run's other held calls (`hold.endOfRun`), and, for a
+    // run the plugin started for an owner's allow, one line on how it went. The session no longer serves the run.
     api.on("agent_end", (event: any, ctx: any) =>
       safely("agent_end", () => {
         const runId = event?.runId ?? ctx?.runId;
         const jobId = hold.cronJobId(ctx, store.loadRun(runId));
         if (!jobId) return;
         const cfg = loadConfig().cfg;
+        const now = new Date();
         const { runKey, startedAt } = runKeyOf(jobId, runId);
-        const rec = passes.runEnd(cfg.stateDir, passes.jobRef(jobId), runKey, startedAt, new Date());
+        const rec = passes.runEnd(cfg.stateDir, passes.jobRef(jobId), runKey, startedAt, now);
         if (rec) outcomeNotice(cfg, rec);
+        endLines(cfg, passes.jobRef(jobId), runKey, now);
+        safely("job run link", () => {
+          const cur = store.jobRunOf(ctx?.sessionKey);
+          if (cur?.via === "cron" && cur.run_id === runId) store.setJobRun(ctx.sessionKey, null);
+        });
       }),
     );
+
+    /** Sends the run's end line (`hold.endLineText`) for each group the run leads, and logs it. Never throws. */
+    function endLines(cfg: PluginConfig, ref: string | null, runKey: string | null, now: Date): void {
+      safely("run end line", () => {
+        const groups = hold.endOfRun(cfg.stateDir, ref, runKey, now);
+        if (!groups.length) return;
+        const target = store.loadNotify();
+        const outbound = outboundOf();
+        for (const [lead, members, canAll] of groups) {
+          let notice: Json = { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+          if (target && outbound?.loadAdapter) {
+            notice = { status: "queued", target: target.channel };
+            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), "run end line");
+          } else if (target) {
+            notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+          }
+          if (notice.status === "unsent") api.logger.warn(`${LOG} run ended with held calls but sent no end line: ${String(notice.reason)}`);
+          traffic.write({
+            kind: "run_group",
+            op: "end_line",
+            lead: lead.id ?? null,
+            listed: members.map((m) => m.id),
+            job_ref: ref,
+            notice,
+          });
+        }
+      });
+    }
+
+    /** Sends one line to the owner's notify target; a failed delivery is logged. */
+    function sendLine(target: NonNullable<ReturnType<Store["loadNotify"]>>, text: string, what: string): void {
+      hold.track(
+        hold.deliver(outboundOf(), hostConfig(), target, text).then((why) => {
+          if (why) api.logger.warn(`${LOG} ${what} not delivered: ${why}`);
+        }),
+      );
+    }
 
     function outboundOf(): hold.Outbound | undefined {
       try {
@@ -1521,7 +1629,8 @@ const plugin = {
     /**
      * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
      * whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of a waiting hold of the
-     * same job and action is counted on it, and no notice is sent.
+     * same job and action is counted on it, and no notice is sent; nor for a hold that joins its cron run's group
+     * (`hold.create`), which the run's end line lists. `jobRun`: the cron run's own run record, for a sub-agent of it.
      */
     function holdCall(
       cfg: PluginConfig,
@@ -1537,12 +1646,19 @@ const plugin = {
         match: passes.Match;
         acted?: boolean;
         runKey?: string | null;
+        /** When the held run started, for closing earlier runs' groups (`hold.staleGroups`); null when not known. */
+        runStart?: Date | null;
+        acts?: boolean;
+        jobRun?: RunContext | null;
       },
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
       const source = bound.jobId ? null : (bound.source ?? null);
-      const { where } = unattendedRun(sref, triggerKind, run, null, bound.jobId, source);
+      // a sub-agent's hold names the job as its cron run does (the run's prompt tag gives the name)
+      const { where } = bound.jobRun
+        ? unattendedRun(sref, "scheduled", bound.jobRun, null, bound.jobId, null, true)
+        : unattendedRun(sref, triggerKind, run, null, bound.jobId, source);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
@@ -1569,10 +1685,23 @@ const plugin = {
       } catch {
         // a malformed response: no description
       }
+      const ref = passes.jobRef(bound.jobId);
+      if (ref && target) {
+        // an earlier run of the job that ended where the plugin could not see it: its end line goes out first
+        try {
+          for (const [lead, members, canAll] of hold.staleGroups(cfg.stateDir, ref, bound.runKey ?? null, bound.runStart ?? null, now)) {
+            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), "earlier run's end line");
+          }
+        } catch (err) {
+          // those holds stay listed in status
+          api.logger.warn(`${LOG} could not send an earlier run's end line: ${String(err)}`);
+        }
+      }
       let id: string | null = null;
       let repeat = false;
+      let lead: string | undefined;
       try {
-        ({ id, repeat } = hold.create(
+        ({ id, repeat, lead } = hold.create(
           cfg.stateDir,
           {
             requestId: built.planir.request_id,
@@ -1591,6 +1720,7 @@ const plugin = {
             jobDigest,
             acted: !!bound.acted,
             runKey: bound.runKey ?? null,
+            acts: !!bound.acts,
           },
           now,
           record,
@@ -1603,6 +1733,9 @@ const plugin = {
       }
       if (repeat) {
         notice = { status: "not_sent", target: null, reason: "repeat of a waiting hold" };
+      } else if (lead) {
+        // one notice per run: this call is listed in the run's end line (`hold.endOfRun`)
+        notice = { status: "not_sent", target: null, reason: "in the run's group", lead };
       } else if (id !== null && target && notice.status === "queued") {
         try {
           const scope: hold.Scope = bound.jobId !== null ? "job" : (source?.kind ?? null);

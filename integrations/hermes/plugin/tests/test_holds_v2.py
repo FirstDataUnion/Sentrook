@@ -322,9 +322,9 @@ def test_a_non_owner_is_refused(h, monkeypatch, verb):
 @pytest.mark.parametrize(
     ("raw", "reply"),
     [
-        ("allow", "usage: /sentrook allow <id> [now|later|always]"),
-        ("allow h-zzzzzz", "usage: /sentrook allow <id> [now|later|always]"),
-        ("allow h-1a2b3c sometimes", "usage: /sentrook allow <id> [now|later|always]"),
+        ("allow", "usage: /sentrook allow <id> [now|later|always|all]"),
+        ("allow h-zzzzzz", "usage: /sentrook allow <id> [now|later|always|all]"),
+        ("allow h-1a2b3c sometimes", "usage: /sentrook allow <id> [now|later|always|all]"),
         ("deny h-1a2b3c always", "usage: /sentrook deny <id>"),
         ("deny p-1a2b3c", "usage: /sentrook deny <id>"),
         (

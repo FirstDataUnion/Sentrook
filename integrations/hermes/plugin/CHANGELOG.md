@@ -102,6 +102,19 @@ since the version the catalog pins.
   observe mode; the reply says which. When the held run had already sent or written something before the held call,
   plain `allow` waits for the next run and the notice offers `/sentrook allow <id> now`, which starts the whole job
   again with a warning that it repeats what it did. The command's output goes to `run-now.log` in the state folder.
+- **A cron job's sub-agents belong to the job.** Hermes gives a delegated child no cron identity of its own, so its
+  held calls were bound to its parent session, which is new every run: `allow always` and `deny` never reached the
+  job's next run, and `allow` could not start the job. The plugin now keeps the cron run on the run's own session, and
+  a child whose parent Hermes names as that session (or a child of such a child) takes it: its holds are the job's
+  holds, the notice says "a sub-agent of cron job …", `allow` starts the job again, and the job's passes and
+  denials cover the same call from any of its runs' sub-agents. A sub-agent of a chat or another run is unchanged.
+- **One notice per cron run.** The run's first held call sends the notice. A later held call of another action in
+  the same run (a sub-agent's included) joins it and sends nothing then; when the run ends, one line lists those
+  calls by tool and description, with their ids. `/sentrook allow <id> all`, on the id that line names, answers it
+  and lets every listed call through once in the same started run, each still checked against its own scan; a listed
+  call that itself sends or writes is left for its own answer, and before the line has gone out `all` covers the
+  first call alone. A call held after the line went out gets its own notice, and a run whose end the plugin did not
+  see gets its line when the job's next run first holds a call.
 - **Holds on runs that are not cron jobs bind to where the run came from.** A subagent's hold is bound to its parent
   session (the `parent_session_id` Hermes gives each turn of a delegated child), and a webhook run's to its route (the
   `webhook:<route>` user id Hermes's webhook platform binds for an authenticated route; the delivery id is not used).

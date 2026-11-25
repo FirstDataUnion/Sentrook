@@ -451,9 +451,10 @@ COMMANDS: dict[str, Subcommand] = {
         "answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: run the "
         "cron job again now, letting the call through once in that run (now: even when the held run had "
         "already sent or written something; later: on the job's next scheduled run instead), or with always "
-        "for 30 days on that job, where the notice offers it; Sentrook never runs the held call itself",
+        "for 30 days on that job, where the notice offers it; all, on the id a run's end line names, also lets "
+        "the calls that line listed through once in that run; Sentrook never runs the held call itself",
         run_allow,
-        args="<id> [now|later|always]",
+        args="<id> [now|later|always|all]",
         owner_only=True,
         cli_rest=True,
     ),

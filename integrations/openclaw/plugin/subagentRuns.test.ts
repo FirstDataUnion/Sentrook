@@ -6,7 +6,8 @@
  * the owner's message), so its reviews are held like any subagent's: under a cron job, a heartbeat, an event run or
  * someone else's chat, and also under the owner's own direct chat, because OpenClaw refuses a plugin's approval
  * request from a subagent's run (its gateway identity has no approvals scope), so no card could reach the owner.
- * The hold is bound to the parent session; blocks stay blocks.
+ * The hold is bound to the parent session (a cron run's sub-agent: to the run's job, jobSubagents.test.ts); blocks
+ * stay blocks.
  */
 
 import assert from "node:assert/strict";
@@ -203,8 +204,14 @@ for (const [what, parent] of PARENTS) {
     assert.equal(scans.at(-1).trigger.kind, "subagent");
     assert.equal(scans.at(-1).session.agent_role, "subagent");
     const [entry] = holds();
-    assert.equal(entry.source.kind, "subagent");
-    assert.equal(entry.source.ref, passes.sourceRef("subagent", scans.at(-1).session.parent_session_ref));
+    if (parent.trigger === "cron") {
+      // a cron run's sub-agent belongs to its job (jobSubagents.test.ts)
+      assert.equal(entry.job_ref, passes.jobRef(parent.jobId));
+      assert.equal(entry.source, null);
+    } else {
+      assert.equal(entry.source.kind, "subagent");
+      assert.equal(entry.source.ref, passes.sourceRef("subagent", scans.at(-1).session.parent_session_ref));
+    }
     assert.equal(r.sent.length, before + 1, "the owner is told");
   });
 }
