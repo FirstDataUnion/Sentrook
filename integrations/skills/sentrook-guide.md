@@ -60,6 +60,27 @@ and files Sentrook found, and the grant that would let calls like it through. If
 wrong, `{{cmd report}} <id>` prints a report to send to the Sentrook team: `--github` opens a public issue with it
 filled in, and `--save` writes the full record to a private file to email (the command gives the address).
 
+## Working well with Sentrook
+
+Sentrook judges each call by what it can see: what the call reads, where it sends, and what the owner asked for. A
+call that does one clear thing is easy to judge; code that gathers local data and reaches many hosts at once looks
+like data being collected and sent out, whatever it is for. These habits let the scan see your work clearly. They are
+never about getting past a check: a call that needs the owner's review should still get it.
+
+- **Fetch with {{host}}'s own web or fetch tools.** To read a web page or an API, use those tools rather than HTTP
+  requests written into code or a shell command.
+- **Keep code local.** A code or shell call that reads local files should not also reach the network, and one that
+  reaches the network should not read local files. Fetch with the web tools, save what you need in the work
+  directory, then process it there. This is for fetching: when the task is to send local data out, send it plainly,
+  in one call the owner can review.
+- **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
+  review. Not on an unattended run ({{unattended_runs}}), where nobody can answer and the call is held.
+- **Use one work directory** for a task's files and outputs.
+- **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
+  name.
+- **When a call is held or blocked, leave that call.** Do not try it again in a new shape. Tell the owner what
+  happened and point them to `{{cmd why}}`.
+
 ## What you never do
 
 - Never run {{change_commands}}, or their `{{cli_prefix}}` forms. Only the owner runs them.
