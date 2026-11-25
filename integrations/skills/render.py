@@ -175,7 +175,7 @@ HOSTS: dict[str, dict] = {
                 "through for the rest of this session; **Always** lets it through from now on; **Deny** stops it. "
                 "Where a grant would cover calls like this, the prompt says what Session and Always also set."
             ),
-            "unattended_runs": "cron jobs, subagents, webhooks, the API server",
+            "unattended_runs": "cron jobs, webhooks, the API server, subagents of those",
             "run_sources": "a subagent's parent session, a webhook's route",
             "sourceless_runs": "the API server",
             "held_notice": (
@@ -205,7 +205,10 @@ HOSTS: dict[str, dict] = {
             ),
             "attended_explain": (
                 "Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local "
-                "terminal count as attended. The API server, cron jobs, subagents and webhooks do not: a call there "
+                "terminal count as attended. A subagent of the owner's own chat, TUI or desktop app asks there too "
+                "(not from the local terminal, where Hermes answers a subagent's prompt itself, nor while "
+                "`delegation.subagent_auto_approve` is on); one nobody answers in time is held. The API server, "
+                "cron jobs, webhooks and their subagents do not: a call there "
                 "that needs review is held for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of asking. If a UI in front of the API "
                 "server shows Hermes's approval prompts, the owner can add it with "
                 "`{{cmd attended}} add api_server --confirm`. That loosens Sentrook, so only suggest it when the "
@@ -289,8 +292,10 @@ HOSTS: dict[str, dict] = {
             "attended_explain": (
                 "Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control "
                 "UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, "
-                "heartbeat or subagent holds the call for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of asking. Which runs hold is set "
-                "by Sentrook's `approval.scheduledIntentKinds` setting."
+                "heartbeat or subagent holds the call for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of "
+                "asking. That includes a subagent the owner's own chat started: OpenClaw cannot show a subagent's "
+                "prompt, so its hold is bound to that chat. Which runs hold is set by Sentrook's "
+                "`approval.scheduledIntentKinds` setting."
             ),
         },
     },

@@ -26,7 +26,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
   category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
   with `/sentrook why last`.
-- **A held call.** Where nobody can answer a prompt (cron jobs, subagents, webhooks, the API server), a call that needs review does not run, and
+- **A held call.** Where nobody can answer a prompt (cron jobs, webhooks, the API server, subagents of those), a call that needs review does not run, and
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `/sentrook allow <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
   next scheduled run instead; when the held run had already sent or written something, only `now` runs it again);
@@ -90,7 +90,7 @@ never about getting past a check: a call that needs the owner's review should st
   directory, then process it there. This is for fetching: when the task is to send local data out, send it plainly,
   in one call the owner can review.
 - **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
-  review. Not on an unattended run (cron jobs, subagents, webhooks, the API server), where nobody can answer and the call is held.
+  review. Not on an unattended run (cron jobs, webhooks, the API server, subagents of those), where nobody can answer and the call is held.
 - **Use one work directory** for a task's files and outputs.
 - **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
   name.

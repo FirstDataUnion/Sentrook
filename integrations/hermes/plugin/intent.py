@@ -210,6 +210,45 @@ def owner_attends(
     )
 
 
+#: Where Hermes shows a delegated child's approval prompt in its parent's chat. A child runs on a worker thread that
+#: keeps the parent's session context, so on the gateway (the chat platforms, and the TUI and desktop app through their
+#: own gateway) the child's prompt joins the parent chat's approval queue and is answered there. The classic terminal
+#: and ACP answer a child's prompt on the worker thread with nobody asked: deny, or approve with
+#: `delegation.subagent_auto_approve`.
+CHILD_PROMPT_PLATFORMS = ATTENDED_PLATFORMS | frozenset({"tui", "desktop"})
+
+
+def children_auto_approved(cfg: dict[str, Any], env: dict[str, str] | None = None) -> bool:
+    """`delegation.subagent_auto_approve` is on, read as Hermes reads it (a string by its words, anything else by its
+    truth): where nothing can show a sub-agent's prompt, Hermes's own callback for the sub-agent's thread approves it,
+    with nobody asked. A sub-agent never asks then: its reviews are held. A config the plugin could not read, or one
+    Hermes is told to ignore (`HERMES_IGNORE_USER_CONFIG`), counts as on."""
+    if not cfg or _truthy(env or {}, "HERMES_IGNORE_USER_CONFIG"):
+        return True
+    delegation = cfg.get("delegation")
+    value = delegation.get("subagent_auto_approve") if isinstance(delegation, dict) else None
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def asks_for_children(
+    platform: str,
+    env: dict[str, str],
+    *,
+    sender_relation: Any,
+    attended_platforms: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """A sub-agent this session delegates to asks its reviews here, in this chat: the owner attends it
+    (`owner_attends`), the turn is the owner's own (sender `owner`), and Hermes shows a child's prompt on this platform
+    (`CHILD_PROMPT_PLATFORMS`). Anywhere else the sub-agent's reviews are held for the owner."""
+    return (
+        sender_relation == "owner"
+        and platform in CHILD_PROMPT_PLATFORMS
+        and owner_attends(platform, env, attended_platforms=attended_platforms)
+    )
+
+
 def trigger_kind(platform: str) -> str:
     if not platform:
         return "unknown"

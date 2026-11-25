@@ -447,8 +447,17 @@ is not told which checks fired or the risk score; you can see those with `hermes
 Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms (every one Hermes's
 gateway ships except Raft, whose adapter sends nothing into the chat), the Hermes TUI, the Hermes desktop app (also when
 it connects to a gateway on another machine), an editor connected over ACP and the local terminal count as attended. Elsewhere, including the API
-server, cron, subagents, webhooks and A2A peers, a review holds the call instead
-(see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
+server, cron, webhooks and A2A peers, a review holds the call instead
+(see [Held calls](#held-calls-on-unattended-runs)).
+
+A subagent you start from your own direct message on a chat platform, the TUI or the desktop app is attended too:
+Hermes shows its approval prompt in that chat (on a chat platform also after your turn has ended, while the
+subagent still runs), and you answer it there as you would any other. A prompt nobody answers in time, one Hermes cannot show or withdraws,
+or one the subagent's own thread answers because no chat could show it, holds the call instead, bound to the chat
+that started the subagent. In the local terminal and over ACP Hermes answers a subagent's prompts itself, so there a
+subagent's reviews are held, and so they are everywhere while `delegation.subagent_auto_approve` is on (Hermes would
+approve them with nobody asked). A subagent of a cron job, a webhook, the API server, a group chat or someone else's
+message, and a subagent of such a subagent, is unattended. If a UI in front of the API server shows Hermes's approval
 prompts, add it with `/sentrook attended add api_server --confirm` (see [Attended platforms](#attended-platforms)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 
@@ -538,7 +547,7 @@ Where nobody can answer a review (the runs above), the call is **held**:
   - a webhook run: its route (the name in `/webhooks/<route>`).
 
   There `/sentrook allow <id>` lets the next matching call from the same source through once within 7 days (nothing
-  is started), `/sentrook allow <id> always` lets that source make it for 30 days (where offered), and
+  is started; a subagent that would ask in your chat uses it instead of asking), `/sentrook allow <id> always` lets that source make it for 30 days (where offered), and
   `/sentrook deny <id>` refuses it from that source for 30 days. The same call from another parent session or route
   is held again.
 - A run Hermes names no source for, such as an API-server run (Hermes gives the run no key name), offers only
@@ -733,7 +742,7 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
   in a session where you switched on YOLO, where Hermes approves the prompt itself (see above). Answering
   **Session** or **Always** stops these questions in that chat until Sentrook can scan again; another chat, or a
   different kind of failure (for example credentials that expire meanwhile), still asks.
-- **On unattended runs** (the API server, cron, subagents, webhooks, and anywhere Hermes approvals are switched off
+- **On unattended runs** (the API server, cron, webhooks, subagents of those, and anywhere Hermes approvals are switched off
   as described above) nobody can answer, so the call is blocked. The agent is told that Sentrook did not scan the
   call, that this is a service problem rather than a security block, and that the call did not run. The call is not
   held, so there is nothing to approve, but you get a notice where notices go, like a held call's.

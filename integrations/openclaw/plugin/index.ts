@@ -898,8 +898,11 @@ const plugin = {
       const triggerKind: string = built.planir.trigger.kind;
       const timing = resolveApprovalTiming(cfg.approval, intentKindOf(triggerKind), undefined);
       // Nobody can answer a prompt in one of OpenClaw's background runs, on any OpenClaw: the host cancels it or ends
-      // the run. That holds for every call of the run, not only its saves (backgroundSave.ts).
-      const unattended = timing.unattended || runKind !== null;
+      // the run. That holds for every call of the run, not only its saves (backgroundSave.ts). Nor in a subagent's run,
+      // even one the owner's own chat started: OpenClaw refuses a plugin's approval request from a subagent's run (its
+      // gateway identity has no approvals scope), so its reviews are held, bound to the parent session (`runSource`),
+      // whatever `approval.scheduledIntentKinds` says.
+      const unattended = timing.unattended || runKind !== null || triggerKind === "subagent";
 
       let result: ScanOk | ScanFailure;
       const { scan, issuer } = cfg.endpoints;

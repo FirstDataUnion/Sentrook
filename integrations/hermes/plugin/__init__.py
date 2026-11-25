@@ -57,6 +57,8 @@ from .decision import (
     unattended_view,
 )
 from .intent import (
+    asks_for_children,
+    children_auto_approved,
     conversation_sender_of,
     hermes_config,
     is_unattended,
@@ -121,6 +123,13 @@ _tool_markers = {
 _proposal_unchecked: dict[str, bool] = {}
 #: The traffic log record each own tool's calls are logged as.
 _TOOL_RECORD = {setup_report.TOOL: "setup_report", proposals.TOOL: "setup_proposal"}
+#: Review prompts a sub-agent asked in its parent's chat, by request id, until the answer comes: what a hold needs if
+#: the prompt times out or cannot be shown (`_child_prompt_fallback`). Oldest dropped past `_CHILD_PROMPTS_KEPT`.
+_child_prompts: dict[str, dict[str, Any]] = {}
+_CHILD_PROMPTS_KEPT = 64
+#: The prompt outcomes after which a sub-agent's review falls back to a hold: nobody answered in time, Hermes could not
+#: show the prompt, or it withdrew it (the sub-agent or the chat's turn ended first).
+_CHILD_FALLBACK = {"timeout", "notify_failed", "cancelled"}
 
 
 def _settings() -> dict[str, Any]:
@@ -581,8 +590,41 @@ def _scan_one(
         "subagent": built["subagent"],
         "attended_platforms": owner_settings.attended_of(cfg),
     }
+    # A sub-agent of the owner's attended chat asks in that chat: Hermes shows its prompt there (`asks_for_children`).
+    # Approvals off or YOLO still count, as they would in the parent chat, and so does Hermes approving a sub-agent's
+    # prompts by itself (`children_auto_approved`).
+    parent_chat = (
+        _parent_chat(store, turn)
+        if built["subagent"]
+        and not loop_save
+        and not background_run
+        and not children_auto_approved(host_cfg, env)
+        else None
+    )
+    in_parent_chat = parent_chat is not None and not is_unattended(
+        parent_chat, env, attended_platforms=attendance["attended_platforms"]
+    )
     # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
-    unattended = loop_save or background_run or is_unattended(built["platform"], env, **attendance)
+    unattended = (
+        loop_save
+        or background_run
+        or (not in_parent_chat and is_unattended(built["platform"], env, **attendance))
+    )
+    # Whether a sub-agent of this session asks in this chat, for its own scans (`_parent_chat`).
+    sender = (planir.get("trigger") or {}).get("sender") or {}
+    sess["children"] = {
+        "ask": not unattended
+        and (
+            in_parent_chat
+            or asks_for_children(
+                built["platform"],
+                env,
+                sender_relation=sender.get("relation"),
+                attended_platforms=attendance["attended_platforms"],
+            )
+        ),
+        "platform": parent_chat if in_parent_chat else built["platform"],
+    }
 
     ep = cfg.endpoints
     result: ScanOk | ScanFailure
@@ -771,6 +813,23 @@ def _scan_one(
                 if rerun is not None and held.get("id"):
                     _note_rerun(cfg, rerun["id"], held=str(held["id"]))
         elif (
+            in_parent_chat and (child_pass := _parent_pass(cfg, store, built, resp, kw)) is not None
+        ):
+            # A sub-agent asks in its parent's chat, but the owner already answered a held call from a sub-agent of
+            # the same parent (`passes`): that answer settles it.
+            if child_pass["kind"] == "deny":
+                entry["decision"] = "denied_by_owner"
+                directive = {"action": "block", "message": passes.DECLINED_TEXT}
+                by_pass = {"id": child_pass["id"], "kind": "deny"}
+            else:
+                entry["decision"] = "allowed_by_pass"
+                by_pass = {
+                    "id": child_pass["id"],
+                    "kind": "allow",
+                    "uses": child_pass.get("uses"),
+                    "use_count": child_pass.get("use_count"),
+                }
+        elif (
             not relaxed
             and snooze.applies(resp, cfg.block_at)
             and snooze.active(
@@ -856,8 +915,14 @@ def _scan_one(
                         if allow_key is not None and session_allow.risk_of(resp) is not None
                         else {}
                     ),
+                    **({"child": True} if in_parent_chat else {}),
                 },
             )
+            if in_parent_chat:
+                _keep_child_prompt(
+                    planir["request_id"],
+                    {"built": built, "resp": resp, "sid": sid, "args": kw.get("args")},
+                )
     else:
         logger.warning("scan failed (%s): %s", result.kind, result.detail)
         if cfg.mode != "observe":
@@ -904,6 +969,7 @@ def _scan_one(
             **({"staging": stage} if stage is not None else {}),
             **({"skill_review": True} if loop_save else {}),
             **({"background_run": True} if background_run else {}),
+            **({"parent_chat": True} if in_parent_chat else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
             "response": result.response if isinstance(result, ScanOk) else None,
@@ -1305,6 +1371,70 @@ def _source_of(built: dict[str, Any]) -> dict[str, str] | None:
         route = user[len("webhook:") :] if user.startswith("webhook:") else ""
         return passes.source_of("hook", route)
     return None
+
+
+def _parent_chat(store: Store, turn: dict[str, Any]) -> str | None:
+    """The platform of the chat a sub-agent asks its reviews in: its parent session's, when the parent's own scans
+    recorded that a sub-agent of it asks there (`sess["children"]`, from `asks_for_children`, or inherited by a
+    sub-agent that asks in its own parent's chat). None when the parent session is not known to the plugin or its
+    sub-agents hold: the parent is a cron job, a webhook or other unattended run, a chat that is not the owner's, or
+    a surface where Hermes answers a child's prompt itself (the classic terminal)."""
+    parent = turn.get("parent_session_id")
+    if not isinstance(parent, str) or not parent.strip():
+        return None
+    rec = store.load_session(parent).get("children")
+    if not isinstance(rec, dict) or rec.get("ask") is not True:
+        return None
+    platform = rec.get("platform")
+    return platform if isinstance(platform, str) and platform else None
+
+
+def _parent_pass(
+    cfg: PluginConfig, store: Store, built: dict[str, Any], resp: dict[str, Any], kw: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The owner's pass or denial for sub-agents of this sub-agent's parent session that settles this call
+    (`passes.check`), or None: then it is asked."""
+    source = _source_of(built)
+    if source is None:
+        return None
+    match = passes.match_of(str(built.get("tool") or ""), resp, kw.get("args"), store.salt(), False)
+    try:
+        return passes.check(cfg.state_dir, source.get("ref"), match, resp, datetime.now(UTC))
+    except Exception as exc:  # noqa: BLE001 - nothing settled: asked
+        logger.warning("sentrook could not read the passes: %s", exc)
+        return None
+
+
+def _keep_child_prompt(request_id: str, pending: dict[str, Any]) -> None:
+    _child_prompts[request_id] = pending
+    while len(_child_prompts) > _CHILD_PROMPTS_KEPT:
+        _child_prompts.pop(next(iter(_child_prompts)))
+
+
+def _child_prompt_fallback(
+    cfg: PluginConfig, traffic: TrafficLog, store: Store, request_id: str
+) -> dict[str, Any] | None:
+    """A sub-agent's review prompt in its parent's chat timed out or could not be shown: the call (not run) becomes a
+    hold for the owner, bound to the parent session (`_source_of`), with the usual notice. None when the prompt is
+    not known here (asked before a restart)."""
+    pending = _child_prompts.pop(request_id, None)
+    if pending is None:
+        return None
+    built, resp, sid = pending["built"], pending["resp"], pending["sid"]
+    source = _source_of(built)
+    match = passes.match_of(
+        str(built.get("tool") or ""), resp, pending.get("args"), store.salt(), source is None
+    )
+    return _hold(
+        cfg,
+        traffic,
+        built,
+        resp,
+        sid=sid,
+        source=source,
+        match=match,
+        acted=_acted(store.load_session(sid)),
+    )
 
 
 #: How the owner's notices name a webhook run.
@@ -1782,6 +1912,21 @@ def on_post_approval_response(**kw: Any) -> None:
                 if choice == "timeout"
                 else "blocked"
             )
+        # A sub-agent's prompt in its parent's chat that nobody answered in time, or that Hermes could not show: the
+        # call is held for the owner, as if the sub-agent had been unattended.
+        held = None
+        if review.get("child"):
+            # The sub-agent's own thread answered it on the terminal surface: no chat showed the prompt (Hermes's
+            # callback for a sub-agent's thread denies), so nobody was asked.
+            unseen = str(kw.get("surface") or "") == "cli" and not approved
+            if choice in _CHILD_FALLBACK or unseen:
+                held = _child_prompt_fallback(cfg, traffic, store, str(review["request_id"]))
+                if held is not None:
+                    final = "held"
+                elif unseen:
+                    final = "blocked"  # nobody was asked: not the owner's denial"
+            else:
+                _child_prompts.pop(str(review["request_id"]), None)
         answer_key = str(kw.get("session_key") or "default")
         sid = review["sid"]
         remembered = (
@@ -1831,6 +1976,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 **({"decided_by": history.REVIEW_LOOP} if auto else {}),
                 **({"grant_id": remembered["entry"]["id"]} if remembered else {}),
                 **({"session_allow": True} if allowed_on is not None else {}),
+                **({"hold": held} if held is not None else {}),
             }
         )
     except Exception as exc:  # noqa: BLE001

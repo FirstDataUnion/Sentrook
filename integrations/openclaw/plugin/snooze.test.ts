@@ -317,12 +317,14 @@ test("an unattended review is not snoozed", async () => {
   assert.equal(rec.snoozed, undefined);
 });
 
-test("a subagent review is not snoozed, even where the approval policy calls subagents attended", async () => {
+test("a subagent review is not snoozed, even where the approval policy leaves subagents out: it is held", async () => {
   put(entry("session", snooze.sessionRef("sub-1")), entry("all"));
   const r = await registered({ approval: { scheduledIntentKinds: ["cron"] } });
   const { out, rec } = await r.scan("rm REVIEW", "sub-1", "user", { inputProvenance: { sourceRole: "subagent" } });
   assert.equal(scans.at(-1).trigger.kind, "subagent");
-  assert.ok(out.requireApproval);
+  // OpenClaw cannot show a subagent's prompt: held for the owner (subagentRuns.test.ts), never snoozed.
+  assert.equal(out.block, true);
+  assert.equal(rec.decision, "held");
   assert.equal(rec.snoozed, undefined);
 });
 
