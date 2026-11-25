@@ -30,7 +30,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `/sentrook allow <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
   next scheduled run instead; when the held run had already sent or written something, only `now` runs it again);
-  `/sentrook allow <id> always` lets the job make it for 30 days; `/sentrook deny <id>` refuses the job the same call for 30 days. "The same call" is the same tool
+  `/sentrook allow <id> always` lets the job make it for 30 days; `/sentrook deny <id>` refuses the job the same call for 30 days. Off a cron job, the answers bind to where the run came from (a subagent's parent session, a webhook's route) and nothing is started; a run with no such source (the API server) offers only `/sentrook allow`, for the exact call. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `/sentrook why <id>` shows the grant Sentrook suggests, and `/sentrook passes` lists what the answers set. A hold nobody
   answers expires after 7 days. The owner gets one notice on the chat where they sent `/sentrook notify here` (or the home channel of the platform in Sentrook's `owner_channel` setting); until one is set, nothing is sent and the call is still held.
@@ -61,7 +61,7 @@ owner type it.
 - `/sentrook bind add|remove|list [channel]`: lists, adds or removes a channel binding: a channel this deployment normally delivers to.
 - `/sentrook snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook enforces or unattended runs; `off` ends it.
 - `/sentrook allow <id> [now|later|always]`: answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: runs the cron job again now and lets the call through once in that run (`now`: even when the held run had already sent or written something; `later`: on the job's next scheduled run instead), or with `always` for 30 days on that job, where the notice offers it; Sentrook never runs the held call itself.
-- `/sentrook deny <id>`: refuses a call held on a cron job, by the id in Sentrook's notice: that job is refused the same call for 30 days, with no more notices.
+- `/sentrook deny <id>`: refuses a call held on a cron job, or on another run with a source, by the id in Sentrook's notice: that job or source is refused the same call for 30 days, with no more notices.
 - `/sentrook approve <id>`: the same as allow (kept for one release).
 - `/sentrook passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
 - `/sentrook notify here|off|status|<platform>`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat (with a test notice); `<platform>` (on the machine) to that platform's home channel; `off` goes back to the `owner_channel` setting.
@@ -75,6 +75,27 @@ Point the owner to `/sentrook history` to find the scan and `/sentrook why <id>`
 and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
 wrong, `/sentrook report <id>` prints a report to send to the Sentrook team: `--github` opens a public issue with it
 filled in, and `--save` writes the full record to a private file to email (the command gives the address).
+
+## Working well with Sentrook
+
+Sentrook judges each call by what it can see: what the call reads, where it sends, and what the owner asked for. A
+call that does one clear thing is easy to judge; code that gathers local data and reaches many hosts at once looks
+like data being collected and sent out, whatever it is for. These habits let the scan see your work clearly. They are
+never about getting past a check: a call that needs the owner's review should still get it.
+
+- **Fetch with Hermes's own web or fetch tools.** To read a web page or an API, use those tools rather than HTTP
+  requests written into code or a shell command.
+- **Keep code local.** A code or shell call that reads local files should not also reach the network, and one that
+  reaches the network should not read local files. Fetch with the web tools, save what you need in the work
+  directory, then process it there. This is for fetching: when the task is to send local data out, send it plainly,
+  in one call the owner can review.
+- **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
+  review. Not on an unattended run (cron jobs, subagents, webhooks, the API server), where nobody can answer and the call is held.
+- **Use one work directory** for a task's files and outputs.
+- **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
+  name.
+- **When a call is held or blocked, leave that call.** Do not try it again in a new shape. Tell the owner what
+  happened and point them to `/sentrook why`.
 
 ## What you never do
 

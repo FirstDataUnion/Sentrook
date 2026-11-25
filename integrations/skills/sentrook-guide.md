@@ -30,7 +30,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `{{cmd allow}} <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
   next scheduled run instead; when the held run had already sent or written something, only `now` runs it again);
-  `{{cmd allow}} <id> always` lets the job make it for 30 days; `{{cmd deny}} <id>` refuses the job the same call for 30 days. "The same call" is the same tool
+  `{{cmd allow}} <id> always` lets the job make it for 30 days; `{{cmd deny}} <id>` refuses the job the same call for 30 days. Off a cron job, the answers bind to where the run came from ({{run_sources}}) and nothing is started; a run with no such source ({{sourceless_runs}}) offers only `{{cmd allow}}`, for the exact call. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `{{cmd why}} <id>` shows the grant Sentrook suggests, and `{{cmd passes}}` lists what the answers set. A hold nobody
   answers expires after 7 days. {{held_notice}}
@@ -59,6 +59,27 @@ Point the owner to `{{cmd history}}` to find the scan and `{{cmd why}} <id>` to 
 and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
 wrong, `{{cmd report}} <id>` prints a report to send to the Sentrook team: `--github` opens a public issue with it
 filled in, and `--save` writes the full record to a private file to email (the command gives the address).
+
+## Working well with Sentrook
+
+Sentrook judges each call by what it can see: what the call reads, where it sends, and what the owner asked for. A
+call that does one clear thing is easy to judge; code that gathers local data and reaches many hosts at once looks
+like data being collected and sent out, whatever it is for. These habits let the scan see your work clearly. They are
+never about getting past a check: a call that needs the owner's review should still get it.
+
+- **Fetch with {{host}}'s own web or fetch tools.** To read a web page or an API, use those tools rather than HTTP
+  requests written into code or a shell command.
+- **Keep code local.** A code or shell call that reads local files should not also reach the network, and one that
+  reaches the network should not read local files. Fetch with the web tools, save what you need in the work
+  directory, then process it there. This is for fetching: when the task is to send local data out, send it plainly,
+  in one call the owner can review.
+- **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
+  review. Not on an unattended run ({{unattended_runs}}), where nobody can answer and the call is held.
+- **Use one work directory** for a task's files and outputs.
+- **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
+  name.
+- **When a call is held or blocked, leave that call.** Do not try it again in a new shape. Tell the owner what
+  happened and point them to `{{cmd why}}`.
 
 ## What you never do
 

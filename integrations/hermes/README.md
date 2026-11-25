@@ -533,8 +533,16 @@ Where nobody can answer a review (the runs above), the call is **held**:
   another channel, a riskier version of the call, or the same call from another job is held again. A call that names
   nothing Sentrook can recognise is matched on its exact arguments, and only `allow` is offered for it. The job is
   the one Hermes says the run belongs to, never anything in the prompt.
-- On a run that is not a cron job (a subagent, a webhook, the API server), only `allow` is offered: the next call
-  with exactly the same arguments, from any such run, goes through once within 7 days.
+- On another unattended run, the answers are bound to where the run came from, when Hermes names it:
+  - a subagent: its parent session. Another subagent of the same parent session counts as the same source;
+  - a webhook run: its route (the name in `/webhooks/<route>`).
+
+  There `/sentrook allow <id>` lets the next matching call from the same source through once within 7 days (nothing
+  is started), `/sentrook allow <id> always` lets that source make it for 30 days (where offered), and
+  `/sentrook deny <id>` refuses it from that source for 30 days. The same call from another parent session or route
+  is held again.
+- A run Hermes names no source for, such as an API-server run (Hermes gives the run no key name), offers only
+  `allow`: the next call with exactly the same arguments, from any such run, goes through once within 7 days.
 - `/sentrook passes` lists what your answers set, with their use counts and end dates; `/sentrook passes revoke <id>`
   removes one. `status`, `verify` and the dashboard show them too.
 - Answering never sets the grant Sentrook may suggest for the call: `/sentrook why <id>` shows its command, for you to

@@ -352,7 +352,8 @@ for (const kind of ["cron", "heartbeat"]) {
     const where = JSON.parse(readFileSync(path.join(stateDir, "holds.json"), "utf8")).holds[0].where;
     assert.equal(lines[i + 1], CASES.hold_context.replace("{kind}", trig.kind).replace("{where}", where));
     const answer = await r.command("sentrook-approve", id);
-    assert.ok(answer.includes("may go through once"), answer);
+    // a heartbeat's hold is bound to its agent; a cron run OpenClaw names no job for, to the exact call
+    assert.ok(answer.includes(kind === "cron" ? "may go through once" : "may make this call once more"), answer);
     assert.deepEqual(grantsFile(), []);
   });
 }

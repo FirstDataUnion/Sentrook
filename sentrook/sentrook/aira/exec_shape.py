@@ -386,7 +386,9 @@ def derive_exec_shape(
     shape.pipelines = _derive_pipelines(root, source, index_by_start)
     # One role scan, shared by the per-path view and the roll-up: the group regexes dominate the
     # cost, so computing them per consumer would run several scans.
-    shape.path_roles = derive_path_roles(command, groups)
+    shape.path_roles = derive_path_roles(
+        command, groups, [a for seg in shape.segments for a in seg.argv]
+    )
     shape.paths = derive_paths(
         command,
         [s.argv for s in shape.segments],

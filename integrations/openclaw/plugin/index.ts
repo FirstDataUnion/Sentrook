@@ -1063,13 +1063,15 @@ const plugin = {
           // Nobody can answer a review here: the owner's denial or pass for this job and action settles it
           // (passes.ts); otherwise the call waits for the owner (hold.ts).
           const jobId = hold.cronJobId(ctx, run);
-          const match = passes.matchOf(event.toolName, resp, event?.params ?? {}, store.salt(), jobId === null);
+          // Off a cron job, where the run came from, when OpenClaw names it: the answers are bound to it.
+          const source = jobId === null ? runSource(triggerKind, ctx, built) : null;
+          const match = passes.matchOf(event.toolName, resp, event?.params ?? {}, store.salt(), jobId === null && source === null);
           // A run the plugin started for an owner's allow (runNow.ts): its pass serves this run only.
           const rerun = jobId ? startedRun(cfg, jobId, runId) : null;
           const rerunId = typeof rerun?.id === "string" ? rerun.id : null;
           let settled: Json | null = null;
           try {
-            settled = passes.check(cfg.stateDir, passes.jobRef(jobId), match, resp, new Date(), rerunId);
+            settled = passes.check(cfg.stateDir, passes.jobRef(jobId) ?? source?.ref ?? null, match, resp, new Date(), rerunId);
           } catch (err) {
             api.logger.warn(`${LOG} could not read the passes: ${String(err)}`);
           }
@@ -1087,6 +1089,7 @@ const plugin = {
             held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, {
               sid,
               jobId,
+              source,
               match,
               acted: !!run.acted,
               runKey: jobId ? runKeyOf(jobId, runId).runKey : null,
@@ -1234,8 +1237,27 @@ const plugin = {
     }
 
     /**
+     * Where an unattended run that is not a cron job came from, as OpenClaw's run metadata names it, for binding a held
+     * call's answers (`passes.Source`); null when OpenClaw names nothing usable. Never from the prompt or the call:
+     * - a heartbeat: its agent (`ctx.agentId`, from OpenClaw's settings: one heartbeat per agent);
+     * - a subagent: its parent session (`parent_session_ref`, from the spawn hooks' requester session key).
+     * A webhook or event run has none: OpenClaw gives plugins no hook or mapping id, and the run's job id, run id and
+     * (isolated) session key are new for every request.
+     */
+    function runSource(triggerKind: string, ctx: any, built: { planir: any }): passes.Source | null {
+      if (triggerKind === "heartbeat") {
+        return typeof ctx?.agentId === "string" ? passes.sourceOf("heartbeat", ctx.agentId) : null;
+      }
+      if (triggerKind === "subagent") {
+        const parent = built.planir?.session?.parent_session_ref;
+        return typeof parent === "string" ? passes.sourceOf("subagent", parent) : null;
+      }
+      return null;
+    }
+
+    /**
      * The unattended run a call belongs to, as the owner's notices name it: a cron job by its id, else the run (one of
-     * OpenClaw's background runs by what it is).
+     * OpenClaw's background runs by what it is), with its source when a hold's answers are bound to one.
      */
     function unattendedRun(
       sref: string,
@@ -1243,6 +1265,7 @@ const plugin = {
       run: any,
       kind: selfEdit.SelfEditKind | null = null,
       boundJob?: string | null,
+      source: passes.Source | null = null,
     ): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
@@ -1256,7 +1279,7 @@ const plugin = {
       const hostJob = boundJob !== undefined ? boundJob : hold.cronJobId(null, run);
       const job = hostJob ? { id: hostJob, name: tagged?.id === hostJob ? tagged.name : null } : boundJob !== undefined ? null : tagged;
       const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
-      return { where: hold.whereText(name, sref, job?.id, job?.name), jobId: job?.id ?? null };
+      return { where: hold.whereText(name, sref, job?.id, job?.name, job ? null : source), jobId: job?.id ?? null };
     }
 
     /**
@@ -1504,11 +1527,19 @@ const plugin = {
       tool: string,
       triggerKind: string,
       run: any,
-      bound: { sid: string; jobId: string | null; match: passes.Match; acted?: boolean; runKey?: string | null },
+      bound: {
+        sid: string;
+        jobId: string | null;
+        source?: passes.Source | null;
+        match: passes.Match;
+        acted?: boolean;
+        runKey?: string | null;
+      },
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const { where } = unattendedRun(sref, triggerKind, run, null, bound.jobId);
+      const source = bound.jobId ? null : (bound.source ?? null);
+      const { where } = unattendedRun(sref, triggerKind, run, null, bound.jobId, source);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
@@ -1520,7 +1551,7 @@ const plugin = {
       const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
       const record = (r: Record<string, unknown>) => traffic.write(r);
       const level = passes.offeredLevel(resp);
-      const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt, !!bound.acted);
+      const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt, !!bound.acted, source !== null);
       let jobDigest: string | null = null;
       if (bound.jobId) {
         try {
@@ -1549,6 +1580,7 @@ const plugin = {
             notice,
             sid: bound.sid,
             jobId: bound.jobId,
+            source,
             match: bound.match,
             level,
             offers,
@@ -1570,7 +1602,8 @@ const plugin = {
         notice = { status: "not_sent", target: null, reason: "repeat of a waiting hold" };
       } else if (id !== null && target && notice.status === "queued") {
         try {
-          const text = hold.noticeText(resp, tool, where, id, offers, (v) => `/sentrook-${v}`, bound.jobId !== null);
+          const scope: hold.Scope = bound.jobId !== null ? "job" : (source?.kind ?? null);
+          const text = hold.noticeText(resp, tool, where, id, offers, (v) => `/sentrook-${v}`, scope);
           const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
             if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
           });

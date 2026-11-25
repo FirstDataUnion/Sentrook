@@ -443,7 +443,7 @@ test("deny on a run OpenClaw names no job for is refused", async () => {
   const { out, rec } = await r.run(1, null);
   assert.deepEqual(out, HELD);
   assert.deepEqual(rec.hold.offers, ["allow"]);
-  assert.match(await r.command("sentrook-deny", rec.hold.id), /not on a cron job/);
+  assert.match(await r.command("sentrook-deny", rec.hold.id), /no cron job or other source/);
 });
 
 // ---- holds repeat, passes list -----------------------------------------------------------------------------

@@ -34,7 +34,13 @@ const FIXTURES = JSON.parse(
     name: string;
     response: any;
     tool: string;
-    where: { run: string; session_ref: string; job_id: string | null; job_name: string | null };
+    where: {
+      run: string;
+      session_ref: string;
+      job_id: string | null;
+      job_name: string | null;
+      source?: { kind: passes.SourceKind; value: string } | null;
+    };
     where_text: string;
     id: string;
     offers: string[];
@@ -261,7 +267,7 @@ test("a scheduled send at risk 47 is held, the agent told not to retry, and the 
   assert.equal(r.sent.length, 1);
   const [notice] = r.sent;
   assert.deepEqual({ channel: notice.channel, to: notice.to, accountId: notice.accountId }, { channel: "telegram", to: "100200300", accountId: "default" });
-  const text = hold.noticeText({ ...SEND.response, ...reply }, "message", where, entry.id, ["allow"], (v) => `/sentrook-${v}`, false);
+  const text = hold.noticeText({ ...SEND.response, ...reply }, "message", where, entry.id, ["allow"], (v) => `/sentrook-${v}`, null);
   assert.equal(notice.text, text);
   assert.match(formatHistory(recentScans(path.join(stateDir, "traffic.jsonl"), 1), "w"), / held +no answer$/m);
 });
@@ -458,13 +464,15 @@ test("observe mode holds nothing", async () => {
 
 test("notice text: the shared text for each case", () => {
   for (const c of FIXTURES.notices) {
-    const where = hold.whereText(c.where.run, c.where.session_ref, c.where.job_id, c.where.job_name);
-    assert.equal(where, c.where_text, c.name);
     const jobId = c.where.job_id;
-    const match = passes.matchOf(c.tool, c.response, {}, "salt", jobId === null);
-    const offers = passes.offers(jobId, passes.offeredLevel(c.response), match.named, passes.riskOf(c.response), FIXTURES.block_at, !!(c as { acted?: boolean }).acted);
+    const src = c.where.source ? passes.sourceOf(c.where.source.kind, c.where.source.value) : null;
+    const where = hold.whereText(c.where.run, c.where.session_ref, c.where.job_id, c.where.job_name, src);
+    assert.equal(where, c.where_text, c.name);
+    const match = passes.matchOf(c.tool, c.response, {}, "salt", jobId === null && src === null);
+    const offers = passes.offers(jobId, passes.offeredLevel(c.response), match.named, passes.riskOf(c.response), FIXTURES.block_at, !!(c as { acted?: boolean }).acted, src !== null);
     assert.deepEqual(offers, c.offers, c.name);
-    assert.equal(hold.noticeText(c.response, c.tool, where, c.id, offers, noticeCmd, jobId !== null), c.text, c.name);
+    const scope = jobId !== null ? "job" : (src?.kind ?? null);
+    assert.equal(hold.noticeText(c.response, c.tool, where, c.id, offers, noticeCmd, scope), c.text, c.name);
   }
 });
 
@@ -749,7 +757,7 @@ test("a cron marker in the prompt names a job only on a run the host calls a cro
   // An unattended run that is not a cron run keeps its own label.
   const beat = await scan("heartbeat", "beat-1");
   assert.equal(beat.rec.decision, "held");
-  assert.equal(holds().at(-1).where, `heartbeat run, session ${beat.rec.session_ref}`);
+  assert.equal(holds().at(-1).where, `heartbeat run, agent "main", session ${beat.rec.session_ref}`);
   assert.ok(!r.sent.at(-1).text.includes("9f1c2a"));
 });
 

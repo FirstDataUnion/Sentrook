@@ -12,7 +12,7 @@
 # An operator overlay directory (`SENTROOK_LISTS_DIR`) may carry a file of the same name; its
 # entries are merged additively (lists are appended, groups are unioned).
 
-version: 4
+version: 5
 
 # --------------------------------------------------------------------------
 # sensitive — credential, key, auth-store, browser-profile and PII material.
@@ -64,7 +64,7 @@ credential_store:
     - '~?/?\.ssh(?:/[^\s"'']*)?(?![A-Za-z0-9_])'
     # Cloud CLI credential directories, same shape.
     - '~?/?\.aws(?:/[^\s"'']*)?(?![A-Za-z0-9_])'
-    - '\.config/gcloud/(?:credentials|legacy_credentials|application_default_credentials)'
+    - '\.config/gcloud/(?:credentials|legacy_credentials|application_default_credentials|access_tokens)'
     - '\.azure/(?:accessTokens|msal_token_cache|service_principal_entries)'
     - '\.kube/config'
     - '\.gnupg/'
@@ -75,8 +75,18 @@ credential_store:
     # Unix account databases. Narrower than the historical `/etc/[^\s"']+`, which classed
     # /etc/hosts and /etc/os-release as credential material.
     - '/etc/(?:shadow|gshadow|sudoers|passwd)\b'
-    # macOS keychains.
+    # macOS keychains, GNOME and KDE keyrings.
     - 'Library/Keychains'
+    - '\.local/share/(?:keyrings|kwalletd)(?:/[^\s"'']*)?(?![A-Za-z0-9_])'
+    # A private key by extension, named where it reads as a file name (as for `words` below, so "put your
+    # deploy.pem in ~/keys" in prose is not one). Public files are not keys: `ca.pem`, and a name with `cert`,
+    # `chain`, `bundle`, `pub`, `root`, `trust` or `dhparam` in it, unless it also says `key` or `priv`
+    # (`client-cert-key.pem`). CA roots (`AmazonRootCA1.pem`, `rootCA.pem`) and DH parameters are public.
+    - '(?:(?<=[/\\''"`=@<>{,:])|(?<=<\s)|(?<![\s\S]))(?!(?![A-Za-z0-9_.-]*(?:key|priv))[A-Za-z0-9_.-]*(?:cert|chain|bundle|pub|root|trust|dhparam))(?!ca\.pem)[A-Za-z0-9_.-]+\.pem(?![A-Za-z0-9_])'
+    # `.key` in a key directory or with a key-like name. Not every `.key`: a macOS Keynote deck is `Talk.key`, and
+    # `item.key` in code is attribute access.
+    - '/(?:ssl|tls|private|keys?|certs?|secrets?|pki)/(?:[^\s"''/]+/)*[A-Za-z0-9_.-]*[A-Za-z0-9_-]\.key(?![A-Za-z0-9_.-])'
+    - '(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*(?:priv|private|server|client|tls|ssl)[A-Za-z0-9_.-]*\.key(?![A-Za-z0-9_.-])'
 
   # Literal basenames, matched **independently of directory**.
   #
@@ -99,14 +109,21 @@ credential_store:
     - database.sqlite
     - .env
     - .netrc
-    - credentials
     - .pgpass
     - .npmrc
     - .docker/config.json
-    - shadow
     - secrets.yaml
     - secrets.yml
     - secrets.json
+
+  # Basenames that are also ordinary words. Matched like `basenames` in a path, but in free text only where they read
+  # as a file name: after a `/`, a quote, `=`, `@`, `<`, `{`, `,` or `:`, as a whole shell argument, optionally with a
+  # leading dot. The word "credentials" in prose
+  # or in a code string ("service account credentials, not an API key") is not a credential store, and neither is a
+  # longer name that starts with it (`credentials-guide.md`). `.credentials` and `credentials.json` are.
+  words:
+    - credentials
+    - shadow
 
 # --------------------------------------------------------------------------
 # credential_bearing_config — configuration that also carries credentials.

@@ -85,8 +85,8 @@ SUMMARIES: dict[str, tuple[str, str]] = {
     ),
     "deny": (
         "<id>",
-        "refuses a call held on a cron job, by the id in Sentrook's notice: that job is refused the same call for "
-        "30 days, with no more notices",
+        "refuses a call held on a cron job, or on another run with a source, by the id in Sentrook's notice: that "
+        "job or source is refused the same call for 30 days, with no more notices",
     ),
     "approve": ("<id>", "the same as allow (kept for one release)"),
     "passes": (
@@ -176,6 +176,8 @@ HOSTS: dict[str, dict] = {
                 "Where a grant would cover calls like this, the prompt says what Session and Always also set."
             ),
             "unattended_runs": "cron jobs, subagents, webhooks, the API server",
+            "run_sources": "a subagent's parent session, a webhook's route",
+            "sourceless_runs": "the API server",
             "held_notice": (
                 "The owner gets one notice on the chat where they sent `{{cmd notify}} here` (or the home channel "
                 "of the platform in Sentrook's `owner_channel` setting); until one is set, nothing is sent and the "
@@ -258,6 +260,8 @@ HOSTS: dict[str, dict] = {
                 "days; **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 minutes."
             ),
             "unattended_runs": "cron jobs, heartbeats, subagents, webhooks",
+            "run_sources": "a heartbeat's agent, a subagent's parent session",
+            "sourceless_runs": "a webhook",
             "held_notice": (
                 "The owner gets one notice as a direct message on the chat where they ran `{{cmd notify}} here`; "
                 "until then, nothing is sent and the call is still held."

@@ -1,5 +1,5 @@
 {
-  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {allow}, {deny} and {why} replaced by their commands (/sentrook allow, /sentrook deny and /sentrook why on Hermes, /sentrook-allow, /sentrook-deny and /sentrook-why on OpenClaw). `where` is built from its parts as `where_text`. `offers` are the answers the hold offers, in the notice's order, from the run's cron job (`where.job_id`), the response's `owner_pass` (absent, as from a scanner that predates it, null or any other value: no pass; and no pass at all for a scan that is enforced, has a floor or is not complete, since no pass could let it through), whether the call names its parties (the entities its reasons and description name, with an approval fingerprint that names something) and its risk against `block_at`: on a cron job `allow` when there is a level, then `allow later` (or `allow now` when the held run had already acted, `acted`: see `run_now`), `allow always` at level always for a named call below the block line, and `deny`; elsewhere `allow` alone, bound to the exact call. Chat markup (`[]()<>|@` and backticks) is taken out of every field the agent can influence (job id and name, tool, target description), and the target description is capped at 160 characters. The notice never carries the risk, reason codes, scores, entity kinds or the suggested grant: Hermes copies what it sends into the agent's own transcript. A call a denial for its job settles gets `declined_text`. `passes` says when a pass set at `pass_level` from the `held` response lets a later call (`later`, with `later_tool` when the tool differs, and `args`/`later_args` for a call that names nothing) through: same tool, same parties, risk no higher, no new warning (every reason code but the scanner's scoring and wording notes), not enforced, no floor, a complete scan, and the later scan's owner_pass at or above the pass's level. `hints` lists suggested grants and what the grant command accepts (null: refused). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans and calls a pass or denial settled. An outcome's `ceiling` is the scanner's verdict ceiling; an unattended run never lowers a block to a review with it, so a lowered block is never held, except when the response's `reasons` include `cap.unanswered_retry` (a retry of a review nobody answered may ask, never block on its own): that block is held. `scan_failure_notices` are the owner's notices when a scan failure blocks a call on an unattended run: the same shape, with {verify} replaced by the host's setup check (hermes sentrook verify, openclaw sentrook verify). There is no hold id: nothing is held. The reason names the failure kind (`reasons`), never its detail. After one is sent, further scan failures with the same `quiet_key` (the cron job id when known, else the session) send none for `scan_failure_quiet_hours`.",
+  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {allow}, {deny} and {why} replaced by their commands (/sentrook allow, /sentrook deny and /sentrook why on Hermes, /sentrook-allow, /sentrook-deny and /sentrook-why on OpenClaw). `where` is built from its parts as `where_text`. `offers` are the answers the hold offers, in the notice's order, from the run's cron job (`where.job_id`), the response's `owner_pass` (absent, as from a scanner that predates it, null or any other value: no pass; and no pass at all for a scan that is enforced, has a floor or is not complete, since no pass could let it through), whether the call names its parties (the entities its reasons and description name, with an approval fingerprint that names something) and its risk against `block_at`: on a cron job `allow` when there is a level, then `allow later` (or `allow now` when the held run had already acted, `acted`: see `run_now`), `allow always` at level always for a named call below the block line, and `deny`; on another run with a source (`where.source`: its kind and the host's value, shown by name; see `sources`) the same without `allow later` or `allow now`, and with the answers' lines naming the source; elsewhere `allow` alone, bound to the exact call. Chat markup (`[]()<>|@` and backticks) is taken out of every field the agent can influence (job id and name, tool, target description), and the target description is capped at 160 characters. The notice never carries the risk, reason codes, scores, entity kinds or the suggested grant: Hermes copies what it sends into the agent's own transcript. A call a denial for its job settles gets `declined_text`. `passes` says when a pass set at `pass_level` from the `held` response lets a later call (`later`, with `later_tool` when the tool differs, and `args`/`later_args` for a call that names nothing) through: same tool, same parties, risk no higher, no new warning (every reason code but the scanner's scoring and wording notes), not enforced, no floor, a complete scan, and the later scan's owner_pass at or above the pass's level. `hints` lists suggested grants and what the grant command accepts (null: refused). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans and calls a pass or denial settled. An outcome's `ceiling` is the scanner's verdict ceiling; an unattended run never lowers a block to a review with it, so a lowered block is never held, except when the response's `reasons` include `cap.unanswered_retry` (a retry of a review nobody answered may ask, never block on its own): that block is held. `scan_failure_notices` are the owner's notices when a scan failure blocks a call on an unattended run: the same shape, with {verify} replaced by the host's setup check (hermes sentrook verify, openclaw sentrook verify). There is no hold id: nothing is held. The reason names the failure kind (`reasons`), never its detail. After one is sent, further scan failures with the same `quiet_key` (the cron job id when known, else the session) send none for `scan_failure_quiet_hours`.",
   "held_text": "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run.",
   "declined_text": "The owner declined this action for this job, so Sentrook did not run it. Continue without it.",
   "hold_days": 7,
@@ -341,6 +341,290 @@
         "allow"
       ],
       "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: subagent run, session s_9f8e7d6c5b4a\nTool: write: Appends to ~/jobs/nightly/run.log\nHeld because it deletes or overwrites data in a way that is hard to undo.\nReply within 7 days:\n- let this exact call through once, within 7 days: {allow} h-0a0b0c\nFor the reasons: {why} h-0a0b0c",
+      "acted": false
+    },
+    {
+      "name": "a heartbeat run of agent main, owner_pass always and a named target: allow once more from the heartbeat, always and deny, with nothing started",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        },
+        "owner_pass": "always",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports"
+      },
+      "tool": "message",
+      "where": {
+        "run": "heartbeat run",
+        "session_ref": "s_5e6f7a8b9c0d",
+        "job_id": null,
+        "job_name": null,
+        "source": {
+          "kind": "heartbeat",
+          "value": "main"
+        }
+      },
+      "where_text": "heartbeat run, agent \"main\", session s_5e6f7a8b9c0d",
+      "id": "h-4b4b4b",
+      "offers": [
+        "allow",
+        "allow always",
+        "deny"
+      ],
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: heartbeat run, agent \"main\", session s_5e6f7a8b9c0d\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- let this call through once more from this agent's heartbeat, within 7 days: {allow} h-4b4b4b\n- let this agent's heartbeat make this call for 30 days: {allow} h-4b4b4b always\n- refuse it from this agent's heartbeat for 30 days, with no more notices: {deny} h-4b4b4b\nFor the reasons: {why} h-4b4b4b",
+      "acted": false
+    },
+    {
+      "name": "a webhook run of hook github-push, owner_pass once: allow once more from the hook and deny",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        },
+        "owner_pass": "once",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports"
+      },
+      "tool": "message",
+      "where": {
+        "run": "webhook run",
+        "session_ref": "s_6f7a8b9c0d1e",
+        "job_id": null,
+        "job_name": null,
+        "source": {
+          "kind": "hook",
+          "value": "github-push"
+        }
+      },
+      "where_text": "webhook run, hook \"github-push\", session s_6f7a8b9c0d1e",
+      "id": "h-5c5c5c",
+      "offers": [
+        "allow",
+        "deny"
+      ],
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: webhook run, hook \"github-push\", session s_6f7a8b9c0d1e\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- let this call through once more from this hook, within 7 days: {allow} h-5c5c5c\n- refuse it from this hook for 30 days, with no more notices: {deny} h-5c5c5c\nFor the reasons: {why} h-5c5c5c",
+      "acted": false
+    },
+    {
+      "name": "a subagent run whose parent session is known, owner_pass once: allow once more from subagents of that session and deny",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 52.4,
+        "enforced": null,
+        "owner_pass": "once",
+        "tool_description": {
+          "category": "writes_file",
+          "template": "Appends to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/jobs/nightly/run.log"
+          }
+        },
+        "reasons": [
+          {
+            "code": "destroy.overwrite"
+          }
+        ]
+      },
+      "tool": "write",
+      "where": {
+        "run": "subagent run",
+        "session_ref": "s_9f8e7d6c5b4a",
+        "job_id": null,
+        "job_name": null,
+        "source": {
+          "kind": "subagent",
+          "value": "h_0a1b2c3d4e5f"
+        }
+      },
+      "where_text": "subagent run, parent session h_0a1b2c3d4e5f, session s_9f8e7d6c5b4a",
+      "id": "h-6d6d6d",
+      "offers": [
+        "allow",
+        "deny"
+      ],
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: subagent run, parent session h_0a1b2c3d4e5f, session s_9f8e7d6c5b4a\nTool: write: Appends to ~/jobs/nightly/run.log\nHeld because it deletes or overwrites data in a way that is hard to undo.\nReply within 7 days:\n- let this call through once more from subagents of the same parent session, within 7 days: {allow} h-6d6d6d\n- refuse it from subagents of the same parent session for 30 days, with no more notices: {deny} h-6d6d6d\nFor the reasons: {why} h-6d6d6d",
+      "acted": false
+    },
+    {
+      "name": "an API-server run whose key has a name, owner_pass null: deny only",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        },
+        "owner_pass": null,
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports"
+      },
+      "tool": "message",
+      "where": {
+        "run": "API-server run",
+        "session_ref": "s_7a8b9c0d1e2f",
+        "job_id": null,
+        "job_name": null,
+        "source": {
+          "kind": "api",
+          "value": "reports-bot"
+        }
+      },
+      "where_text": "API-server run, API key \"reports-bot\", session s_7a8b9c0d1e2f",
+      "id": "h-7e7e7e",
+      "offers": [
+        "deny"
+      ],
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: API-server run, API key \"reports-bot\", session s_7a8b9c0d1e2f\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- refuse it from this API key for 30 days, with no more notices: {deny} h-7e7e7e\nFor the reasons: {why} h-7e7e7e",
+      "acted": false
+    },
+    {
+      "name": "a hook name with chat markup is quoted as a name with the markup taken out",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        },
+        "owner_pass": "once",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports"
+      },
+      "tool": "message",
+      "where": {
+        "run": "webhook run",
+        "session_ref": "s_6f7a8b9c0d1e",
+        "job_id": null,
+        "job_name": null,
+        "source": {
+          "kind": "hook",
+          "value": "[Allow all](https://evil.example) @everyone"
+        }
+      },
+      "where_text": "webhook run, hook \"Allow allhttps://evil.example everyone\", session s_6f7a8b9c0d1e",
+      "id": "h-5c5c5d",
+      "offers": [
+        "allow",
+        "deny"
+      ],
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: webhook run, hook \"Allow allhttps://evil.example everyone\", session s_6f7a8b9c0d1e\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- let this call through once more from this hook, within 7 days: {allow} h-5c5c5d\n- refuse it from this hook for 30 days, with no more notices: {deny} h-5c5c5d\nFor the reasons: {why} h-5c5c5d",
       "acted": false
     }
   ],
@@ -2252,6 +2536,78 @@
       "passed_held": "Sentrook: cron job {job} ran again, and the call you allowed went through once. It also made a different call, held as {hold}.",
       "held": "Sentrook: cron job {job} ran again but did not make the call you allowed; it made a different call, held as {hold}.",
       "none": "Sentrook: cron job {job} ran again without using your answer."
+    }
+  },
+  "sources": {
+    "_comment": "Unattended runs that are not cron jobs bind a hold's answers to where the run came from, as the host's run metadata names it (never the prompt or the call): a heartbeat's agent id, a webhook's hook or route name, a subagent's parent session ref, an API-server key's name. `refs` gives each source's ref: the kind's prefix and the first 12 hex digits of sha256(\"<kind>\\n<value>\"). On such a hold `allow` is a one-use pass for the next matching call from the same source within `exact_pass_days` (nothing is started), and `allow always` and `deny` are bound to the same source for `pass_days`; a call from another source of the same kind, or from no source, is held. A run with no source keeps `allow` alone, bound to the exact call. `replies` are the owner's replies to each answer with {subject} from `subjects`, {until} the pass's expiry, {passes} the passes command and {pass} its id. `passes_list` is how the passes list and the dashboard show a source's pass or denial, with {until} its expiry.",
+    "refs": [
+      {
+        "kind": "heartbeat",
+        "value": "main",
+        "ref": "a_a5b032a0a558"
+      },
+      {
+        "kind": "heartbeat",
+        "value": "ops",
+        "ref": "a_5b2e7d407764"
+      },
+      {
+        "kind": "hook",
+        "value": "github-push",
+        "ref": "w_28c909efde56"
+      },
+      {
+        "kind": "subagent",
+        "value": "h_0a1b2c3d4e5f",
+        "ref": "p_bbe52a3ed354"
+      },
+      {
+        "kind": "api",
+        "value": "reports-bot",
+        "ref": "k_ce508039398b"
+      },
+      {
+        "kind": "api",
+        "value": "main",
+        "ref": "k_5ed8ec170510"
+      }
+    ],
+    "subjects": [
+      {
+        "kind": "heartbeat",
+        "name": "main",
+        "subject": "The heartbeat of agent \"main\""
+      },
+      {
+        "kind": "hook",
+        "name": "github-push",
+        "subject": "Webhook \"github-push\""
+      },
+      {
+        "kind": "subagent",
+        "name": "h_0a1b2c3d4e5f",
+        "subject": "Subagents of session h_0a1b2c3d4e5f"
+      },
+      {
+        "kind": "api",
+        "name": "reports-bot",
+        "subject": "API key \"reports-bot\""
+      },
+      {
+        "kind": "hook",
+        "name": "[x](https://evil.example) @here",
+        "subject": "Webhook \"xhttps://evil.example here\""
+      }
+    ],
+    "replies": {
+      "allow": "{subject} may make this call once more, until {until}. Sentrook does not run the held call itself. Undo: {passes} revoke {pass}.",
+      "allow always": "{subject} may make this call until {until}. Undo: {passes} revoke {pass}.",
+      "deny": "{subject} will not make this call until {until}; you won't be told again. Undo: {passes} revoke {pass}."
+    },
+    "passes_list": {
+      "allow": "allowed once from {source}, until {until}: {tool}: {description}",
+      "allow always": "allowed from {source} until {until}, used {used} times: {tool}: {description}",
+      "deny": "denied from {source} until {until}: {tool}: {description}"
     }
   }
 }
