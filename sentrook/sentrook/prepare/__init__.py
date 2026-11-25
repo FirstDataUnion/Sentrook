@@ -1364,8 +1364,26 @@ def kernel_effects_of(state: SessionState, call: CanonicalCall) -> KernelEffects
     return kernel_effects(call.command or "")
 
 
-#: A module file written in the session (`csv.py`, `csv/__init__.py`): importing that module may load it.
-_MODULE_FILE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\.py\b|/__init__\.py\b)")
+#: The name before a `.py` (or `/__init__.py`) a call writes or names: `csv.py` next to a program loads
+#: instead of the library's `csv`. Read backwards from each `.py`, at most this many characters.
+_MODULE_NAME_BACK = 64
+_MODULE_NAME_TAIL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _module_files(text: str) -> set[str]:
+    """Module names whose file `text` names (`csv.py`, `csv/__init__.py`). Linear: one scan for `.py`, and a
+    bounded look back from each."""
+    out: set[str] = set()
+    at = text.find(".py")
+    while at >= 0:
+        end = at + 3
+        if end >= len(text) or not (text[end].isalnum() or text[end] == "_"):
+            stem_end = at - len("/__init__") if text[:at].endswith("/__init__") else at
+            m = _MODULE_NAME_TAIL.search(text[max(0, stem_end - _MODULE_NAME_BACK) : stem_end])
+            if m:
+                out.add(m.group(0))
+        at = text.find(".py", at + 3)
+    return out
 
 
 def mark_kernel_clear(
@@ -1381,10 +1399,10 @@ def mark_kernel_clear(
     if state.status not in (TokenStatus.VALID, TokenStatus.FIRST_STEP, TokenStatus.SEEDED):
         return  # what earlier calls left in the interpreter is not known
     code = [c for c in calls if is_code_call(c)]
+    if not code:
+        return
     effects = {id(c): kernel_effects_of(state, c) for c in code}
-    written = [
-        (c, {m.group(1) for m in _MODULE_FILE.finditer(c.text or "")}) for c in [*history, *calls]
-    ]
+    written = [(c, _module_files(c.text or "")) for c in [*history, *calls]]
     for c in code:
         reads = kernel_reads(c.command or "")
         if unknown or reads is None:
