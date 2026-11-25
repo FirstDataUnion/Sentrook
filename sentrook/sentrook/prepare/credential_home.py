@@ -126,7 +126,8 @@ _SHARED_SECOND_LEVEL = frozenset(
 )
 #: Common shared-hosting and shared-registration suffixes, where anyone can get a name of their own
 #: (`someone.github.io`): a wildcard on one of these, or on a domain above one (`*.amazonaws.com`), covers strangers.
-#: Not every such suffix: the most common ones.
+#: Not every such suffix: the most common ones. The plugins keep the same list less the tunnel services, which they
+#: leave to the scanner.
 SHARED_HOSTING = frozenset(
     {
         "github.io",
@@ -162,8 +163,6 @@ SHARED_HOSTING = frozenset(
         "eu.com",
     }
 )
-#: An S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`, `s3-website-us-east-1.amazonaws.com`).
-_S3_ENDPOINT = re.compile(r"s3[.-][a-z0-9.-]*\.amazonaws\.com")
 
 
 def _wildcard_too_broad(base: str) -> bool:
@@ -174,7 +173,8 @@ def _wildcard_too_broad(base: str) -> bool:
         return True
     if any(s == base or s.endswith("." + base) for s in SHARED_HOSTING):
         return True
-    return bool(_S3_ENDPOINT.fullmatch(base))
+    # an S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`, `s3-website-us-east-1.amazonaws.com`)
+    return base.startswith(("s3.", "s3-")) and base.endswith(".amazonaws.com")
 
 
 def host_pattern_ok(host: str) -> bool:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,8 +17,9 @@ from sentrook.converge import load_params
 from sentrook.converge.merge import ANY_SUBJECT, Claim, merge
 from sentrook.converge.relief import compute_relief
 from sentrook.prepare import PrepareOptions, prepare
+from sentrook.prepare.credential_home import host_pattern_ok
 from sentrook.prepare.entities import Entity, EntityKind, Origin
-from sentrook.prepare.grants import GRANT_KINDS, destination_ok, grant_matches
+from sentrook.prepare.grants import GRANT_KINDS, destination_ok, grant_matches, over_broad
 
 KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 CLOCK = datetime(2026, 10, 5, 10, 28, tzinfo=UTC)
@@ -104,6 +106,31 @@ def _target(value):
     if ":" in value or value.startswith("#"):
         return Entity(id="E1", kind=EntityKind.CHANNEL, value=value, display=value)
     return Entity(id="E1", kind=EntityKind.HOST, value=value, display=value)
+
+
+#: Long runs of `.` and `[`, which a pattern check with nested or overlapping repeats would take
+#: quadratic time over.
+LONG_RUNS = [
+    "[" * 100_000,
+    "*." + "[" * 100_000,
+    "a" + "[" * 100_000 + "*",
+    "." * 100_000 + "x",
+    "*." + "." * 100_000 + "a",
+    "*." + "a." * 50_000 + "." * 100_000,
+    "slack:" + "[" * 100_000 + "*",
+    "*@" + "." * 100_000 + "*",
+]
+
+
+def test_pattern_checks_take_linear_time_on_long_runs():
+    host = Entity(id="E1", kind=EntityKind.HOST, value="api.example.com", display="api.example.com")
+    start = time.perf_counter()
+    for p in LONG_RUNS:
+        over_broad(p)
+        destination_ok(p)
+        grant_matches("destination", p, host)
+        host_pattern_ok(p)
+    assert time.perf_counter() - start < 1.0
 
 
 @pytest.mark.parametrize("c", DESTINATION_PATTERNS["cases"], ids=lambda c: c["typed"])

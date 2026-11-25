@@ -9,7 +9,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { homedir, platform as osPlatform } from "node:os";
 
-import { destinationOk, type GrantConfig, NOT_LITERAL, type PluginConfig, TOO_BROAD } from "./config.ts";
+import { destinationOk, type GrantConfig, nothingLiteral, type PluginConfig, TOO_BROAD } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
 import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
@@ -488,7 +488,7 @@ function destinationForms(pattern: string, platform: string | null): Array<[stri
 /** Why a channel binding can never relieve a send, as the listing and verify say it; null when it can. */
 export function bindingProblem(pattern: string): string | null {
   pattern = pattern.trim();
-  if (!pattern.replace(NOT_LITERAL, "")) return "matches every channel, ignored";
+  if (nothingLiteral(pattern)) return "matches every channel, ignored";
   if (!destinationForms(pattern.toLowerCase(), null).some(([f]) => longEnough(f))) return "too short, never sent";
   if (!destinationOk(pattern)) return `${TOO_BROAD}, never sent`;
   return null;

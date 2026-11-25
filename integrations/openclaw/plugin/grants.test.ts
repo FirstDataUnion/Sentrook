@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
 import { helpText, OWNER_SUBCOMMANDS } from "./commands.ts";
-import { resolveConfig } from "./config.ts";
+import { credentialPatternOk, destinationOk, nothingLiteral, resolveConfig, wildcardDomainOk } from "./config.ts";
 import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
@@ -470,13 +470,40 @@ test("an over-broad pattern of another kind is stored as typed: whether it relie
 const DESTINATION_PATTERNS = JSON.parse(readFileSync(path.join(FIXTURES, "destination-patterns.json"), "utf8"));
 for (const c of DESTINATION_PATTERNS.cases) {
   test(`destination pattern: ${c.typed}`, () => {
+    // A scanner-only case is taken as typed.
+    const ok = c.ok || c.scanner_only === true;
     const parsed = grants.parseGrant(`destination ${c.typed} --persistent`, CMD);
-    if (c.ok) assert.deepEqual(parsed, { kind: "destination", pattern: c.typed, scope: "persistent" });
+    if (ok) assert.deepEqual(parsed, { kind: "destination", pattern: c.typed, scope: "persistent" });
     else assert.equal(parsed, DESTINATION_PATTERNS.refusal.replace("{pattern}", c.typed));
     const cfg = resolveConfig({ grants: [{ kind: "destination", pattern: c.typed }] }, {});
-    assert.deepEqual(cfg.unsentGrants, c.ok ? {} : { 0: "too broad" });
+    assert.deepEqual(cfg.unsentGrants, ok ? {} : { 0: "too broad" });
   });
 }
+
+/** Long runs of `.` and `[`, which a pattern check with nested or overlapping repeats would take quadratic time over. */
+const LONG_RUNS = [
+  "[".repeat(100_000),
+  `*.${"[".repeat(100_000)}`,
+  `a${"[".repeat(100_000)}*`,
+  `${".".repeat(100_000)}x`,
+  `*.${".".repeat(100_000)}a`,
+  `*.${"a.".repeat(50_000)}${".".repeat(100_000)}`,
+  `slack:${"[".repeat(100_000)}*`,
+  `*@${".".repeat(100_000)}*`,
+];
+
+test("pattern checks take linear time on long runs of . and [", () => {
+  const start = performance.now();
+  for (const p of LONG_RUNS) {
+    destinationOk(p);
+    nothingLiteral(p);
+    bindingProblem(p);
+    wildcardDomainOk(p);
+    credentialPatternOk(`NAME@${p}`);
+    relevantGrants([{ kind: "destination", pattern: p, scope: "persistent" }], p);
+  }
+  assert.ok(performance.now() - start < 1000, `${performance.now() - start} ms`);
+});
 
 test("a public-suffix destination grant is refused and nothing is stored", async () => {
   const r = await registered();

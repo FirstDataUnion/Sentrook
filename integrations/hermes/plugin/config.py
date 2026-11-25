@@ -54,7 +54,8 @@ SHARED_SECOND_LEVEL = frozenset(
 )
 #: Common shared-hosting and shared-registration suffixes, where anyone can get a name of their own
 #: (`someone.github.io`): a wildcard on one of these, or on a domain above one (`*.amazonaws.com`), covers strangers,
-#: and Sentrook refuses it. Not every such suffix: the most common ones.
+#: and Sentrook refuses it. Not every such suffix: the most common ones. Sentrook's own list also has the tunnel
+#: services; the plugin leaves those to it.
 SHARED_HOSTING = frozenset(
     {
         "github.io",
@@ -73,16 +74,12 @@ SHARED_HOSTING = frozenset(
         "blob.core.windows.net",
         "onrender.com",
         "fly.dev",
-        "ngrok.io",
-        "ngrok-free.app",
-        "ngrok.app",
         "glitch.me",
         "replit.dev",
         "repl.co",
         "blogspot.com",
         "wordpress.com",
         "myshopify.com",
-        "trycloudflare.com",
         "supabase.co",
         "deno.dev",
         "uk.com",
@@ -90,16 +87,13 @@ SHARED_HOSTING = frozenset(
         "eu.com",
     }
 )
-#: An S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`).
-_S3_ENDPOINT = re.compile(r"s3[.-][a-z0-9.-]*\.amazonaws\.com")
 #: Names that never resolve on the public internet (local networks, reserved for tests and examples): a destination
 #: wildcard over one reaches no one else's server.
 PRIVATE_USE = frozenset(
     {"lan", "local", "internal", "localhost", "home.arpa", "test", "example", "invalid"}
 )
-#: What is left of a pattern once glob characters and separators are removed; nothing left means it
-#: matches everything, and the scanner ignores it.
-NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
+#: Characters that are never the literal part of a pattern: glob characters and separators.
+_NOT_LITERAL_CHARS = frozenset("*?/~.@:#_-")
 _GLOB = re.compile(r"[*?\[\]]")
 #: A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme.
 _PLATFORM_PREFIX = re.compile(r"[a-z][a-z0-9_-]*:(?!//)")
@@ -122,7 +116,8 @@ def credential_pattern_ok(pattern: str) -> bool:
         return False
     if any(s == base or s.endswith("." + base) for s in SHARED_HOSTING):
         return False
-    return not _S3_ENDPOINT.fullmatch(base)
+    # an S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`)
+    return not (base.startswith(("s3.", "s3-")) and base.endswith(".amazonaws.com"))
 
 
 def wildcard_domain_ok(pattern: str) -> bool:
@@ -130,6 +125,26 @@ def wildcard_domain_ok(pattern: str) -> bool:
     country second level (`*.co.uk`), a common shared-hosting suffix (`*.github.io`) or part of a numeric address.
     The rule is `credential_pattern_ok`'s, for the host alone."""
     return pattern.startswith("*.") and credential_pattern_ok("NAME@" + pattern.lower().rstrip("."))
+
+
+def nothing_literal(pattern: str) -> bool:
+    """Nothing literal is left once glob characters, `[...]` sets, separators, whitespace and `$HOME` are left out:
+    the pattern matches everything, and the scanner ignores it. One pass, in time linear in the pattern."""
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "[":
+            j = pattern.find("]", i + 1)
+            if j < 0:
+                return False  # a `[` that no `]` closes is literal
+            i = j + 1
+        elif pattern.startswith("$HOME", i):
+            i += 5
+        elif c in _NOT_LITERAL_CHARS or c.isspace():
+            i += 1
+        else:
+            return False
+    return True
 
 
 def _host_glob_ok(host: str) -> bool:
@@ -145,7 +160,7 @@ def destination_ok(pattern: str) -> bool:
     `*.co.uk`, `*.github.io`), or as `*.` and a name that never resolves on the public internet (`PRIVATE_USE`). A channel's name or id after a platform prefix or `#` (`discord:#ops-*`), and the name before an `@`
     (`*@example.com`), may hold a wildcard. Sentrook ignores any other destination grant."""
     pat = pattern.strip().lower()
-    if not NOT_LITERAL.sub("", pat):
+    if nothing_literal(pat):
         return False
     if not _GLOB.search(pat):
         return True

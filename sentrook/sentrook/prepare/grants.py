@@ -177,14 +177,29 @@ def _aware(t: datetime) -> datetime:
     return t if t.tzinfo is not None else t.replace(tzinfo=UTC)
 
 
-#: What is left of a pattern once its glob characters, separators and home markers are removed;
-#: nothing left means the pattern matches everything (`*@*`, `#*` and `*:*` included).
-_NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
+#: Characters that are never the literal part of a pattern: glob characters and separators.
+_NOT_LITERAL_CHARS = frozenset("*?/~.@:#_-")
 
 
 def over_broad(pattern: str) -> bool:
-    """`*`, `?*`, `[a-z]*`, `*.*`, `/`, `/*`, `~/*`, `* *`, `*@*` and the like: nothing literal."""
-    return _NOT_LITERAL.sub("", pattern) == ""
+    """`*`, `?*`, `[a-z]*`, `*.*`, `/`, `/*`, `~/*`, `* *`, `*@*` and the like: nothing literal once glob
+    characters, `[...]` sets, separators, whitespace and `$HOME` are left out (`*@*`, `#*` and `*:*`
+    included). One pass, in time linear in the pattern."""
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "[":
+            j = pattern.find("]", i + 1)
+            if j < 0:
+                return False  # a `[` that no `]` closes is literal
+            i = j + 1
+        elif pattern.startswith("$HOME", i):
+            i += 5
+        elif c in _NOT_LITERAL_CHARS or c.isspace():
+            i += 1
+        else:
+            return False
+    return True
 
 
 _GLOB_CHARS = re.compile(r"[*?\[\]]")

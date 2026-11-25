@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import host_turns
-from .config import NOT_LITERAL, TOO_BROAD, PluginConfig, destination_ok
+from .config import TOO_BROAD, PluginConfig, destination_ok, nothing_literal
 from .intent import (
     approvals_off,
     channel_of,
@@ -246,7 +246,7 @@ def binding_problem(pattern: str) -> str | None:
     """Why a channel binding can never relieve a send, as the listing and verify say it; None when it
     can."""
     pattern = pattern.strip()
-    if not NOT_LITERAL.sub("", pattern):
+    if nothing_literal(pattern):
         return "matches every channel, ignored"
     if not any(_long_enough(f) for f, _ in _destination_forms(pattern.lower(), None)):
         return "too short, never sent"

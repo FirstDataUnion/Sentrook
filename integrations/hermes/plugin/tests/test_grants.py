@@ -3,6 +3,7 @@
 import argparse
 import json
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,7 +11,13 @@ import pytest
 
 import plugin
 from plugin import grants, owner
-from plugin.config import resolve_config
+from plugin.config import (
+    credential_pattern_ok,
+    destination_ok,
+    nothing_literal,
+    resolve_config,
+    wildcard_domain_ok,
+)
 from plugin.planir import (
     binding_problem,
     call_cwd,
@@ -478,14 +485,41 @@ DESTINATION_PATTERNS = json.loads((FIXTURES / "destination-patterns.json").read_
 @pytest.mark.parametrize("c", DESTINATION_PATTERNS["cases"], ids=lambda c: c["typed"])
 def test_a_destination_pattern_is_taken_as_sentrook_takes_it(c):
     """Shared with the OpenClaw plugin's tests and the scanner's: a wildcard over a whole public suffix is
-    refused, and one in the settings is never sent."""
+    refused, and one in the settings is never sent. A scanner-only case is taken as typed."""
+    ok = c["ok"] or c.get("scanner_only", False)
     parsed = grants.parse_grant(f"destination {c['typed']} --persistent", CMD)
-    if c["ok"]:
+    if ok:
         assert parsed == {"kind": "destination", "pattern": c["typed"], "scope": "persistent"}
     else:
         assert parsed == DESTINATION_PATTERNS["refusal"].format(pattern=c["typed"])
     cfg = resolve_config({"grants": [{"kind": "destination", "pattern": c["typed"]}]}, {})
-    assert cfg.unsent_grants == ({} if c["ok"] else {0: "too broad"})
+    assert cfg.unsent_grants == ({} if ok else {0: "too broad"})
+
+
+#: Long runs of `.` and `[`, which a pattern check with nested or overlapping repeats would take
+#: quadratic time over.
+LONG_RUNS = [
+    "[" * 100_000,
+    "*." + "[" * 100_000,
+    "a" + "[" * 100_000 + "*",
+    "." * 100_000 + "x",
+    "*." + "." * 100_000 + "a",
+    "*." + "a." * 50_000 + "." * 100_000,
+    "slack:" + "[" * 100_000 + "*",
+    "*@" + "." * 100_000 + "*",
+]
+
+
+def test_pattern_checks_take_linear_time_on_long_runs():
+    start = time.perf_counter()
+    for p in LONG_RUNS:
+        destination_ok(p)
+        nothing_literal(p)
+        binding_problem(p)
+        wildcard_domain_ok(p)
+        credential_pattern_ok("NAME@" + p)
+        relevant_grants([{"kind": "destination", "pattern": p, "scope": "persistent"}], p)
+    assert time.perf_counter() - start < 1.0
 
 
 def test_a_public_suffix_destination_grant_is_refused_and_nothing_is_stored(term):

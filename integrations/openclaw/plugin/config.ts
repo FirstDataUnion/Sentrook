@@ -246,7 +246,8 @@ export const SHARED_SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "go
 /**
  * Common shared-hosting and shared-registration suffixes, where anyone can get a name of their own
  * (`someone.github.io`): a wildcard on one of these, or on a domain above one (`*.amazonaws.com`), covers strangers,
- * and Sentrook refuses it. Not every such suffix: the most common ones.
+ * and Sentrook refuses it. Not every such suffix: the most common ones. Sentrook's own list also has the tunnel
+ * services; the plugin leaves those to it.
  */
 export const SHARED_HOSTING = new Set([
   "github.io",
@@ -265,34 +266,55 @@ export const SHARED_HOSTING = new Set([
   "blob.core.windows.net",
   "onrender.com",
   "fly.dev",
-  "ngrok.io",
-  "ngrok-free.app",
-  "ngrok.app",
   "glitch.me",
   "replit.dev",
   "repl.co",
   "blogspot.com",
   "wordpress.com",
   "myshopify.com",
-  "trycloudflare.com",
   "supabase.co",
   "deno.dev",
   "uk.com",
   "us.com",
   "eu.com",
 ])
-/** An S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`). */
-const S3_ENDPOINT = /^s3[.-][a-z0-9.-]*\.amazonaws\.com$/;
 /**
  * Names that never resolve on the public internet (local networks, reserved for tests and examples): a destination
  * wildcard over one reaches no one else's server.
  */
 export const PRIVATE_USE = new Set(["lan", "local", "internal", "localhost", "home.arpa", "test", "example", "invalid"]);
+/** Characters that are never the literal part of a pattern: glob characters and separators. */
+const NOT_LITERAL_CHARS = new Set("*?/~.@:#_-");
+
 /**
- * What is left of a pattern once glob characters and separators are removed; nothing left means it matches
- * everything, and the scanner ignores it.
+ * Nothing literal is left once glob characters, `[...]` sets, separators, whitespace and `$HOME` are left out: the
+ * pattern matches everything, and the scanner ignores it. One pass, in time linear in the pattern.
  */
-export const NOT_LITERAL = /\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]/g;
+export function nothingLiteral(pattern: string): boolean {
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i]!;
+    if (c === "[") {
+      const j = pattern.indexOf("]", i + 1);
+      if (j < 0) return false; // a `[` that no `]` closes is literal
+      i = j + 1;
+    } else if (pattern.startsWith("$HOME", i)) {
+      i += 5;
+    } else if (NOT_LITERAL_CHARS.has(c) || /\s/.test(c)) {
+      i += 1;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** `s` without the dots at its end, in time linear in `s`. */
+export function trimDots(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === ".") end--;
+  return s.slice(0, end);
+}
 const GLOB = /[*?[\]]/;
 /** A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme. */
 const PLATFORM_PREFIX = /^[a-z][a-z0-9_-]*:(?!\/\/)/;
@@ -309,7 +331,8 @@ export function credentialPatternOk(pattern: string): boolean {
   if (labels.every((l) => /^\d+$/.test(l))) return false;
   if (labels.length === 2 && SHARED_SECOND_LEVEL.has(labels[0]!) && labels[1]!.length === 2) return false;
   for (const s of SHARED_HOSTING) if (s === base || s.endsWith(`.${base}`)) return false;
-  return !S3_ENDPOINT.test(base);
+  // an S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`)
+  return !((base.startsWith("s3.") || base.startsWith("s3-")) && base.endsWith(".amazonaws.com"));
 }
 /**
  * `pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared country
@@ -317,11 +340,11 @@ export function credentialPatternOk(pattern: string): boolean {
  * `credentialPatternOk`'s, for the host alone.
  */
 export function wildcardDomainOk(pattern: string): boolean {
-  return pattern.startsWith("*.") && credentialPatternOk(`NAME@${pattern.toLowerCase().replace(/\.+$/, "")}`);
+  return pattern.startsWith("*.") && credentialPatternOk(`NAME@${trimDots(pattern.toLowerCase())}`);
 }
 
 function hostGlobOk(host: string): boolean {
-  host = host.trim().toLowerCase().replace(/\.+$/, "");
+  host = trimDots(host.trim().toLowerCase());
   if (!GLOB.test(host)) return true;
   return host.startsWith("*.") && (PRIVATE_USE.has(host.slice(2)) || wildcardDomainOk(host));
 }
@@ -334,7 +357,7 @@ function hostGlobOk(host: string): boolean {
  */
 export function destinationOk(pattern: string): boolean {
   const pat = pattern.trim().toLowerCase();
-  if (!pat.replace(NOT_LITERAL, "")) return false;
+  if (nothingLiteral(pat)) return false;
   if (!GLOB.test(pat)) return true;
   const prefix = PLATFORM_PREFIX.exec(pat);
   const rest = prefix ? pat.slice(prefix[0].length) : pat;
