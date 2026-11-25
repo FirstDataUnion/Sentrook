@@ -14,7 +14,7 @@ from datetime import datetime
 from ..aira.detectors import call_label
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..planir.models import ToolKind
-from ..prepare import INPUT_TOO_LARGE, Prepared
+from ..prepare import INPUT_TOO_LARGE, Prepared, kernel_effects_of, kernel_hashes
 from ..prepare.entities import EntityKind
 from ..prepare.save_adds import SaveReading
 from ..probes.base import Envelope
@@ -130,6 +130,11 @@ def _mint_session_sets(
         call=call_hash(state.salt, prepared.planir.pending_call.call_id),
         flags=set(own_flags),
     )
+    # What a code-tool call leaves in the conversation's interpreter for later programs.
+    effects = kernel_effects_of(state, prepared.pending)
+    if effects is not None:
+        marks.kernel = sorted(kernel_hashes(state, effects.names))
+        marks.kernel_unknown = effects.unknown
     for env in envelopes:
         if env.status is not ProbeStatus.OK:
             continue

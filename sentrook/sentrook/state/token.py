@@ -15,6 +15,12 @@ sets bind the session judgements to what they are about:
   skill, `prepare.own_store`), and no other content. A host other content names leaves it for good. Only the
   credential-home check reads it (`prepare.credential_home`); everything else still scores these hosts as untrusted.
 
+- `kernel`: what earlier code-tool calls left in the conversation's interpreter that a later program could reach
+  without binding it itself (a code tool may keep one interpreter per conversation): builtins rebound to
+  something that reaches a network sink, and modules whose attributes were patched. `kernel_unknown` records
+  that a call changed the interpreter in a way that cannot be listed (`exec`, `setattr`, `sys.modules`), or
+  that the set overflowed: from then on no program is read as local (`prepare.code_reach`).
+
 What the scanned call itself would add (`holds_sensitive` and the sensitive set from a sensitive read it makes, and
 the files it writes from a sensitive or tainted file) is not applied when it is scanned: the plugin has not yet
 decided whether the call runs. It is kept in `pending`, keyed to the call, and the next scan settles it from the
@@ -49,6 +55,7 @@ SENSITIVE_CAP = 32
 TAINTED_CAP = 32
 TRUSTED_CAP = 64
 SKILL_NAMED_CAP = 32
+KERNEL_CAP = 64
 #: Calls whose own marks wait for their outcome; past it the oldest are dropped (they never showed as run).
 PENDING_CAP = 8
 HASH_HEX = 12
@@ -83,11 +90,21 @@ class PendingMarks:
     sensitive: list[str] = field(default_factory=list)
     sensitive_unbound: bool = False
     tainted: list[str] = field(default_factory=list)
+    #: What the call leaves in a code tool's interpreter (`SessionState.kernel`).
+    kernel: list[str] = field(default_factory=list)
+    kernel_unknown: bool = False
     #: A later scan saw the call waiting for the owner: once it leaves the history it is dropped, not applied.
     waiting: bool = False
 
     def empty(self) -> bool:
-        return not (self.flags or self.sensitive or self.sensitive_unbound or self.tainted)
+        return not (
+            self.flags
+            or self.sensitive
+            or self.sensitive_unbound
+            or self.tainted
+            or self.kernel
+            or self.kernel_unknown
+        )
 
 
 @dataclass
@@ -107,6 +124,10 @@ class SessionState:
     trusted: list[str] = field(default_factory=list)
     #: Untrusted hosts only the agent's installed skills named.
     skill_named: list[str] = field(default_factory=list)
+    #: Names earlier code-tool calls left in the interpreter bound to a network sink, and patched modules.
+    kernel: list[str] = field(default_factory=list)
+    #: The interpreter was changed in a way that cannot be listed, or `kernel` overflowed its cap.
+    kernel_unknown: bool = False
     #: Scanned calls whose own marks wait for their outcome, oldest first.
     pending: list[PendingMarks] = field(default_factory=list)
     max_input_seq: int | None = None
@@ -157,11 +178,33 @@ class SessionState:
         drop = set(hashes)
         self.skill_named[:] = [h for h in self.skill_named if h not in drop]
 
+    def add_kernel(self, hashes: list[str]) -> None:
+        """Track more interpreter names; past the cap nothing is dropped: the set is unknown from then on."""
+        for h in hashes:
+            if h not in self.kernel:
+                self.kernel.append(h)
+        if len(self.kernel) > KERNEL_CAP:
+            self.kernel_unknown = True
+            del self.kernel[KERNEL_CAP:]
+
+    def kernel_marks(self) -> tuple[set[str], bool]:
+        """The interpreter names tracked, counting calls still waiting for the owner (they may yet run)."""
+        names = set(self.kernel)
+        unknown = self.kernel_unknown
+        for p in self.pending:
+            names.update(p.kernel)
+            unknown = unknown or p.kernel_unknown
+        return names, unknown
+
     def add_pending(self, marks: PendingMarks) -> None:
         if marks.empty():
             return
         self.pending = [p for p in self.pending if p.call != marks.call] + [marks]
         if len(self.pending) > PENDING_CAP:
+            # A dropped call may have run: what it left in the interpreter is no longer known.
+            for p in self.pending[: len(self.pending) - PENDING_CAP]:
+                if p.kernel or p.kernel_unknown:
+                    self.kernel_unknown = True
             del self.pending[: len(self.pending) - PENDING_CAP]
 
     def apply(self, marks: PendingMarks) -> None:
@@ -170,6 +213,8 @@ class SessionState:
         self.add_sensitive(marks.sensitive)
         self.sensitive_unbound = self.sensitive_unbound or marks.sensitive_unbound
         self.add_tainted(marks.tainted)
+        self.add_kernel(marks.kernel)
+        self.kernel_unknown = self.kernel_unknown or marks.kernel_unknown
 
 
 def call_hash(salt: str, call_id: str) -> str:
@@ -270,6 +315,8 @@ def decode_state(
         tainted=[str(h) for h in claims.get("tnt", [])][-TAINTED_CAP:],
         trusted=[str(h) for h in claims.get("tru", [])][-TRUSTED_CAP:],
         skill_named=[str(h) for h in claims.get("skn", [])][-SKILL_NAMED_CAP:],
+        kernel=[str(h) for h in claims.get("krn", [])][:KERNEL_CAP],
+        kernel_unknown=claims.get("kru") is True,
         pending=_decode_pending(claims.get("pnd")),
         max_input_seq=claims.get("seq"),
         deployment=claims.get("dep") or deployment,
@@ -300,6 +347,8 @@ def encode_state(
         "tnt": list(state.tainted[-TAINTED_CAP:]),
         "tru": list(state.trusted[-TRUSTED_CAP:]),
         "skn": list(state.skill_named[-SKILL_NAMED_CAP:]),
+        "krn": list(state.kernel[:KERNEL_CAP]),
+        "kru": state.kernel_unknown,
         "pnd": [_encode_pending(p) for p in state.pending[-PENDING_CAP:]],
     }
     return jwt.encode(claims, key, algorithm=ALGORITHM)
@@ -315,6 +364,10 @@ def _encode_pending(marks: PendingMarks) -> dict:
         out["snu"] = True
     if marks.tainted:
         out["tnt"] = list(marks.tainted[-TAINTED_CAP:])
+    if marks.kernel:
+        out["krn"] = list(marks.kernel[:KERNEL_CAP])
+    if marks.kernel_unknown:
+        out["kru"] = True
     if marks.waiting:
         out["w"] = True
     return out
@@ -336,6 +389,8 @@ def _decode_pending(raw: object) -> list[PendingMarks]:
                 sensitive=_strings(entry.get("sen"))[-SENSITIVE_CAP:],
                 sensitive_unbound=entry.get("snu") is True,
                 tainted=_strings(entry.get("tnt"))[-TAINTED_CAP:],
+                kernel=_strings(entry.get("krn"))[:KERNEL_CAP],
+                kernel_unknown=entry.get("kru") is True,
                 waiting=entry.get("w") is True,
             )
         )

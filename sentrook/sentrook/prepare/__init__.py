@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -58,6 +59,7 @@ from ..planir.models import (
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import (
     SessionState,
+    TokenStatus,
     decode_state,
     entity_hash,
     new_salt,
@@ -65,6 +67,7 @@ from ..state.token import (
     settle_pending,
 )
 from . import views
+from .code_reach import KernelEffects, kernel_effects, kernel_reads
 from .copies import CopyHistory, copy_history
 from .entities import (
     Entity,
@@ -80,6 +83,7 @@ from .entities import (
     extract_mentions,
     host_of_url,
     install_walk,
+    is_code_call,
     is_computed_package,
     is_under,
     normalise_host,
@@ -1346,6 +1350,48 @@ def _as_analysed(
     return out
 
 
+def kernel_hashes(state: SessionState, names: Iterable[str]) -> set[str]:
+    return {entity_hash(state.salt, "kernel", n) for n in names}
+
+
+def kernel_effects_of(state: SessionState, call: CanonicalCall) -> KernelEffects | None:
+    """What a code tool's call leaves in the conversation's interpreter (`code_reach.kernel_effects`), with
+    the builtins it reads that earlier calls left bound to a sink; None for any other call."""
+    if not is_code_call(call):
+        return None
+    source = call.command or ""
+    tracked, _ = state.kernel_marks()
+    reads = kernel_reads(source) or frozenset()
+    seen = frozenset(n for n in reads if entity_hash(state.salt, "kernel", n) in tracked)
+    return kernel_effects(source, seen)
+
+
+def mark_kernel_clear(state: SessionState, calls: list[CanonicalCall]) -> None:
+    """Mark the code-tool calls whose program may be read as code: the token is this session's (or the session
+    is new), nothing has changed the interpreter in a way that cannot be listed, and the program reads no
+    builtin or module that an earlier call (or another call of this batch) left bound to a sink or patched."""
+    tracked, unknown = state.kernel_marks()
+    if state.status not in (TokenStatus.VALID, TokenStatus.FIRST_STEP, TokenStatus.SEEDED):
+        return  # what earlier calls left in the interpreter is not known
+    code = [c for c in calls if is_code_call(c)]
+    effects = {id(c): kernel_effects_of(state, c) for c in code}
+    for c in code:
+        reads = kernel_reads(c.command or "")
+        if unknown or reads is None:
+            continue
+        others = set(tracked)
+        batch_unknown = False
+        for o in code:
+            eff = effects[id(o)]
+            if o is c or eff is None:
+                continue
+            others |= kernel_hashes(state, eff.names)
+            batch_unknown = batch_unknown or eff.unknown
+        if batch_unknown or kernel_hashes(state, reads) & others:
+            continue
+        c.kernel_clear = True
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -1404,6 +1450,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for s in (planir.pending_call.batch.siblings if planir.pending_call.batch else [])
     ]
     history = [canonical_history(platform, h) for h in planir.history]
+    mark_kernel_clear(state, [pending, *siblings])
     # An OpenClaw background run's exec comes with the run's `self_edit` block: a self-edit only when it is a plain
     # save into the declared store (`own_store.exec_store_writes`). Otherwise the block is dropped here, before
     # anything reads it, and the command is scored as the ordinary command it is.
@@ -1459,6 +1506,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
         resolution = resolve_pending(platform, pending, writes, home=home, workspace_root=ws)
         resolved = resolution.calls
+        for call in resolved:
+            call.kernel_clear = pending.kernel_clear and is_code_call(call)
         if resolution.truncated:
             coverage.append(
                 CoverageNote("sibling_join_truncated", f"first {len(resolved)} resolved commands")

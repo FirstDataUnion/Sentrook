@@ -2299,15 +2299,20 @@ def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
     return out
 
 
+def is_code_call(call: CanonicalCall) -> bool:
+    """A Hermes `execute_code` Python program, whose output goes back to the agent."""
+    return (
+        call.tool_kind is ToolKind.EXEC
+        and call.tool == "execute_code"
+        and call.get("interpreter") == "python"
+    )
+
+
 def call_code_reach(call: CanonicalCall) -> CodeReach | None:
     """What a code tool's program can reach (`code_reach.python_reach`), for the Python of Hermes
     `execute_code`, whose output goes back to the agent; None for a shell command, another language, a
     program that does not parse, or a script a shell command runs (its output may feed a shell)."""
-    if (
-        call.tool_kind is not ToolKind.EXEC
-        or call.tool != "execute_code"
-        or call.get("interpreter") != "python"
-    ):
+    if not is_code_call(call) or not call.kernel_clear:
         return None
     return python_reach(call.command or "")
 

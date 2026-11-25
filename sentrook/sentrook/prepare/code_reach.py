@@ -22,11 +22,12 @@ import builtins
 import importlib
 import inspect
 import re
+import warnings
 from dataclasses import dataclass
 from functools import lru_cache
 from urllib.parse import urlsplit
 
-__all__ = ["CodeReach", "python_reach"]
+__all__ = ["CodeReach", "KernelEffects", "kernel_effects", "kernel_reads", "python_reach"]
 
 
 @dataclass(frozen=True)
@@ -261,10 +262,32 @@ _FILE_CLASSES = frozenset({"FileIO", "ZipFile", "TarFile", "GzipFile", "BZ2File"
 _FILE_FACTORIES = frozenset(
     {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile", "mkstemp", "FileType"}
 )
-#: Directories a program may write data files in: scratch space no tool reads settings or code from.
-_SCRATCH_DIRS = re.compile(
-    r"\A(?:/tmp/|/var/tmp/|(?:~|/home/[^/]+|/root|/Users/[^/]+)/\.hermes/cache/)"
+#: The one dot-directory a program may write data files in: the code tool's own scratch space.
+_SCRATCH_DOT_DIR = re.compile(r"/\.hermes/cache/")
+#: Data files a tool reads settings or commands from (`package.json` scripts, editor tasks, MCP and hook
+#: settings, pip requirements) or an agent reads as instructions: never written by "local" code. A name is
+#: denied when it is one of these, or contains one of the words.
+_DENIED_NAMES = frozenset(
+    {
+        "package.json",
+        "package-lock.json",
+        "composer.json",
+        "deno.json",
+        "deno.jsonc",
+        "tasks.json",
+        "launch.json",
+        "claude.md",
+        "agents.md",
+        "skill.md",
+        "gemini.md",
+        "memory.md",
+        "soul.md",
+        "user.md",
+        "tools.md",
+        "heartbeat.md",
+    }
 )
+_DENIED_WORDS = ("settings", "config", "mcp", "hooks", "requirements", "constraints")
 #: Calls that write a file at their path argument.
 _WRITE_CALLS = frozenset({"write_text", "write_bytes", "write_file", "patch"})
 #: Extensions of files a write may create: data, never read as code or configuration.
@@ -392,8 +415,32 @@ def _url_arg(call: ast.Call) -> ast.expr | None:
     return first
 
 
-def _scratch_prefix(prefix: str) -> bool:
-    return bool(_SCRATCH_DIRS.match(prefix)) and "/../" not in prefix and "/./" not in prefix
+def _allowed_path(start: str | None, end: str | None) -> bool:
+    """A write target whose known start (`start`), known end (`end`) or whole path (both, the same) passes:
+    no dot-directory or dotfile, other than the code tool's scratch space, and no denied name. `end` alone may
+    begin inside a name."""
+    text = start if start is not None else end or ""
+    text = _SCRATCH_DOT_DIR.sub("/scratch/", text)
+    parts = text.split("/")
+    if end is not None and start is None and not text.startswith("/"):
+        name_known = len(parts) > 1
+        parts = parts[1:]  # the first part may be the tail of a name the program computes
+    else:
+        name_known = True
+    if any(p.startswith(".") and p not in (".", "..") for p in parts):
+        return False
+    if start is not None and end is None:
+        return True  # a start alone: the name is checked from the end
+    name = (parts[-1] if parts else "").lower()
+    tail = (end or "").rsplit("/", 1)[-1].lower()
+    if not name_known:
+        # `D + k + "_rows.json"`: the name ends with the tail; it must not be able to end as a denied one
+        if tail.startswith(".") or any(d.endswith(tail) for d in _DENIED_NAMES):
+            return False
+        return not any(w in tail for w in _DENIED_WORDS)
+    if name in _DENIED_NAMES or any(w in name for w in _DENIED_WORDS):
+        return False
+    return True
 
 
 def _hosts_of(values: list[tuple[str, bool]] | None) -> set[str] | None:
@@ -413,6 +460,63 @@ def _plain_keys(values: list[tuple[str, bool]] | None) -> bool:
     return values is not None and all(
         exact and "://" not in t and not t.lower().startswith(_SCHEMES) for t, exact in values
     )
+
+
+def _harmless_opaque(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str | None:
+    """The few forms of an opaque builtin that change nothing: `__import__("re")` of a local module (returns
+    `import:re`), `"k" in globals()` and `globals().get("k")` (`read`), and `exec(open("/dev/null").read())`
+    (`noop`). None for any other use."""
+    call = parents.get(node)
+    if not (isinstance(call, ast.Call) and call.func is node):
+        return None
+    if node.id == "__import__":
+        if len(call.args) == 1 and not call.keywords:
+            arg = call.args[0]
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value in _LOCAL_MODULES
+                and arg.value not in _RESTRICTED
+                and arg.value != "__future__"
+            ):
+                return "import:" + arg.value
+        return None
+    if node.id == "globals" and not call.args:
+        parent = parents.get(call)
+        if (
+            isinstance(parent, ast.Compare)
+            and call in parent.comparators
+            and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
+        ):
+            return "read"
+        if isinstance(parent, ast.Attribute) and parent.attr == "get":
+            outer = parents.get(parent)
+            if isinstance(outer, ast.Call) and outer.func is parent:
+                return "read"
+        return None
+    if node.id == "exec" and len(call.args) == 1 and not call.keywords:
+        read = call.args[0]
+        if (
+            isinstance(read, ast.Call)
+            and not read.args
+            and isinstance(read.func, ast.Attribute)
+            and read.func.attr == "read"
+            and isinstance(read.func.value, ast.Call)
+            and isinstance(read.func.value.func, ast.Name)
+            and read.func.value.func.id == "open"
+            and len(read.func.value.args) == 1
+            and isinstance(read.func.value.args[0], ast.Constant)
+            and read.func.value.args[0].value == "/dev/null"
+        ):
+            return "noop"
+    return None
+
+
+def _parse(source: str) -> ast.Module:
+    """Parse the program without the interpreter's warnings about its text (`"\\."` escapes are common)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return ast.parse(source)
 
 
 class _Unfollowed(Exception):
@@ -550,14 +654,19 @@ class _Reader:
     def scan(self) -> None:
         """Collect bindings and imports; raise `_Unfollowed` at anything this reading does not follow."""
         globals_keys: set[str] = set()
+        imported: list[tuple[ast.Call, str]] = []
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Import):
                 self._import(node)
             elif isinstance(node, ast.ImportFrom):
                 self._import_from(node)
             elif isinstance(node, ast.Name):
+                harmless = _harmless_opaque(node, self.parents)
                 if node.id == "globals" and (key := self._globals_key(node)) is not None:
                     globals_keys.add(key)
+                elif harmless is not None:
+                    if harmless.startswith("import:"):
+                        imported.append((self.parents[node], harmless[7:]))  # type: ignore[arg-type]
                 elif node.id in _OPAQUE_BUILTINS:
                     raise _Unfollowed
                 elif node.id.startswith("__") and node.id not in _SAFE_DUNDER_NAMES:
@@ -600,6 +709,8 @@ class _Reader:
             ):
                 raise _Unfollowed
             self._bind(key)
+        for call, module in imported:
+            self._dynamic_import(call, module)
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Call):
                 self._check_call(node)
@@ -685,9 +796,59 @@ class _Reader:
             return
         if path is None or not self._data_path(path, frozenset()):
             raise _Unfollowed
+        if not self._write_allowed(path):
+            raise _Unfollowed  # a dot-directory, or a data file a tool reads settings or commands from
+
+    def _write_allowed(self, path: ast.expr) -> bool:
+        """A data file outside dot-directories whose name is not on the deny list (`_DENIED_NAMES`). Parts of
+        the path the program computes are unknown: the known start and end must pass, and a name the program
+        completes must not be able to end as a denied one."""
+        exact = self._values(path, frozenset())
+        if exact is not None and all(e for _, e in exact):
+            return all(_allowed_path(t, t) for t, _ in exact)
         prefixes = self._path_prefixes(path, frozenset())
-        if not prefixes or not all(_scratch_prefix(p) for p in prefixes):
-            raise _Unfollowed  # a data file outside a scratch directory may be a tool's settings
+        suffixes = self._path_suffixes(path, frozenset())
+        if not suffixes:
+            return False
+        return all(_allowed_path(p, None) for p in prefixes or [""]) and all(
+            _allowed_path(None, t) for t in suffixes
+        )
+
+    def _path_suffixes(self, expr: ast.expr, seen: frozenset[str]) -> list[str] | None:
+        """The known end of each value the path `expr` can take."""
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return [expr.value]
+        if isinstance(expr, ast.JoinedStr):
+            last = expr.values[-1] if expr.values else None
+            if isinstance(last, ast.Constant) and isinstance(last.value, str):
+                return [last.value]
+            return None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
+            right = self._path_suffixes(expr.right, seen)
+            if right is None:
+                return None
+            return ["/" + r for r in right] if isinstance(expr.op, ast.Div) else right
+        if isinstance(expr, ast.Call):
+            fn = _call_name(expr.func)
+            if (
+                fn in ("Path", "PurePath", "join", "expanduser", "abspath", "normpath")
+                and expr.args
+            ):
+                last = self._path_suffixes(expr.args[-1], seen)
+                if last is None or fn != "join" or len(expr.args) < 2:
+                    return last
+                return ["/" + t for t in last]
+            return None
+        if isinstance(expr, ast.Name) and expr.id not in seen:
+            binds = self.bindings.get(expr.id) or []
+            out: list[str] = []
+            for b in binds:
+                got = None if b is None else self._path_suffixes(b, seen | {expr.id})
+                if got is None:
+                    return None
+                out.extend(got)
+            return out or None
+        return None
 
     def _path_prefixes(self, expr: ast.expr, seen: frozenset[str]) -> list[str] | None:
         """The known start of each value the path `expr` can take."""
@@ -780,10 +941,29 @@ class _Reader:
         ):
             raise _Unfollowed  # `send = post; send(url)`: the call is not seen as a request
 
-    def _check_chain(self, node: ast.Name) -> None:
+    def _dynamic_import(self, call: ast.Call, module: str) -> None:
+        """`__import__("re")` of a local module: its attributes are checked like an import's, and a name it is
+        bound to (`(re := __import__("re"))`) holds the module."""
+        obj = importlib.import_module(module)
+        parent = self.parents.get(call)
+        if isinstance(parent, ast.Attribute) and parent.value is call:
+            self._check_chain(call, obj)
+        elif isinstance(parent, ast.NamedExpr) and parent.value is call:
+            self.objects[parent.target.id] = obj
+        elif (
+            isinstance(parent, ast.Assign)
+            and parent.value is call
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+        ):
+            self.objects[parent.targets[0].id] = obj
+        else:
+            raise _Unfollowed
+
+    def _check_chain(self, node: ast.expr, start: object | None = None) -> None:
         """Walk the attributes taken from an imported module or name, on the real objects: none may be
         private or a module outside the local list (`shutil.os.system`, `os.path.os`, `tempfile._os`)."""
-        obj = self.objects[node.id]
+        obj = start if start is not None else self.objects[node.id]  # type: ignore[attr-defined]
         child: ast.AST = node
         for _ in range(_CHAIN_DEPTH):
             parent = self.parents.get(child)
@@ -795,7 +975,7 @@ class _Reader:
             if parent.attr.startswith("_"):
                 raise _Unfollowed
             if allowed is not None and parent.attr not in allowed:
-                if child is node and node.id in self.restricted:
+                if child is node and isinstance(node, ast.Name) and node.id in self.restricted:
                     allowed = self.restricted[node.id]  # `import urllib.request` adds `request`
                 if parent.attr not in allowed:
                     raise _Unfollowed
@@ -1078,6 +1258,8 @@ class _Flow:
             if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
         } | {name for n in ast.walk(tree) if isinstance(n, ast.stmt) for name in _stmt_binds(n)}
         self.deferred: list[tuple[ast.AST, frozenset[str]]] = []
+        #: Builtins (and safe dunder names) the program reads without binding them: the interpreter's.
+        self.builtin_reads: set[str] = set()
         #: The names bound where a class body starts, while checking it: its methods and comprehensions
         #: do not see the names the class body binds.
         self.class_outer: frozenset[str] | None = None
@@ -1097,7 +1279,10 @@ class _Flow:
     def ok(self, name: str, bound: set[str], enclosing: frozenset[str]) -> bool:
         if name in bound or name in enclosing:
             return True
-        return (name in _BUILTINS or name in _SAFE_DUNDER_NAMES) and name not in self.stored
+        if (name in _BUILTINS or name in _SAFE_DUNDER_NAMES) and name not in self.stored:
+            self.builtin_reads.add(name)
+            return True
+        return False
 
     def expr(self, node: ast.AST, bound: set[str], enclosing: frozenset[str]) -> None:
         stack = [node]
@@ -1167,6 +1352,10 @@ class _Flow:
                 bound.add(stmt.name)
             elif isinstance(stmt, ast.If):
                 self.expr(stmt.test, bound, enclosing)
+                if isinstance(stmt.test, ast.NamedExpr):
+                    bound.add(
+                        stmt.test.target.id
+                    )  # `if (m := …):` always binds before either branch
                 then = self.block(stmt.body, set(bound), enclosing)
                 other = self.block(stmt.orelse, set(bound), enclosing)
                 bound |= then & other
@@ -1223,7 +1412,7 @@ class _Flow:
 def python_reach(source: str) -> CodeReach | None:
     """What `source` (Python) can reach; None when it does not parse, so callers keep reading it as text."""
     try:
-        tree = ast.parse(source)
+        tree = _parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
     reader = _Reader(tree)
@@ -1235,3 +1424,280 @@ def python_reach(source: str) -> CodeReach | None:
         return CodeReach(network=True, targets=reader.targets())
     except (_Unfollowed, RecursionError):
         return _UNFOLLOWED
+
+
+# ------------------------------------------------------------------ what a program leaves in the interpreter
+
+#: Reads and writes that change the interpreter in ways that cannot be listed.
+_KERNEL_OPAQUE_NAMES = _OPAQUE_BUILTINS | _ATTR_BY_NAME | _ATTR_CALLERS
+_KERNEL_OPAQUE_ATTRS = frozenset({"modules", "f_globals", "f_builtins", "f_locals", "f_back"})
+_KERNEL_OPAQUE_MODULES = frozenset({"builtins", "importlib", "ctypes", "gc", "inspect", "types"})
+
+
+@dataclass(frozen=True)
+class KernelEffects:
+    #: What the program leaves for later programs: `n:<builtin>` rebound to something that reaches a
+    #: network sink, `m:<module>` whose attributes it patched.
+    names: frozenset[str]
+    #: It changed the interpreter in a way that cannot be listed (`exec`, `setattr`, `sys.modules`).
+    unknown: bool
+
+
+_NO_EFFECTS = KernelEffects(frozenset(), False)
+_UNKNOWN_EFFECTS = KernelEffects(frozenset(), True)
+
+
+@lru_cache(maxsize=256)
+def kernel_reads(source: str) -> frozenset[str] | None:
+    """What a program takes from the interpreter without binding it itself: `n:<builtin>` for each builtin it
+    reads, `m:<module>` for each module it imports (a module is shared by every program). Every other global it
+    reads it must bind first (`_Flow`). None when the program does not parse or reads a global it never binds."""
+    try:
+        tree = _parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    flow = _Flow(tree)
+    try:
+        flow.run(tree)
+    except (_Unfollowed, RecursionError):
+        return None
+    out = {"n:" + n for n in flow.builtin_reads}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.update("m:" + a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            out.add("m:" + node.module.split(".")[0])
+    return frozenset(out)
+
+
+def _sink_import(module: str, name: str | None) -> bool:
+    """An import that brings something able to reach the network into the interpreter."""
+    if name is None:
+        return module not in _LOCAL_MODULES
+    if module in _RESTRICTED:
+        return name not in _RESTRICTED[module]
+    return module not in _LOCAL_MODULES
+
+
+def _loads(node: ast.AST) -> set[str]:
+    """Globals `node` reads: every name it loads, less what its own functions and comprehensions bind."""
+    names = {
+        n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    local: set[str] = set()
+    for n in ast.walk(node):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            local |= _local_names(n)
+        elif isinstance(n, ast.comprehension):
+            local |= _target_names(n.target)
+    return names - local
+
+
+@lru_cache(maxsize=256)
+def kernel_effects(source: str, tracked: frozenset[str] = frozenset()) -> KernelEffects:
+    """What `source` leaves in a code tool's interpreter for later programs. `tracked` holds what earlier
+    programs left there (`n:…` names), so a builtin rebound to one of them is tracked in turn.
+
+    Only builtins and modules matter: a later program is read as local only when every other global it reads is
+    one it binds first. A builtin bound at module level (or through `global`) to anything that reads a sink
+    import, a tracked builtin, a global the program does not bind, or another such name is tracked. A module (or
+    something taken from one) whose attribute the program sets is tracked. A program that changes the
+    interpreter by `exec`, `setattr`, `sys.modules`, frames or a module passed around makes the set unknown."""
+    try:
+        tree = _parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return _NO_EFFECTS  # it never runs
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    # Bindings at module level (statements outside functions and classes, and `global` stores).
+    bindings: list[tuple[set[str], ast.AST | None]] = []
+    sinky: set[str] = set()
+    #: Names that hold a module or something taken from one, and the module.
+    module_of: dict[str, str] = {}
+    module_names: set[str] = set()
+    globals_in_functions = {
+        n for node in ast.walk(tree) if isinstance(node, ast.Global) for n in node.names
+    }
+
+    def module_level(node: ast.AST) -> bool:
+        p = parents.get(node)
+        while p is not None and not isinstance(p, ast.Module):
+            if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                return False
+            p = parents.get(p)
+        return True
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _KERNEL_OPAQUE_NAMES:
+            if node.id == "globals" and _plain_globals_key(node, parents) is not None:
+                continue
+            harmless = _harmless_opaque(node, parents)
+            if harmless is None:
+                return _UNKNOWN_EFFECTS
+            if harmless.startswith("import:"):
+                holder = parents.get(parents[node])
+                if isinstance(holder, ast.NamedExpr):
+                    module_of[holder.target.id] = harmless[7:]
+                    module_names.add(holder.target.id)
+            continue
+        if isinstance(node, ast.Attribute) and (
+            node.attr in _KERNEL_OPAQUE_ATTRS
+            or (
+                node.attr.startswith("__")
+                and node.attr.endswith("__")
+                and node.attr not in _SAFE_DUNDERS
+            )
+        ):
+            return _UNKNOWN_EFFECTS
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "type"
+            and len(node.args) == 1
+        ):
+            return (
+                _UNKNOWN_EFFECTS  # `type(obj).attr = …` patches a class shared with later programs
+            )
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = node.module or "" if isinstance(node, ast.ImportFrom) else ""
+            if isinstance(node, ast.ImportFrom) and node.level:
+                continue
+            for a in node.names:
+                full = a.name if isinstance(node, ast.Import) else module
+                if full.split(".")[0] in _KERNEL_OPAQUE_MODULES or (
+                    isinstance(node, ast.ImportFrom) and module == "sys" and a.name == "modules"
+                ):
+                    return _UNKNOWN_EFFECTS
+                bound = a.asname or a.name.split(".")[0]
+                top = full.split(".")[0]
+                module_of[bound] = top
+                module_names.add(bound)
+                if isinstance(node, ast.Import):
+                    # `import os` brings `os.system`; a local module brings nothing
+                    is_sink = top in _RESTRICTED or _sink_import(a.name, None)
+                else:
+                    is_sink = _sink_import(module, a.name)
+                if is_sink:
+                    sinky.add(bound)
+                if module_level(node):
+                    bindings.append(({bound}, None))
+        elif isinstance(node, ast.Assign):
+            names = set().union(*(_target_names(t) for t in node.targets))
+            key = None
+            for t in node.targets:
+                if (
+                    isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Call)
+                    and isinstance(t.value.func, ast.Name)
+                ):
+                    key = _plain_globals_key(t.value.func, parents)
+                    if key is not None:
+                        names.add(key)
+            if module_level(node) or names & globals_in_functions:
+                bindings.append((names, node.value))
+            # `E = json.JSONEncoder`: E holds something taken from a module
+            if isinstance(node.value, (ast.Name, ast.Attribute)):
+                root = node.value
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                if isinstance(root, ast.Name):
+                    for n in names:
+                        if root.id in module_names:
+                            module_names.add(n)
+                        if root.id in module_of:
+                            module_of[n] = module_of[root.id]
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)) and node.value is not None:
+            names = _target_names(node.target)
+            if module_level(node) or names & globals_in_functions:
+                bindings.append((names, node.value))
+        elif isinstance(node, (ast.For, ast.AsyncFor)) and module_level(node):
+            bindings.append((_target_names(node.target), node.iter))
+        elif isinstance(node, (ast.With, ast.AsyncWith)) and module_level(node):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bindings.append((_target_names(item.optional_vars), item.context_expr))
+        elif isinstance(node, ast.NamedExpr) and module_level(node):
+            bindings.append(({node.target.id}, node.value))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if module_level(node) or node.name in globals_in_functions:
+                bindings.append(({node.name}, node))
+    bound_here = set().union(*(names for names, _ in bindings)) if bindings else set()
+    kernelish = _BUILTINS | _SAFE_DUNDER_NAMES
+    reads_of = {id(v): _loads(v) for _, v in bindings if v is not None}
+    for _names, value in bindings:
+        if value is None:
+            continue
+        for r in reads_of[id(value)]:
+            if r in bound_here:
+                continue
+            if r in kernelish:
+                if "n:" + r in tracked:
+                    sinky.add(r)
+            else:
+                sinky.add(r)  # a global it never binds: whatever an earlier program left
+    # Spread along "this binding reads that name": each binding is visited once its first sinky read is seen.
+    readers: dict[str, list[int]] = {}
+    for i, (_names, value) in enumerate(bindings):
+        if value is not None:
+            for r in reads_of[id(value)]:
+                readers.setdefault(r, []).append(i)
+    work = list(sinky)
+    done: set[int] = set()
+    while work:
+        name = work.pop()
+        for i in readers.get(name, ()):
+            if i in done:
+                continue
+            done.add(i)
+            for n in bindings[i][0] - sinky:
+                sinky.add(n)
+                work.append(n)
+    out = {"n:" + n for n in sinky & bound_here if n in kernelish}
+    # Patched modules. An imported name handed around as a value (`f(json)`, `defaultdict(Counter)`) can be
+    # patched where it lands, so a program that also sets attributes on something it cannot trace back to an
+    # import (`c.default = …` on a parameter) is not listed.
+    handed_around = False
+    loose_store = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            root = node.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in module_of:
+                out.add("m:" + module_of[root.id])
+            else:
+                loose_store = True
+        elif (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in module_names
+        ):
+            parent = parents.get(node)
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                continue
+            if isinstance(parent, ast.Call) and parent.func is node:
+                continue
+            if isinstance(parent, ast.Assign) and parent.value is node:
+                continue  # `m = json`: followed through `module_of`
+            handed_around = True
+    if handed_around and loose_store:
+        return _UNKNOWN_EFFECTS
+    return KernelEffects(frozenset(out), False)
+
+
+def _plain_globals_key(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str | None:
+    """The key of `globals()["name"]` when `node` is that `globals` and the key is a plain name."""
+    call = parents.get(node)
+    if not (isinstance(call, ast.Call) and call.func is node and not call.args):
+        return None
+    sub = parents.get(call)
+    if not (isinstance(sub, ast.Subscript) and sub.value is call):
+        return None
+    key = sub.slice
+    if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+        return None
+    if not key.value.isidentifier() or key.value.startswith("_"):
+        return None
+    return key.value
