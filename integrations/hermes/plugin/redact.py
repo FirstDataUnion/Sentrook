@@ -37,6 +37,51 @@ _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
 # The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
 # `(token=X)`), so one secret gets one placeholder however the sentence around it goes on.
 _VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
+# What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
+# maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
+# `&9x=1`), a word with more after it on its line, which is a command or a statement (`;curl${IFS}…`, `;npm publish`, `;next()`),
+# a word with quotes or an escape inside it (`;cu''rl`, `;c\url`), or a command led by a symbol: a substitution or a
+# variable (`;$(…)`, `;$SHELL`, `;${IFS}`), a subshell or a group (`;(…)`, `;{…}`), a path (`;./run.sh`, `;../bin/x`,
+# `;/bin/sh`, `;~/x.sh`) or a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a
+# digit, is part of the value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
+_SEPARATOR_ENDS = (
+    r"(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});"
+    r"|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]"
+    r"|[0-9][A-Za-z0-9_.\[\]%-]{0,40}="
+    r"|[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|()<>`{]|\\t|\$[{(])"
+    r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
+    r"|\$[(A-Za-z_{]|[({]|\.\.?/|/[A-Za-z]|~/|(?<=;)#"
+)
+# A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, `&&`
+# or `;;`, or `_SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
+# (`password=<value>&<rest>`, `password=<value>,;<rest>`).
+_VALUE_CHAR = (
+    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'<>`\\])(?!(?<=&)&|(?<=;);|"
+    + _SEPARATOR_ENDS
+    + "))"
+)
+# In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
+# there, from its first character.
+_QUERY_VALUE_CHAR = (
+    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[,;](?=[^\s\"'&<>`\\])(?!(?<=;);|" + _SEPARATOR_ENDS + "))"
+)
+# The rest of a quoted value after its first character: in single quotes anything up to the closing quote; in double
+# quotes, where a shell runs a command substitution, not `$(` (`password="<value>;$(…)"` keeps the command visible).
+_SQ_CHAR = r"[^\s\"'<>`\\]"
+_DQ_CHAR = r"(?:[^\s\"'<>`\\$]|\$(?!\())"
+# Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value.
+_NOT_A_PORT = r"(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\s\"'&,;<>`\\]))"
+_QUERY_VALUE = re.compile(
+    r"[\s\S](?:"
+    + _QUERY_VALUE_CHAR
+    + "{6,}"
+    + _VALUE_END
+    + "|"
+    + _QUERY_VALUE_CHAR
+    + "{5}"
+    + _VALUE_END
+    + r"(?=[.:!?)\]]))"
+)
 # A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -263,6 +308,19 @@ _STAND_IN_CHECKS = frozenset(
 )
 
 
+# The checks of the rules whose unquoted value may hold `&` (`_VALUE_CHAR`).
+_UNQUOTED_CHECKS = frozenset({_unquoted_key_value, _inner_key_value})
+
+
+def _query_value_end(text: str, key_start: int, start: int, end: int) -> int | None:
+    """Where the value at `start`-`end` ends when its key, at `key_start`, is in a link's query (follows `?`, `&` or
+    `#`): at its first `&`. None when what is left is too short to be a value."""
+    if key_start == 0 or text[key_start - 1] not in "?&#" or "&" not in text[start:end]:
+        return end
+    m = _QUERY_VALUE.match(text, start)
+    return None if m is None else m.end()
+
+
 def _flag_value(v: str) -> bool:
     """A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names
     (a path, URL, mask or template), so `--secret-file PATH` keeps its path."""
@@ -468,13 +526,21 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     (
         # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
         # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
-        # escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside.
+        # escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside, and
+        # `&`, `,` and `;` end the value only where `_VALUE_CHAR` says (`password=<value>&3` is one value).
         "credential",
         re.compile(
-            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:[^\s\"'&,;<>`\\]{6,}"
+            r"(?i)"
+            + _CREDENTIAL_KEY
+            + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            + _NOT_A_PORT
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:"
+            + _VALUE_CHAR
+            + "{6,}"
             + _VALUE_END
-            + r"|[^\s\"'&,;<>`\\]{5}"
+            + "|"
+            + _VALUE_CHAR
+            + "{5}"
             + _VALUE_END
             + r"(?=[.:!?)\]])))"
         ),
@@ -483,11 +549,18 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     ),
     (
         # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation
-        # included, as in a JSON pair or under an object key.
+        # included, as in a JSON pair or under an object key, and so are `&`, `,` and `;` (`PASSWORD='a&b;c'`).
         "credential",
         re.compile(
-            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
+            r"(?i)"
+            + _CREDENTIAL_KEY
+            + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            + _NOT_A_PORT
+            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:(?<='.)"
+            + _SQ_CHAR
+            + "{7,}|"
+            + _DQ_CHAR
+            + r"{7,}))(?=\\?[\"'])"
         ),
         "v",
         _text_key_value,
@@ -511,7 +584,9 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.]"
+            + _VALUE_CHAR
+            + "{6,}"
             + _VALUE_END
             + r")"
         ),
@@ -525,9 +600,15 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.](?:(?<='.)"
+            + _SQ_CHAR
+            + "{6,}"
             + _VALUE_END
-            + r")"
+            + "|"
+            + _DQ_CHAR
+            + r"{6,}(?!\$\()"
+            + _VALUE_END
+            + r"))"
         ),
         "v",
         _inner_quoted_value,
@@ -856,6 +937,8 @@ def _spans(text: str) -> list[tuple[int, int, str]]:
             s, e = m.span(group) if group else m.span()
             if check in _STAND_IN_CHECKS and _quoted_stand_in(text, m.start(), s, e):
                 continue  # a quoted value cut short in docs: `"access_token": "ya29.a0..."`
+            if check in _UNQUOTED_CHECKS and (e := _query_value_end(text, m.start(), s, e)) is None:
+                continue
             if e > s and (check is None or check(text[s:e])):
                 spans.append((s, e, kind))
     spans.extend((s, e, PLACEHOLDER_KIND[kind]) for _, s, e, kind in cue_spans(text))
