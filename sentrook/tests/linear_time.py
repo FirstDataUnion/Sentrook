@@ -10,7 +10,8 @@ when a run goes over it, for tests whose bound is also a promise (a scan well un
 timeout): a fast machine still holds the bound, and a slow one is judged by how the time grows.
 
 Measured on the redaction inputs: 3.7-4.3 for the scanner's own patterns, up to about 6.5 for a vendor
-shape whose match is capped at a few thousand characters (quadratic below the cap, linear above it)."""
+shape whose match is capped at a few thousand characters (quadratic below the cap, linear above it).
+Whole scans of long inputs read up to about 7.3."""
 
 from __future__ import annotations
 
@@ -23,6 +24,11 @@ from collections.abc import Callable
 
 FACTOR = 4
 LIMIT = 10.0  # t(full) / t(full / FACTOR): linear about 4, quadratic about 16
+#: A first reading under this share of the limit passes at once; one between it and the limit is
+#: measured again, as one over the limit is. Real inputs read up to about 7.3x, and a quadratic one
+#: 14-16x, which a busy runner slowing its quarter-size runs can pull under the limit but rarely under
+#: 8x.
+CLEAR = 0.8
 FLOOR_S = 0.02  # a full-size run faster than this is too short to time, and passes
 ATTEMPTS = 5
 #: Set to 1 to run the growth check of `assert_fast_or_linear` even when a run is under its bound, to
@@ -66,15 +72,17 @@ def assert_linear(
 ) -> tuple[float, float]:
     """`run(d)` does the work at 1/d of its full size; it is called with d = FACTOR and d = 1.
 
-    The small size runs twice and keeps its faster time, so a pause there cannot hide a super-linear
-    pattern (a slow small run makes the growth look lower); it costs a quarter of a full run. If the
-    growth is over `limit`, both sizes run again and the fastest time of each is kept, so a pause
-    during a full run does not fail the check, while a real super-linear pattern grows the same way
-    every time. Returns the fastest times seen at 1/FACTOR and at full size."""
-    small = min(_seconds(run, FACTOR), _seconds(run, FACTOR))
+    The small size runs twice, before and after the first full-size run, and keeps its faster time, so
+    one pause cannot slow both and hide a super-linear pattern (a slow small run makes the growth look
+    lower); it costs a quarter of a full run. Only a clear reading, under CLEAR times `limit`, passes
+    at once. Otherwise both sizes run again and the fastest time of each is kept, so a pause during a
+    full run does not fail the check and a pause during both small runs does not pass it, while a real
+    super-linear pattern grows the same way every time. Returns the fastest times seen at 1/FACTOR and at full size."""
+    small = _seconds(run, FACTOR)
     large = _seconds(run, 1)
+    small = min(small, _seconds(run, FACTOR))
     for _ in range(ATTEMPTS - 1):
-        if large < FLOOR_S or large / max(small, 1e-9) < limit:
+        if large < FLOOR_S or large / max(small, 1e-9) < CLEAR * limit:
             return small, large
         small = min(small, _seconds(run, FACTOR))
         large = min(large, _seconds(run, 1))
