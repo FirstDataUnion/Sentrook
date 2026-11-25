@@ -1,14 +1,18 @@
 /**
- * `openclaw sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works; notes on
- * settings that leave something unscanned.
+ * `openclaw sentrook verify`: endpoints valid, credentials present, every plugin-config setting read as written,
+ * scanner healthy, token mint works; notes on settings that leave something unscanned, and on skills that replace
+ * the ones the plugin ships.
  */
 
+import { shadowCheck } from "./agentSkills.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
-import { resolveConfig } from "./config.ts";
+import { configProblemsSummary, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
 import { NOTIFY_UNSET, targetText } from "./hold.ts";
+import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
+import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
 import { Store } from "./store.ts";
 
 export interface VerifyCheck {
@@ -25,6 +29,8 @@ export async function runVerify(
     timeoutMs?: number;
     /** OpenClaw's own config; undefined when it cannot be read. */
     hostConfig?: unknown;
+    /** The home folder, for `~` in OpenClaw's config and the personal skills folder; the user's own when not given. */
+    home?: string;
   } = {},
 ): Promise<VerifyCheck[]> {
   const env = envWithOpenclawDotenv(opts.env ?? process.env);
@@ -41,7 +47,16 @@ export async function runVerify(
   checks.push({
     name: "credentials",
     ok: !!oidc,
-    detail: oidc ? `client ${oidc.clientId}, audience ${oidc.audience}` : "SENTROOK_SCAN_CLIENT_ID / _SECRET not set",
+    detail: oidc
+      ? `client ${oidc.clientId}, audience ${oidc.audience}`
+      : "not signed in: SENTROOK_SCAN_CLIENT_ID / _SECRET not set (run openclaw sentrook login)",
+  });
+
+  // Failed, not reported: a setting Sentrook cannot read is ignored or replaced, which may not be what the owner meant.
+  checks.push({
+    name: "settings",
+    ok: cfg.configProblems.length === 0,
+    detail: cfg.configProblems.length ? configProblemsSummary(cfg.configProblems) : "all read as written",
   });
 
   if (scan.ok) {
@@ -63,7 +78,14 @@ export async function runVerify(
       await getScanAccessToken(oidc, fetchImpl, timeoutMs);
       checks.push({ name: "token mint", ok: true, detail: `issued by ${oidc.issuer}` });
     } catch (err) {
-      checks.push({ name: "token mint", ok: false, detail: String(err).slice(0, 200) });
+      const detail = String(err).slice(0, 200);
+      checks.push({
+        name: "token mint",
+        ok: false,
+        detail: detail.includes("invalid_client")
+          ? "the identity service refused these credentials (revoked or wrong); run openclaw sentrook login"
+          : detail,
+      });
     }
   }
   checks.push({
@@ -93,11 +115,21 @@ export async function runVerify(
   // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
   const target = new Store(cfg.stateDir).loadNotify();
   checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
+  // Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
+  const passState = passes.counts(cfg.stateDir, new Date());
+  checks.push({ name: "held-call passes", ok: passState !== "passes file unreadable", detail: passState });
   // Reported, not failed: OpenClaw's background saves are never asked about; without a target the owner is not told
   // what was let through, saved as a draft, held or blocked.
   checks.push({ name: "background-save notices", ok: true, detail: noticeStatus(target) });
   // Reported, not failed: OpenClaw's own memory writers that no plugin sees, with the setting that turns each off.
   checks.push(...memoryWriterChecks(opts.hostConfig));
+  // Reported, not failed: a workspace, project or managed skill with the name of one the plugin ships replaces it.
+  checks.push(shadowCheck(opts.hostConfig, env, { home: opts.home }));
+  // Reported, not failed: another plugin's tool ran under the name of one of the plugin's own, so every call of it is
+  // scanned.
+  for (const [tool, since] of Object.entries(new Store(cfg.stateDir).loadForeignTools())) {
+    checks.push({ name: OWN_TOOL_LABELS[tool] ?? tool, ok: true, detail: `warning: ${FOREIGN_TEXT} (since ${since})` });
+  }
   return checks;
 }
 

@@ -4,8 +4,8 @@ One fact per line, in this order:
 - the header: Sentrook's mark, the kind of question and the risk (`🪶 Sentrook security check · risk 62/100`);
 - what the call does, from the scan's tool description (`Sends ~/notes/q3-plan.md to paste.example.net.`);
 - why, in plain words: the first two reasons whose `text` the scanner filled, or the block category when none has;
-- what an answer does, only where the host's buttons would not say it: a suggested grant, a block a snooze turned
-  into a question, a call that would run without a scan;
+- what an answer does, only where the host's buttons would not say it: a suggested grant, what Hermes's Session
+  answer covers, a block a snooze turned into a question, a call that would run without a scan;
 - where to read more (`Details: /sentrook why 3f9c2a1b`), when the traffic log is on.
 
 Every line is a sentence, so a surface that joins lines (the OpenClaw terminal UI) still reads. The text is plain:
@@ -40,8 +40,27 @@ GRANT_DAYS = 30
 
 #: Per host: the budget, how commands are typed, and the host's word for the approve-always button.
 HOSTS: dict[str, dict[str, Any]] = {
-    "hermes": {"budget": 300, "cmd": "/sentrook {}", "always": '"Always"'},
-    "openclaw": {"budget": 500, "title_max": 80, "cmd": "/sentrook-{}", "always": '"Always allow"'},
+    "hermes": {
+        "budget": 300,
+        "cmd": "/sentrook {}",
+        "always": '"Always"',
+        "login": "Run on the Hermes machine: hermes sentrook login",
+    },
+    "openclaw": {
+        "budget": 500,
+        "title_max": 80,
+        "cmd": "/sentrook-{}",
+        "always": '"Always allow"',
+        "login": "Run on the gateway machine: openclaw sentrook login",
+    },
+}
+
+#: What Hermes's Session answer covers on a review (`session` in `review_lines`): later calls in this chat of the
+#: same tool, about the same parties, scoring no higher and adding no attack-type warning ("parties"), or, when the
+#: review names no party or the answer is not known to be the owner's, only this exact action ("exact").
+SESSION_LINES = {
+    "parties": '"Session" also covers the same parties at no higher risk.',
+    "exact": '"Session" covers only this exact action.',
 }
 
 #: Entity displays are shortened to these lengths in turn before the line about what the call does gives way.
@@ -180,9 +199,17 @@ def _answer(
     why_id: str | None,
     short: bool,
     cap: int,
+    session: str | None = None,
 ) -> list[str]:
     h = HOSTS[host]
     lines: list[str] = []
+    if hint is not None and remember and session is not None:
+        # Session sets the grant for this session, Always for 30 days: one line says both.
+        lines.append(
+            f'"Session" also {_grant_phrase(hint, True, cap)} in this chat, '
+            f"{h['always']} for {GRANT_DAYS} days."
+        )
+        return lines
     if hint is not None:
         if remember:
             lines.append(
@@ -199,6 +226,8 @@ def _answer(
             lines.append(
                 f"To allow this for {GRANT_DAYS} days: {grants.grant_command(hint, h['cmd'].format)}"
             )
+    if session in SESSION_LINES and not relaxed:
+        lines.append(SESSION_LINES[session])
     if relaxed:
         line = "Would be blocked, but a snooze is on."
         if host == "hermes":
@@ -222,9 +251,11 @@ def review_lines(
     remember: bool = False,
     why_id: str | None = None,
     fixed: str = "",
+    session: str | None = None,
 ) -> list[str]:
     """The card's body lines, fitted with `fixed` (text the host shows with them in the same budget, the header
-    on Hermes) to the host's budget."""
+    on Hermes) to the host's budget. `session` ("parties" or "exact", Hermes only) says what a Session answer
+    covers."""
     budget = HOSTS[host]["budget"]
     sid = why_id[:8] if why_id else None
     ents = _entities(resp)
@@ -240,7 +271,7 @@ def review_lines(
         because = _because([_fill(t, ents, max(cap, 24)) for t in texts[:n]])
         if why_room is not None:
             because = clip(because, why_room)
-        answer = _answer(host, relaxed, hint, remember, sid, short, max(cap, 24))
+        answer = _answer(host, relaxed, hint, remember, sid, short, max(cap, 24), session)
         lines = [what, because, *answer, *details]
         return [line for line in lines if line]
 
@@ -287,8 +318,10 @@ def hermes_message(
     hint: dict[str, Any] | None = None,
     remember: bool = False,
     why_id: str | None = None,
+    session: str | None = None,
 ) -> str:
-    """The approval prompt's text on Hermes (its only field: the host adds its own header and buttons)."""
+    """The approval prompt's text on Hermes (its only field: the host adds its own header and buttons). `session`
+    says what a Session answer covers (`SESSION_LINES`); None leaves it unsaid."""
     head = header(resp)
     body = review_lines(
         resp,
@@ -299,6 +332,7 @@ def hermes_message(
         remember=remember,
         why_id=why_id,
         fixed=head,
+        session=session,
     )
     return "\n".join([head, *body])
 
@@ -330,6 +364,13 @@ ERROR_CAUSES = {
     "config": "Sentrook's settings are missing or wrong. This is a setup problem, not a security finding.",
     "auth": "Sentrook could not sign in to its scan service. This is a setup problem, not a security finding.",
     "unreachable": "Its scan service did not answer.",
+    # {login} is the host's sign-in command (`HOSTS[host]["login"]`).
+    "not_signed_in": "Sentrook isn't signed in yet. {login}",
+    "sign_in_rejected": "Sentrook's sign-in was revoked or is wrong. {login}",
+    # Hermes under `plugins.isolation: host` has no `hermes sentrook` command line.
+    "not_signed_in_by_hand": "Sentrook isn't signed in yet. Set its credentials in Hermes (see the install guide).",
+    "sign_in_rejected_by_hand": "Sentrook's sign-in was revoked or is wrong. Set new credentials in Hermes "
+    "(see the install guide).",
 }
 ERROR_RUNS_UNCHECKED = "If you allow it, it runs without a security check."
 #: On Hermes, Session and Always answer every scan error in the chat (`error_rule_key` in the plugin).
@@ -338,7 +379,9 @@ ERROR_SESSION_NOTE = (
 )
 
 
-def error_cause(kind: str, auth: bool) -> str:
+def error_cause(kind: str, auth: bool, setup: str | None = None, by_hand: bool = False) -> str:
+    if setup in ("not_signed_in", "sign_in_rejected"):
+        return f"{setup}_by_hand" if by_hand else setup
     if kind == "rate_limited":
         return "rate_limited"
     if kind == "config":
@@ -347,7 +390,7 @@ def error_cause(kind: str, auth: bool) -> str:
 
 
 def error_lines(cause: str, host: str) -> list[str]:
-    lines = [ERROR_CAUSES[cause], ERROR_RUNS_UNCHECKED]
+    lines = [ERROR_CAUSES[cause].format(login=HOSTS[host]["login"]), ERROR_RUNS_UNCHECKED]
     if host == "hermes":
         lines.append(ERROR_SESSION_NOTE)
     lines.append(f"Status: {HOSTS[host]['cmd'].format('status')}")

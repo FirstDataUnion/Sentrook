@@ -11,11 +11,13 @@ the separate `hermes cron run` process.
 - `grants.json`: grants and channel bindings set by command (see `grants`)
 - `snooze.json`: snoozes set by command (see `snooze`)
 - `holds.json`: unattended reviews held for the owner's approval (see `hold`)
+- `passes.json`: the passes and denials the owner's answers to held calls set (see `passes`)
+- `settings.json`: where notices go and the extra attended platforms, set by command (see `owner_settings`)
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
-read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `grants.json` and
-`snooze.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
+read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `passes.json`, `grants.json`,
+`snooze.json` and `settings.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
 `hermes sentrook`) can change them at the same time.
 """
 
@@ -174,11 +176,17 @@ def _review_entries(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+#: One lock per session in this process, shared by every `Store` of the same directory: a scan holds it for the
+#: whole scan, and an answer to a held call takes it to set the held call's history (`hold`), so neither overwrites
+#: the other's copy of the session.
+_SESSION_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+
 class Store:
     def __init__(self, directory: Path) -> None:
         self.dir = Path(directory)
         self.lock = threading.RLock()
-        self._session_locks: dict[str, threading.Lock] = {}
         self._salt: str | None = None
 
     def _read(self, path: Path, default: Any) -> Any:
@@ -215,8 +223,8 @@ class Store:
 
     @contextmanager
     def session_lock(self, sid: str) -> Iterator[None]:
-        with self.lock:
-            lock = self._session_locks.setdefault(sid, threading.Lock())
+        with _SESSION_LOCKS_GUARD:
+            lock = _SESSION_LOCKS.setdefault((str(self.dir), sid), threading.Lock())
         with lock:
             yield
 
@@ -393,3 +401,66 @@ class Store:
     def save_holds(self, value: dict[str, Any]) -> None:
         with self.lock:
             self._write(self.dir / "holds.json", value)
+
+    def load_passes(self) -> dict[str, Any] | None:
+        """`passes.json`, empty when absent; None when it exists but cannot be read."""
+        path = self.dir / "passes.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "passes": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("passes", [])
+        return data if isinstance(data["passes"], list) else None
+
+    def save_passes(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "passes.json", value)
+
+    def load_settings(self) -> dict[str, Any] | None:
+        """`settings.json`, empty when absent; None when it exists but cannot be read."""
+        path = self.dir / "settings.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "notify": None, "attended": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("notify", None)
+        data.setdefault("attended", [])
+        if not isinstance(data["attended"], list) or not (
+            data["notify"] is None or isinstance(data["notify"], dict)
+        ):
+            return None
+        return data
+
+    def save_settings(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "settings.json", value)
+
+    def load_proposals(self) -> dict[str, Any] | None:
+        """`proposals.json` (the agent's setup proposals), empty when absent; None when it cannot be read."""
+        path = self.dir / "proposals.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "proposals": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("proposals", [])
+        return data if isinstance(data["proposals"], list) else None
+
+    def save_proposals(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "proposals.json", value)
+
+    def load_setup(self) -> dict[str, Any]:
+        """`setup.json`: the setup screen last shown, its code and items; empty when absent or unreadable."""
+        with self.lock:
+            data = self._read(self.dir / "setup.json", None)
+        return data if isinstance(data, dict) else {}
+
+    def save_setup(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "setup.json", value)

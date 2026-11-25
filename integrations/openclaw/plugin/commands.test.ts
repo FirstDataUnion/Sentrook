@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
+import { agentRules } from "./agentSkills.ts";
 import { helpText, runSentrookCommand, SUBCOMMANDS } from "./commands.ts";
 import plugin from "./index.ts";
 import { PLUGIN_VERSION } from "./planir.ts";
@@ -56,6 +57,17 @@ test("status shows the config-derived facts", async () => {
   assert.match(text, /^channel bindings: 1 in config, 0 by command$/m);
 });
 
+test("status names the settings Sentrook cannot read, and says none when it reads them all", async () => {
+  const env = { OPENCLAW_STATE_DIR: stateDir() };
+  const clean = await runSentrookCommand("status", { pluginConfig: { mode: "observe" }, env });
+  assert.match(clean, /^settings: all read as written$/m);
+  const bad = await runSentrookCommand("status", { pluginConfig: { modee: "observe", reviewAt: "abc" }, env });
+  assert.match(
+    bad,
+    /^settings: 2 not read as written: modee: not a Sentrook setting \(did you mean mode\?\); ignored; reviewAt: not a number from 0 to 100; using 45 \(see openclaw sentrook verify\)$/m,
+  );
+});
+
 test("status says credentials are present without printing them, from env, the state-dir .env or plugin config", async () => {
   const fromEnv = await runSentrookCommand("status", {
     pluginConfig: {},
@@ -79,7 +91,10 @@ test("status names a missing credential by variable, never by value", async () =
     pluginConfig: {},
     env: { OPENCLAW_STATE_DIR: stateDir(), SENTROOK_SCAN_CLIENT_ID: ID },
   });
-  assert.match(text, /^credentials: no \(SENTROOK_SCAN_CLIENT_SECRET not set\)$/m);
+  assert.match(
+    text,
+    /^credentials: no \(SENTROOK_SCAN_CLIENT_SECRET not set; run openclaw sentrook login on the gateway machine\)$/m,
+  );
   assert.ok(!text.includes(ID));
 });
 
@@ -172,7 +187,7 @@ async function captureLog(fn: () => Promise<void> | void): Promise<string> {
   return lines.join("\n");
 }
 
-test("the plugin registers /sentrook as an argument-taking command with no scopes or prompt guidance", async () => {
+test("the plugin registers /sentrook as an argument-taking command with no scopes, carrying the agent rules as prompt guidance", async () => {
   const { commands } = await registered({});
   // The others are the owner-only history, grants and snooze commands.
   assert.deepEqual(
@@ -187,15 +202,22 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
       "sentrook-revoke",
       "sentrook-bind",
       "sentrook-snooze",
+      "sentrook-allow",
+      "sentrook-deny",
       "sentrook-approve",
+      "sentrook-passes",
       "sentrook-notify",
+      "sentrook-setup",
     ],
   );
   const def = commands[0];
   assert.equal(def.acceptsArgs, true);
   assert.equal(typeof def.description, "string");
   assert.equal(def.requiredScopes, undefined);
-  assert.equal(def.agentPromptGuidance, undefined);
+  // The agent's always-loaded rules, one guidance line each; the owner commands carry none.
+  assert.deepEqual(def.agentPromptGuidance, agentRules());
+  assert.ok(def.agentPromptGuidance.some((line: string) => line.includes("`/sentrook-grant`")));
+  assert.ok(commands.slice(1).every((c) => c.agentPromptGuidance === undefined));
   assert.deepEqual(await def.handler({ args: "nonsense" }), { text: helpText() });
   assert.deepEqual(await def.handler({}), { text: helpText() });
 });

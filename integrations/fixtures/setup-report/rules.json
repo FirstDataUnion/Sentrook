@@ -1,0 +1,88 @@
+{
+  "_comment": "Rules both plugins' setup reports follow. days: the tool's arguments and the days read (a string Hermes would coerce to a whole number reads as that number). window: the line saying how far back the log was read, in whole days (rounded down, at least 1) from the time of the oldest record read; capped means the log is larger than a history read takes. own_service: the keys a scan shows sent only to their own service (a relief naming no grant that takes sensitivity off a host; the credential-shaped names in the call's logged arguments). gaps: the gaps for settings that differ from state.json.",
+  "days": [
+    [{}, 14],
+    [null, 14],
+    [{"days": 7}, 7],
+    [{"days": 1}, 1],
+    [{"days": 30}, 30],
+    [{"days": 45}, 30],
+    [{"days": 0}, 14],
+    [{"days": -3}, 14],
+    [{"days": 2.5}, 14],
+    [{"days": "7"}, 7],
+    [{"days": "7.0"}, 7],
+    [{"days": "45"}, 30],
+    [{"days": "2.5"}, 14],
+    [{"days": "seven"}, 14],
+    [{"days": ""}, 14],
+    [{"days": true}, 14],
+    [{"days": null}, 14]
+  ],
+  "window": [
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-01T00:00:00Z", "days": 14, "capped": false, "text": "Read: the last 14 days."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-10T12:00:00Z", "days": 14, "capped": false, "text": "Read: the last 14 days."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-18T23:00:00Z", "days": 14, "capped": false, "text": "Read: covers 5 days, not the 14 asked for: the log holds nothing older."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-11T00:00:00Z", "days": 14, "capped": false, "text": "Read: covers 13 days, not the 14 asked for: the log holds nothing older."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-24T10:00:00Z", "days": 7, "capped": true, "text": "Read: covers 1 day, not the 7 asked for: Sentrook reads at most the last 16 MB of its log."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-23T12:00:00Z", "days": 1, "capped": false, "text": "Read: the last 1 day."}
+  ],
+  "own_service": [
+    {
+      "name": "one host, one key",
+      "planir": {"pending_call": {"arguments": {"command": "curl -H \"x-api-key: $EXAMPLE_API_KEY\" https://api.example.com/v1"}}},
+      "response": {"relief_applied": [{"grant_ref": null, "subject": "E1", "effect": "sensitivity+distrust+untrusted_origin"}], "entities": {"E1": {"kind": "host", "display": "api.example.com"}}},
+      "keys": [["EXAMPLE_API_KEY", "api.example.com"]]
+    },
+    {
+      "name": "names anywhere in the arguments, sorted, each once",
+      "planir": {"pending_call": {"arguments": {"code": "a = os.environ['ZED_TOKEN']\nb = os.environ[\"ALPHA_SECRET_KEY\"]", "env": ["ZED_TOKEN"], "n": 3}}},
+      "response": {"relief_applied": [{"grant_ref": null, "subject": "E2", "effect": "sensitivity"}], "entities": {"E2": {"kind": "host", "display": "api.example.org"}}},
+      "keys": [["ALPHA_SECRET_KEY", "api.example.org"], ["ZED_TOKEN", "api.example.org"]]
+    },
+    {
+      "name": "not a credential-shaped name",
+      "planir": {"pending_call": {"arguments": {"command": "echo $HOME $PATH $my_api_key MY_API_KEYS"}}},
+      "response": {"relief_applied": [{"grant_ref": null, "subject": "E1", "effect": "sensitivity"}], "entities": {"E1": {"kind": "host", "display": "api.example.com"}}},
+      "keys": []
+    },
+    {
+      "name": "a relief under a grant",
+      "planir": {"pending_call": {"arguments": {"command": "echo $EXAMPLE_API_KEY"}}},
+      "response": {"relief_applied": [{"grant_ref": "gr-0a0b0c", "subject": "E1", "effect": "sensitivity"}], "entities": {"E1": {"kind": "host", "display": "api.example.com"}}},
+      "keys": []
+    },
+    {
+      "name": "a relief of another kind",
+      "planir": {"pending_call": {"arguments": {"command": "echo $EXAMPLE_API_KEY"}}},
+      "response": {"relief_applied": [{"grant_ref": null, "subject": "E1", "effect": "distrust+untrusted_origin"}], "entities": {"E1": {"kind": "host", "display": "api.example.com"}}},
+      "keys": []
+    },
+    {
+      "name": "a relief on something not a host",
+      "planir": {"pending_call": {"arguments": {"command": "echo $EXAMPLE_API_KEY"}}},
+      "response": {"relief_applied": [{"grant_ref": null, "subject": "E1", "effect": "sensitivity"}], "entities": {"E1": {"kind": "path", "display": "~/.env"}}},
+      "keys": []
+    },
+    {
+      "name": "nothing relieved",
+      "planir": {"pending_call": {"arguments": {"command": "echo $EXAMPLE_API_KEY"}}},
+      "response": {"entities": {}},
+      "keys": []
+    }
+  ],
+  "gaps": [
+    {"state": {"notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "unsent_grants": 0, "shadowed_skills": null}, "gaps": []},
+    {
+      "state": {"scan_ok": false, "credentials_missing": ["SENTROOK_SCAN_CLIENT_ID"], "mode": "observe", "unsent_grants": 2, "traffic_log": false, "shadowed_skills": []},
+      "gaps": [
+        "The scan service settings are invalid: every call fails closed until they are fixed.",
+        "The scan credentials are missing: no call can be scanned until the owner sets them.",
+        "Mode is observe: Sentrook scores and logs calls but never asks or blocks.",
+        "No notice target: calls held on scheduled jobs are held silently.",
+        "2 config grants are never sent: a grant in the config has no session, so one scoped to a session applies nowhere.",
+        "The traffic log is off: Sentrook cannot count the reviews the owner approved or show what it has seen."
+      ]
+    }
+  ]
+}

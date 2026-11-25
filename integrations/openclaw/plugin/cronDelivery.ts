@@ -108,6 +108,53 @@ export function readCronJob(openclawDir: string, jobId: string): CronJob | null 
   }
 }
 
+/** A job as the store lists it: its id, delivery and whether it is switched off. */
+export interface ListedJob {
+  id: string;
+  delivery: unknown;
+  enabled: boolean;
+}
+
+function listed(raw: unknown, id?: unknown): ListedJob | null {
+  if (!raw || typeof raw !== "object") return null;
+  const j = raw as Record<string, unknown>;
+  const jid = typeof id === "string" ? id : j.id;
+  return typeof jid === "string" && jid.trim() ? { id: jid.trim(), delivery: j.delivery, enabled: j.enabled !== false } : null;
+}
+
+/**
+ * Every job in OpenClaw's job store under its state directory (the database store where it exists, else
+ * `cron/jobs.json`), in the store's order; empty when it cannot be read.
+ */
+export function listCronJobs(openclawDir: string): ListedJob[] {
+  const db = path.join(openclawDir, "state", "openclaw.sqlite");
+  if (existsSync(db)) {
+    const DatabaseSync = sqliteModule()?.DatabaseSync;
+    if (!DatabaseSync) return [];
+    let conn: any;
+    try {
+      conn = new DatabaseSync(db, { readOnly: true, timeout: 200 });
+      const rows = conn.prepare("SELECT job_id, job_json FROM cron_jobs").all() as any[];
+      return rows.map((r) => listed(JSON.parse(String(r.job_json)), r.job_id)).filter((j): j is ListedJob => j !== null);
+    } catch {
+      return [];
+    } finally {
+      try {
+        conn?.close();
+      } catch {
+        // already closed
+      }
+    }
+  }
+  try {
+    const data = JSON.parse(readFileSync(path.join(openclawDir, "cron", "jobs.json"), "utf8"));
+    const jobs: unknown[] = Array.isArray(data?.jobs) ? data.jobs : [];
+    return jobs.map((j) => listed(j)).filter((j): j is ListedJob => j !== null);
+  } catch {
+    return [];
+  }
+}
+
 /** Chat platforms whose bare target is a phone number: a person. */
 const PHONE_PLATFORMS = new Set(["sms", "whatsapp", "signal", "imessage"]);
 /** Target kinds that name a room; `user:` and `dm:` name a person. */
@@ -125,9 +172,18 @@ export function deliveryPattern(delivery: unknown): string | null {
   if (!delivery || typeof delivery !== "object") return null;
   const d = delivery as Record<string, unknown>;
   if (d.mode !== "announce" || typeof d.channel !== "string" || typeof d.to !== "string") return null;
-  const platform = d.channel.trim().toLowerCase();
+  return roomPattern(d.channel, d.to);
+}
+
+/**
+ * A delivery to `to` on `platform` as a channel pattern (`<platform>:<channel>`), when it names a room; null for a
+ * person, a phone number, a direct message, a thread or anything else. The Hermes plugin reads a cron job's delivery
+ * with the same rule.
+ */
+export function roomPattern(channel: string, target: string): string | null {
+  const platform = channel.trim().toLowerCase();
   if (!/^[a-z][a-z0-9_-]{1,20}$/.test(platform) || platform === "last") return null;
-  let to = d.to.trim();
+  let to = target.trim();
   if (to.toLowerCase().startsWith(`${platform}:`)) to = to.slice(platform.length + 1);
   if (PERSON_PREFIX.test(to.toLowerCase())) return null;
   const room = ROOM_PREFIX.test(to.toLowerCase());

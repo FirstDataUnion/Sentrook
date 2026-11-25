@@ -19,15 +19,16 @@ provides_hooks:
   - pre_tool_call
   - post_tool_call
   - post_approval_response
+# The agent's read-only setup report, and its setup proposal (items for the owner's /sentrook setup screen; it sets
+# nothing). Hermes turns plugin toolsets on everywhere; the plugin's own pre_tool_call refuses both outside the
+# owner's own direct chat.
+provides_tools:
+  - sentrook_setup_report
+  - sentrook_propose_setup
 # The scan credentials. `hermes plugins install` asks for them; Hermes stores them, never config.yaml,
 # and the plugin reads them only through Hermes (agent.secret_scope.get_secret).
-requires_env:
-  - name: SENTROOK_SCAN_CLIENT_ID
-    description: Sentrook scan client ID (identity service, Sentrook tab)
-    url: https://identity.firstdataunion.org
-  - name: SENTROOK_SCAN_CLIENT_SECRET
-    description: Sentrook scan client secret
-    secret: true
+# No requires_env: the install would prompt for a client id and secret the user does not have yet.
+# `hermes sentrook login` stores them (after-install.md says so); both stay declared as secrets below.
 config_schema:
   client_id:
     type: secret
@@ -67,12 +68,15 @@ config_schema:
   attended_platforms:
     type: list
     description: >
-      Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
-      Hermes approval prompts). Elsewhere outside chat platforms, a review holds the call for the owner's
-      `/sentrook approve`. Env SENTROOK_ATTENDED_PLATFORMS.
+      Extra session platforms where a person answers Hermes's approval prompts (e.g. api_server behind a UI
+      that shows them). A review there shows an approval prompt; elsewhere outside chat platforms it holds the
+      call for the owner's `/sentrook allow` or `/sentrook deny`. The owner can also add a front end such as
+      api_server with `/sentrook attended add <platform> --confirm`; runs Hermes starts itself and the local
+      terminal cannot be added. Env SENTROOK_ATTENDED_PLATFORMS.
   owner_channel:
     type: str
     description: >
+      Easier: send `/sentrook notify here` in the chat where you want notices; that wins over this setting.
       The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run,
       and of a call blocked there because the scan failed (at most once per job, or per session for other
       runs, every 6 hours), and of a background skill or memory save blocked, held or let through without

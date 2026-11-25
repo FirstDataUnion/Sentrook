@@ -31,6 +31,10 @@ everything else. A read counts only as a host tool that succeeded:
 - Hermes: `skill_view` and `skills_list` (installed skills, as for the self-edit mark).
 - OpenClaw: `skill_workshop` `view` (and `read` on hosts before the proposal flow was retired), which read a skill
   the agent has; `list` and `inspect` can show proposals nobody approved and keep exposure.
+- OpenClaw: `plugin_skill:read` (`PLUGIN_SKILL_READ`), the name the Sentrook plugin reports a `read` under when the
+  file it read resolves to one of the skill files the plugin itself ships (its real path inside the plugin's own
+  folder). Tool names hold no `:`, so no tool the agent can call has this name. A read of the same text anywhere
+  else (a copy in the workspace, a link swapped in for the plugin's file) stays a plain `read` and keeps exposure.
 - OpenClaw: a `read` or `memory_get` of `MEMORY.md` or a `.md` file directly under `memory/` at the top of the
   workspace (a relative path resolves against the workspace, as the host resolves it; a path with `$` or quotes,
   which the host reads literally, never counts). `memory_search` and `memory_get` with another corpus can return
@@ -71,6 +75,8 @@ def is_own_store_read(platform: Any, tool: Any) -> bool:
     )
 
 
+#: The OpenClaw tool name the Sentrook plugin reports a read of one of its own shipped skill files under.
+PLUGIN_SKILL_READ = "plugin_skill:read"
 #: OpenClaw `skill_workshop` actions that read a skill the agent already has.
 WORKSHOP_SKILL_READS = frozenset({"view", "read"})
 #: OpenClaw `memory_get` corpora that hold only the workspace's memory files.
@@ -141,6 +147,8 @@ def own_store_read(
     if platform == "hermes":
         return SKILL if tool in OWN_STORE_READS["hermes"] else None
     if platform == "openclaw":
+        if tool == PLUGIN_SKILL_READ:
+            return SKILL
         if tool == "skill_workshop":
             action = str(args.get("action") or "").strip().lower()
             return SKILL if action in WORKSHOP_SKILL_READS else None

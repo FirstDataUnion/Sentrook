@@ -333,7 +333,7 @@ def test_scan_reports_the_views_it_used(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
     assert pv["views_version"] == {"exposure": "trim-v2", "call": "trim-v2"}
     assert pv["redaction"] == {
-        "version": "redact-v10",
+        "version": "redact-v11",
         "shapes": SHAPES_VERSION,
         "count": 2,
     }
@@ -353,7 +353,7 @@ def test_scan_defaults_stay_on_trim_v1(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE, "call": CALL}
     assert pv["views_version"] == {"exposure": "trim-v1", "call": "trim-v1"}
     assert pv["redaction"] == {
-        "version": "redact-v10",
+        "version": "redact-v11",
         "shapes": SHAPES_VERSION,
         "count": 0,
     }
@@ -411,9 +411,9 @@ def test_question_set_env_round_trip_and_health():
     default = ServeConfig.from_env({})
     assert (default.jev_exposure_question_set, default.jev_call_question_set) == (
         "exposure-v2",
-        "call-v9",
+        "call-v11",
     )
-    assert default.convergence == "conv-v8"
+    assert default.convergence == "conv-v9"
     # the frozen v1 sets and conv-v1 stay selectable for the Jev-only comparison
     frozen = ServeConfig.from_env(
         {

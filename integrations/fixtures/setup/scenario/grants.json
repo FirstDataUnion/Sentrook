@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "grants": [
+    {"id": "gr-0a0b0c", "kind": "destination", "pattern": "*.example.net", "scope": "persistent", "granted_at": "2026-11-01T09:00:00Z"},
+    {"id": "gr-0d0e0f", "kind": "provider", "pattern": "remote:mcp.search.example", "scope": "persistent", "granted_at": "2026-11-01T09:00:00Z"},
+    {"id": "gr-0e0e0e", "kind": "destination", "pattern": "files.example.org", "scope": "session", "session_ref": "s_0000000000a5", "granted_at": "2026-11-23T15:00:00Z"},
+    {"id": "gr-0f0f0f", "kind": "destination", "pattern": "old.example.com", "scope": "persistent", "granted_at": "2026-10-01T09:00:00Z", "expires_at": "2026-10-31T09:00:00Z"}
+  ],
+  "bindings": [
+    {"pattern": "slack:#ops-alerts", "granted_at": "2026-11-01T09:00:00Z"}
+  ]
+}

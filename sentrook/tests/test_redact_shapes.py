@@ -10,11 +10,11 @@ tested on a small invented rules file; nothing here fetches."""
 from __future__ import annotations
 
 import re
-import time
 from pathlib import Path
 from re import _parser as sre_parse  # type: ignore[attr-defined]
 
 import pytest
+from linear_time import assert_linear
 
 from sentrook.cli import main as cli_main
 from sentrook.prepare import redact_import
@@ -166,18 +166,42 @@ def test_no_shape_matches_the_shapes_file_itself():
     assert redact_text(text) == (text, 0)
 
 
+def _adversarial(regex: str, divisor: int) -> None:
+    """Near-misses back to back, the shape's prefix repeated, and a long run of its body that never
+    ends the way the shape needs; at 1/`divisor` of the full size."""
+    value = example(regex)
+    cut = value[:-1]
+    redact_text((cut + " ") * (20_000 // len(value) // divisor))
+    redact_text(cut * (20_000 // len(value) // divisor))
+    redact_text(value[:6] * (6_000 // divisor))
+    redact_text((cut + value[-2] * (6_000 // divisor) + "!") * 6)
+
+
 def test_bounded_time_on_adversarial_input():
-    """Per shape: near-misses back to back, its prefix repeated, and a long run of its body that never
-    ends the way the shape needs."""
-    t0 = time.perf_counter()
+    """Per shape, the time grows linearly with the adversarial input (see linear_time.py), whatever
+    the runner's speed."""
     for shape in SHAPES:
-        value = example(shape.regex)
-        cut = value[:-1]
-        redact_text((cut + " ") * (20_000 // len(value)))
-        redact_text(cut * (20_000 // len(value)))
-        redact_text(value[:6] * 6_000)
-        redact_text((cut + value[-2] * 6_000 + "!") * 6)
-    assert time.perf_counter() - t0 < 15.0
+        assert_linear(lambda d, regex=shape.regex: _adversarial(regex, d), what=shape.name)
+
+
+def test_bounded_time_check_catches_a_quadratic_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A shape that backtracks over its whole input (each start scans to the end) fails the check.
+    Quadratic rather than exponential, so the test itself finishes."""
+    regex = r"QQ\w*?z"
+    (tmp_path / "redact_shapes.yaml").write_text(
+        f"version: 1\nshapes:\n  - {{name: test-quadratic, regex: '{regex}'}}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SENTROOK_LISTS_DIR", str(tmp_path))
+    clear_cache()
+    try:
+        assert load_shapes().shapes[-1].name == "test-quadratic"
+        with pytest.raises(AssertionError, match="super-linear"):
+            assert_linear(lambda d: _adversarial(regex, d), what="test-quadratic")
+    finally:
+        monkeypatch.delenv("SENTROOK_LISTS_DIR")
+        clear_cache()
 
 
 def test_file_is_current_for_its_tag(tmp_path: Path):

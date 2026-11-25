@@ -388,6 +388,11 @@ class Scanner:
                     prepared.credential_home,
                     prepared.credential_home_check,
                 ) = credential_home_check(prepared)
+            if env.status is ProbeStatus.OK and self.config.params.service_name_relief:
+                # Hosts the owner's request names by their service: the call judge decides whether it means the service.
+                from .prepare.service_names import candidates as service_candidates
+
+                prepared.service_candidates = service_candidates(prepared)
         # The probes share one deadline: a probe still running then is recorded as timed out and left
         # behind (a thread cannot be stopped; what it returns later is never read), and the pool is
         # shut down without waiting for it. The deadline bounds the waits, not one long call: a probe

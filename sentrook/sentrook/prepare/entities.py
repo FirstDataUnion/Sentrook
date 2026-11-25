@@ -349,6 +349,8 @@ _JID_RE = re.compile(r"(?<![\w.@+-])\d{5,}(?:-\d+)?" + _JID_SUFFIX + r"(?![\w@-]
 _WORD_PREFIXES = frozenset({"user", "dm", "group"})
 _ID_TOKEN_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_-]{7,}")
 _NUMERIC_ID_RE = re.compile(r"-?\d{3,}")
+# A Discord id (a snowflake): longer than any phone number (E.164 has at most 15 digits).
+_SNOWFLAKE_RE = re.compile(r"\d{17,20}")
 # Chat platforms a message target may be prefixed with (`telegram:-100…`, `slack:C0…`, `discord:#x`).
 _CHAT_PLATFORMS = frozenset(
     """telegram discord slack whatsapp signal matrix mattermost msteams teams googlechat imessage irc
@@ -1200,11 +1202,34 @@ def _is_channel_target(value: str, *, chat: bool, platform: str | None) -> bool:
     return bool(_NUMERIC_ID_RE.fullmatch(value) or _ID_TOKEN_RE.fullmatch(value))
 
 
+def channel_key(value: str) -> str:
+    """The one spelling of a channel target that every way of writing it shares: `channel:<id>` for a
+    platform-prefixed target (`discord:channel:<id>`, as OpenClaw reads it) and for a bare Discord id (a
+    17-20 digit snowflake, which Discord sends to as a channel); any other target as written. Other bare
+    ids may be people (a phone number, a Slack user id, a Telegram user's chat) and stay as written. A person
+    stays a person (`discord:user:<id>` is `user:<id>`), and `discord:<id>` is left as written: Discord reads
+    it as a user."""
+    v = value.strip()
+    m = _PLATFORM_TARGET_RE.fullmatch(v)
+    if m and m.group(1).lower() in _CHAT_PLATFORMS and _CHANNEL_RE.fullmatch(m.group(2).strip()):
+        v = m.group(2).strip()
+    if _SNOWFLAKE_RE.fullmatch(v):
+        v = "channel:" + v
+    return v
+
+
 def channel_names(value: str) -> set[str]:
     """The shorter names an owner may use for a channel target, lower-cased: `ops-yard` and `#ops-yard`
     for `channel:ops-yard`; for a platform-prefixed target, the part after the platform when it is a
     `#name` or id-shaped (`#bot-home` for `discord:#bot-home`, not `general` for `slack:general`). A
-    Matrix room has none (the part after its `:` is the homeserver)."""
+    Matrix room has none (the part after its `:` is the homeserver). A target written another way than its
+    `channel_key` also has that key and its names (`channel:<id>`, `<id>` and `#<id>` for
+    `discord:channel:<id>` or a bare Discord id), unless the key is a person's."""
+    key = channel_key(value)
+    if key != value.strip():
+        if _PERSON_PREFIX.match(key):
+            return set()
+        return {key.lower()} | channel_names(key)
     m = _CHANNEL_RE.fullmatch(value)
     if m:
         name = m.group(2).lower()

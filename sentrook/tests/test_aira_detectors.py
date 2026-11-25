@@ -1043,6 +1043,11 @@ def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
         hx("hermes sentrook revoke host example.test"),
         ex("openclaw sentrook bind channel general"),
         hx("hermes sentrook why"),
+        # Where notices go and which platforms count as attended are the owner's to set.
+        hx("hermes sentrook notify telegram"),
+        hx("hermes sentrook notify off"),
+        hx("hermes sentrook attended add api_server --confirm"),
+        hx("hermes sentrook attended list"),
         # Any verb not listed as a read, including ones the plugin does not have yet.
         ex("openclaw sentrook quiet"),
         hx("hermes sentrook --verbose grant host example.test"),
@@ -1057,6 +1062,17 @@ def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
         # An option before the verb might take the next word as its value, so every word that
         # could be the verb is checked.
         hx("hermes sentrook -p status grant host example.test"),
+        # Signing in is the owner's: an agent that started it would show the owner a link it chose.
+        ex("openclaw sentrook login"),
+        ex("openclaw sentrook login --name my-box"),
+        hx("hermes sentrook login"),
+        hx("hermes sentrook login --name my-box"),
+        hx("uv run hermes sentrook login"),
+        # The setup screen and applying it are the owner's: the agent can neither show nor apply it.
+        hx("hermes sentrook setup"),
+        hx("hermes sentrook setup apply 4821 1,3 --until-revoked"),
+        hx("hermes sentrook setup discard p-a1b2c3"),
+        ex("openclaw sentrook setup apply 4821"),
     ],
 )
 def test_c4star_plugin_commands_take_the_floor(raw):

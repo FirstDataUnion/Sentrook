@@ -33,8 +33,12 @@ GITLEAKS_TAG ?= v8.30.1
 install:
 	uv sync --extra dev
 
+# Four pytest-xdist workers, as many as a CI runner has CPUs. Not `auto`: on a laptop with slower
+# efficiency cores a timing test's two runs can land on different kinds of core.
+# PYTEST_WORKERS=0 runs in one process.
+PYTEST_WORKERS ?= 4
 test:
-	uv run pytest sentrook/tests -q
+	uv run pytest sentrook/tests -q -n $(PYTEST_WORKERS)
 
 lint:
 	uv run ruff check .
@@ -70,10 +74,13 @@ plugin-planir-check:
 	mkdir -p tmp
 	rm -f tmp/openclaw-planirs.json
 	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
-		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned|must declare|Code Mode cell" index.test.ts
+		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned|must declare|Code Mode cell|own shipped skill" index.test.ts
+	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
+		node --experimental-strip-types --test --test-name-pattern="goes to the next scan" setupReport.test.ts proposals.test.ts
 	rm -rf tmp/hermes-planirs tmp/hermes-planirs.json
 	SENTROOK_PLANIR_DUMP_DIR=$(CURDIR)/tmp/hermes-planirs uv run python -m pytest -q \
-		integrations/hermes/plugin/tests/test_plugin.py -k episode
+		integrations/hermes/plugin/tests/test_plugin.py integrations/hermes/plugin/tests/test_setup_report.py \
+		integrations/hermes/plugin/tests/test_proposals.py -k episode
 	uv run python -c "import glob, json; from sentrook.planir.models import PlanIR; \
 	from sentrook.planir.validate import check; \
 	hermes = sorted(glob.glob('tmp/hermes-planirs/*.json')); assert hermes, 'no Hermes PlanIR dumps'; \
