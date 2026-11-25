@@ -30,7 +30,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `{{cmd allow}} <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
   next scheduled run instead; when the held run had already sent or written something, only `now` runs it again);
-  `{{cmd allow}} <id> always` lets the job make it for 30 days; `{{cmd deny}} <id>` refuses the job the same call for 30 days. "The same call" is the same tool
+  `{{cmd allow}} <id> always` lets the job make it for 30 days; `{{cmd deny}} <id>` refuses the job the same call for 30 days. Off a cron job, the answers bind to where the run came from ({{run_sources}}) and nothing is started; a run with no such source ({{sourceless_runs}}) offers only `{{cmd allow}}`, for the exact call. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `{{cmd why}} <id>` shows the grant Sentrook suggests, and `{{cmd passes}}` lists what the answers set. A hold nobody
   answers expires after 7 days. {{held_notice}}

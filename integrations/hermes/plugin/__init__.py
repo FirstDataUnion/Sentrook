@@ -718,16 +718,20 @@ def _scan_one(
         elif unattended:
             # A review nobody can answer (or Hermes would auto-approve): the owner's denial or pass for this job and
             # action settles it (`passes`); otherwise it waits for the owner (`hold`).
-            job_id = _run_of(built)[1]
+            _where_text, job_id, source = _run_of(built)
             match = passes.match_of(
-                str(built.get("tool") or ""), resp, kw.get("args"), store.salt(), job_id is None
+                str(built.get("tool") or ""),
+                resp,
+                kw.get("args"),
+                store.salt(),
+                job_id is None and source is None,
             )
             # A run the plugin started for an owner's `allow` (`run_now`): its pass serves this run only.
             rerun = _rerun(cfg, job_id) if job_id else None
             try:
                 settled = passes.check(
                     cfg.state_dir,
-                    passes.job_ref(job_id),
+                    passes.job_ref(job_id) or (source or {}).get("ref"),
                     match,
                     resp,
                     datetime.now(UTC),
@@ -760,6 +764,7 @@ def _scan_one(
                     resp,
                     sid=sid,
                     job_id=job_id,
+                    source=source,
                     match=match,
                     acted=_acted(sess),
                 )
@@ -1281,14 +1286,39 @@ def _where(built: dict[str, Any]) -> str:
     return _run_of(built)[0]
 
 
-def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
+def _source_of(built: dict[str, Any]) -> dict[str, str] | None:
+    """Where an unattended run that is not a cron job came from, as Hermes's run metadata names it, for binding a
+    held call's answers (`passes.source_of`); None when Hermes names nothing usable. Never from the prompt or the
+    call:
+    - a subagent: its parent session (`parent_session_ref`, from the `parent_session_id` Hermes gives each turn of
+      a delegated child);
+    - a webhook run: its route, from the user id Hermes's webhook platform binds for an authenticated route
+      (`webhook:<route>`); the delivery id in the chat id changes with every delivery, so it is not used.
+    An API-server run has no source: Hermes 0.23 checks one shared key and gives the run no key name, and its
+    session ids come from the client."""
+    planir = built.get("planir") or {}
+    if built.get("subagent") or built.get("platform") == "subagent":
+        parent = (planir.get("session") or {}).get("parent_session_ref")
+        return passes.source_of("subagent", parent) if isinstance(parent, str) else None
+    if built.get("platform") == "webhook":
+        user = session_facts().get("user_id") or ""
+        route = user[len("webhook:") :] if user.startswith("webhook:") else ""
+        return passes.source_of("hook", route)
+    return None
+
+
+#: How the owner's notices name a webhook run.
+_WEBHOOK_RUN = "webhook run"
+
+
+def _run_of(built: dict[str, Any]) -> tuple[str, str | None, dict[str, str] | None]:
     """(the job or session a call belongs to, for the owner's notices; the cron job id when Hermes says
-    which)."""
+    which; else the run's source, when Hermes names one: `_source_of`)."""
     sref = built["planir"]["session"]["session_ref"]
     if built.get("loop_save"):
-        return hold.where_text(skill_review.RUN, sref), None
+        return hold.where_text(skill_review.RUN, sref), None, None
     if built.get("background_run"):
-        return hold.where_text(skill_review.RUN_CALLS, sref), None
+        return hold.where_text(skill_review.RUN_CALLS, sref), None, None
     run = None
     try:
         read = getattr(_ctx, "current_cron_execution", None)
@@ -1302,12 +1332,15 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
             if isinstance(job_name, str) and job_name.strip() != job_id.strip()
             else None
         )
-        return hold.where_text("cron job", sref, job_id.strip(), name), job_id.strip()
+        return hold.where_text("cron job", sref, job_id.strip(), name), job_id.strip(), None
+    source = _source_of(built)
     if built["subagent"] or built["platform"] == "subagent":
-        return hold.where_text("subagent run", sref), None
+        return hold.where_text("subagent run", sref, source=source), None, source
     if built["platform"] == "cron":
-        return hold.where_text("cron job", sref), None
-    return hold.where_text("unattended run", sref), None
+        return hold.where_text("cron job", sref), None, None
+    if built["platform"] == "webhook":
+        return hold.where_text(_WEBHOOK_RUN, sref, source=source), None, source
+    return hold.where_text("unattended run", sref), None, None
 
 
 def _background_save_attended(
@@ -1520,7 +1553,7 @@ def _scan_failure_notice(
     target, why = _notice_target(cfg)
     if not target:
         return {"status": "unsent", "target": None, "reason": why}
-    where, job_id = _run_of(built)
+    where, job_id, _source = _run_of(built)
     sref = built["planir"]["session"]["session_ref"]
     key = scan_failure_notice.quiet_key(job_id, sref)
     try:
@@ -1553,13 +1586,15 @@ def _hold(
     *,
     sid: str = "",
     job_id: str | None = None,
+    source: dict[str, str] | None = None,
     match: dict[str, Any] | None = None,
     acted: bool = False,
 ) -> dict[str, Any]:
     """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
     call is held whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of
     a waiting hold of the same job and action is counted on it, and no notice is sent. `acted`: the run had
-    already sent or written something (then `allow` waits for the next run, and `allow now` is offered)."""
+    already sent or written something (then `allow` waits for the next run, and `allow now` is offered).
+    `source`: where a run that is not a cron job came from (`_source_of`); the hold's answers are bound to it."""
     now = datetime.now(UTC)
     planir = built["planir"]
     target, why = _notice_target(cfg)
@@ -1572,8 +1607,15 @@ def _hold(
     where = _where(built)
     match = match or {}
     level = passes.offered_level(resp)
+    source = None if job_id else source
     offers = passes.offers(
-        job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at, acted
+        job_id,
+        level,
+        bool(match.get("named")),
+        session_allow.risk_of(resp),
+        cfg.block_at,
+        acted,
+        source is not None,
     )
     job_digest = None
     if job_id:
@@ -1599,6 +1641,7 @@ def _hold(
             record=traffic.write,
             sid=sid,
             job_id=job_id,
+            source=source,
             match=match,
             level=level,
             offers=offers,
@@ -1619,7 +1662,13 @@ def _hold(
     elif hid is not None and target:
         try:
             text = hold.notice_text(
-                resp, built["tool"], where, hid, offers, commands.CMD, on_job=job_id is not None
+                resp,
+                built["tool"],
+                where,
+                hid,
+                offers,
+                commands.CMD,
+                scope="job" if job_id else source["kind"] if source else None,
             )
             _deliver(cfg, target, text)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced

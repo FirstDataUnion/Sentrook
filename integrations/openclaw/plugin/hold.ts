@@ -25,10 +25,13 @@
  *   - `/sentrook-deny <id>`: a standing denial for this job and action, for 30 days. A matching call is refused with a
  *     plain declined result and no notice.
  *   - `/sentrook-approve <id>` is the same as `/sentrook-allow <id>`, kept for one release.
- *   A hold on a run that is not a cron job has no job to bind to: it offers allow only, bound to the call's exact
- *   arguments. The notice lists only the answers the hold offers. A wider grant the scanner suggests is never set by
- *   an answer: `why` shows its command, for the owner to set by hand.
- * - A later hold of the same job and action, at no higher risk and with no new warning, updates the waiting hold
+ *   A hold on another unattended run is bound to where the run came from, when OpenClaw names it (`passes.Source`: a
+ *   heartbeat's agent, a webhook's hook, a subagent's parent session): allow is a one-use pass for the next matching
+ *   call from that source within 7 days, with nothing started, and allow always and deny are bound to the source. A
+ *   run with no source has nothing to bind to: it offers allow only, bound to the call's exact arguments. The notice
+ *   lists only the answers the hold offers. A wider grant the scanner suggests is never set by an answer: `why` shows
+ *   its command, for the owner to set by hand.
+ * - A later hold of the same job (or source) and action, at no higher risk and with no new warning, updates the waiting hold
  *   (its count and when it was last seen) and sends no new notice.
  * - After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next changed
  *   (a new hold or an answer).
@@ -109,15 +112,35 @@ export function inert(s: unknown, cap: number): string {
 
 // ---- the text -----------------------------------------------------------------------------------------
 
+/** How the notice's run line names a source, before its name. */
+const SOURCE_LABELS: Record<passes.SourceKind, string> = {
+  heartbeat: "agent",
+  hook: "hook",
+  subagent: "parent session",
+  api: "API key",
+};
+
 /**
  * Which run a hold belongs to: a cron job by its id, with its name quoted and labelled as the job's name (whoever
  * made the job chose it, possibly the agent, so it must read as a name, never as an instruction), else the kind of
- * run; then the session.
+ * run and, when the run has a source, the source by its name (quoted, as a job's name is; a parent session by its
+ * ref); then the session.
  */
-export function whereText(run: string, sessionRef: string, jobId?: string | null, jobName?: string | null): string {
+export function whereText(
+  run: string,
+  sessionRef: string,
+  jobId?: string | null,
+  jobName?: string | null,
+  source?: { kind: string; name: string } | null,
+): string {
   if (jobId) {
     const name = jobName ? `, job name ${JSON.stringify(inert(jobName, 60))}` : "";
     return `cron job ${inert(jobId, 40)}${name}, session ${sessionRef}`;
+  }
+  const label = source ? SOURCE_LABELS[source.kind as passes.SourceKind] : undefined;
+  if (source && label) {
+    const name = source.kind === "subagent" ? inert(source.name, 40) : JSON.stringify(inert(source.name, 60));
+    return `${run}, ${label} ${name}, session ${sessionRef}`;
   }
   return `${run}, session ${sessionRef}`;
 }
@@ -156,6 +179,21 @@ const OFFER_LINES: Record<string, string> = {
 const NEXT_RUN_LINE = "- let this call through once, on the job's next scheduled run: {c} {id}";
 /** A hold that is not on a cron job: allow is bound to the exact call. */
 const EXACT_LINE = "- let this exact call through once, within 7 days: {c} {id}";
+/** A hold bound to a source: the answers name the source by its kind (`{src}`, from SOURCE_NOUNS). */
+const SOURCE_LINES: Record<string, string> = {
+  [passes.ALLOW]: "- let this call through once more from {src}, within 7 days: {c} {id}",
+  [passes.ALLOW_ALWAYS]: "- let {src} make this call for 30 days: {c} {id} always",
+  [passes.DENY]: "- refuse it from {src} for 30 days, with no more notices: {c} {id}",
+};
+const SOURCE_NOUNS: Record<passes.SourceKind, string> = {
+  heartbeat: "this agent's heartbeat",
+  hook: "this hook",
+  subagent: "subagents of the same parent session",
+  api: "this API key",
+};
+
+/** What a hold's answers are bound to: a cron job, a source of this kind, or nothing (the exact call). */
+export type Scope = "job" | passes.SourceKind | null;
 
 /**
  * The owner's notice: that a call was held, which run, the tool and its target as a review names them, the block
@@ -170,7 +208,7 @@ export function noticeText(
   holdId: string,
   offers: string[],
   cmd: (verb: string) => string,
-  onJob = true,
+  scope: Scope = "job",
 ): string {
   const lines = [
     "Sentrook held a tool call on an unattended run; it did not run.",
@@ -181,8 +219,10 @@ export function noticeText(
   if (offers.length) {
     lines.push("Reply within 7 days:");
     for (const verb of offers) {
-      const line =
-        verb === passes.ALLOW && !onJob
+      const noun = scope && scope !== "job" ? SOURCE_NOUNS[scope] : undefined;
+      const line = noun
+        ? SOURCE_LINES[verb]!.replace("{src}", noun)
+        : verb === passes.ALLOW && !scope
           ? EXACT_LINE
           : verb === passes.ALLOW && offers.includes(passes.ALLOW_NOW)
             ? NEXT_RUN_LINE
@@ -246,6 +286,8 @@ export interface NewHold {
   sid?: string;
   /** The cron job OpenClaw names for the run; null for any other run. */
   jobId?: string | null;
+  /** Where a run that is not a cron job came from, when OpenClaw names it; its answers are bound to it. */
+  source?: passes.Source | null;
   match?: passes.Match | null;
   level?: passes.Level | null;
   offers?: string[];
@@ -260,14 +302,14 @@ export interface NewHold {
 }
 
 /**
- * The waiting hold a new hold of the same job and action repeats: same job, same match key, at no higher risk and
- * with no new warning (`passes.covers`). Only holds on a cron job repeat.
+ * The waiting hold a new hold of the same job (or source) and action repeats: same job or source, same match key, at
+ * no higher risk and with no new warning (`passes.covers`). Only holds on a cron job or a source repeat.
  */
-function repeatOf(data: HoldsFile, jobRef: string | null, match: passes.Match | null | undefined): Entry | null {
-  if (jobRef === null || !match) return null;
+function repeatOf(data: HoldsFile, ref: string | null, match: passes.Match | null | undefined): Entry | null {
+  if (ref === null || !match) return null;
   return (
     (data.holds.find(
-      (h) => !!h && typeof h === "object" && (h as Entry).v === 2 && (h as Entry).job_ref === jobRef && passes.covers((h as Entry).match, match),
+      (h) => !!h && typeof h === "object" && (h as Entry).v === 2 && passes.scopeRef(h as Entry) === ref && passes.covers((h as Entry).match, match),
     ) as Entry | undefined) ?? null
   );
 }
@@ -287,8 +329,9 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
   sweepData(data, now, record);
   data.version = 2;
   const ref = passes.jobRef(hold.jobId);
+  const source = ref === null ? (hold.source ?? null) : null;
   const held = { sid: hold.sid ?? "", request_id: hold.requestId };
-  const same = repeatOf(data, ref, hold.match);
+  const same = repeatOf(data, ref ?? source?.ref ?? null, hold.match);
   if (same) {
     same.count = Number(same.count ?? 1) + 1;
     same.last_seen_at = iso(now);
@@ -314,6 +357,7 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
     where: hold.where,
     job_id: hold.jobId ?? null,
     job_ref: ref,
+    source: source ? { kind: source.kind, ref: source.ref, name: source.name } : null,
     match: hold.match ?? {},
     level: hold.level ?? null,
     offers: [...(hold.offers ?? [])],
@@ -392,20 +436,39 @@ export interface RunNow {
   start(hold: Entry): Promise<{ started: boolean; runId: string | null; why: string }>;
 }
 
+/** The source a version 2 hold off a cron job is bound to, or null. */
+export function sourceOfHold(found: Entry): { kind: string; ref: string; name: string } | null {
+  const src = found.job_ref ? null : found.source;
+  return src && typeof src === "object" && typeof src.ref === "string" && src.ref ? (src as { kind: string; ref: string; name: string }) : null;
+}
+
+/** Who makes the calls a hold's answer is bound to, to start the owner's reply: the job, else the source. */
+export function subjectOf(found: Entry): string {
+  const src = sourceOfHold(found);
+  if (!src) return `Job ${clean(found.job_id, 40)}`;
+  const text = passes.sourceText(src.kind, src.name);
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** A hold with nothing to bind an answer to beyond the exact call. */
+const UNBOUND = "comes from a run with no cron job or other source Sentrook can bind an answer to";
+
 /** Why a hold does not offer the answer `want`; the hold keeps waiting. */
 function refusal(found: Entry, want: string, id: string, cmd: grants.Cmd): string {
   const onJob = !!found.job_ref;
+  const src = sourceOfHold(found);
   const level = found.level ?? null;
   const why = `${cmd("why")} ${id} shows the reasons`;
   if (want === passes.DENY) {
-    return `Not set: ${id} is not on a cron job, so there is no job to refuse it for. Leave it and it expires; the call never runs.`;
+    return `Not set: ${id} ${UNBOUND}, so there is nothing to refuse it for. Leave it and it expires; the call never runs.`;
   }
   if (level === null) {
-    const alt = onJob ? `${cmd("deny")} ${id} refuses it on this job with no more notices; ` : "leave it and it expires; ";
+    const on = onJob ? "on this job" : src ? `from ${passes.sourceText(src.kind, src.name)}` : null;
+    const alt = on ? `${cmd("deny")} ${id} refuses it ${on} with no more notices; ` : "leave it and it expires; ";
     return `Not allowed: Sentrook does not offer to let this call through. ${alt}${why}.`;
   }
-  if (!onJob) {
-    return `Not set: ${id} is not on a cron job, so there is no job to let this call through for good. ${cmd("allow")} ${id} lets this exact call through once.`;
+  if (!onJob && !src) {
+    return `Not set: ${id} ${UNBOUND}, so it cannot be let through for good. ${cmd("allow")} ${id} lets this exact call through once.`;
   }
   if (level !== "always") {
     return (
@@ -623,6 +686,7 @@ export async function answer(
     pass_kind: entry.kind,
     uses: entry.uses,
     job_ref: entry.job_ref ?? null,
+    ...(entry.source_ref ? { source_kind: entry.source_kind ?? null, source_ref: entry.source_ref } : {}),
     hold_id: id,
     expires_at: entry.expires_at,
     by,
@@ -632,13 +696,15 @@ export async function answer(
   }
   const until = readTime(entry.expires_at);
   const shown = until ? passes.show(until) : "?";
-  const job = `Job ${clean(found.job_id, 40)}`;
+  const job = subjectOf(found);
   const undo = `Undo: ${cmd("passes")} revoke ${entry.id}.`;
   const decision = want === passes.DENY ? "denied_by_user" : "approved_by_user";
   let reply: string;
   if (want === passes.DENY) reply = `${job} will not make this call until ${shown}; you won't be told again. ${undo}`;
   else if (want === passes.ALLOW_ALWAYS) reply = `${job} may make this call until ${shown}. ${undo}`;
-  else if (!found.job_ref) {
+  else if (!found.job_ref && sourceOfHold(found)) {
+    reply = `${job} may make this call once more, until ${shown}. Sentrook does not run the held call itself. ${undo}`;
+  } else if (!found.job_ref) {
     reply = `The next identical call from an unattended run may go through once, until ${shown}. Sentrook does not run the held call itself. ${undo}`;
   } else {
     if (start && runNow) {

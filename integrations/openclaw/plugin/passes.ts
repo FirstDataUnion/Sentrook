@@ -10,9 +10,14 @@
  * - deny: a standing denial for the job, for 30 days. A matching call gets `DECLINED_TEXT` and no notice is sent.
  *
  * The job is the one OpenClaw's run metadata names on a cron run (`ctx.inputProvenance.jobId`, else the agent hook's
- * `jobId`, when `ctx.trigger` is `cron`), never the `[cron:...]` tag in the prompt. A hold on a run that is not a
- * cron job has no job to bind to: there allow gives a one-use pass bound to the call's exact arguments, for 7 days,
- * and nothing else is offered.
+ * `jobId`, when `ctx.trigger` is `cron`), never the `[cron:...]` tag in the prompt.
+ *
+ * A hold on another unattended run is bound to the run's source instead (`Source`), when OpenClaw's run metadata names
+ * one: a heartbeat's agent, a webhook's hook, a subagent's parent session. Its allow is a one-use pass for the next
+ * matching call from the same source within 7 days (nothing is started), and allow always and deny are bound to the
+ * same source. The source is hashed as `session_ref` is (`sourceRef`), and never read from the prompt or the call.
+ * A run with no source the plugin can name has nothing to bind to: there allow gives a one-use pass bound to the
+ * call's exact arguments, for 7 days, and nothing else is offered.
  *
  * A later call matches on the same terms as the Hermes plugin's Session answer in a chat, with the job as the scope:
  * a call of the same tool about the same parties (the entities its reasons and description name), scoring no
@@ -45,7 +50,7 @@ type Entry = Record<string, any>;
 const DAY_MS = 24 * 3600_000;
 /** How long a standing pass, a denial and a job's one-use pass last. */
 export const PASS_TTL_MS = 30 * DAY_MS;
-/** How long a one-use pass bound to exact arguments (a hold that is not on a cron job) lasts. */
+/** How long a one-use pass that is not on a cron job (bound to a source, or to exact arguments) lasts. */
 export const ARGS_TTL_MS = 7 * DAY_MS;
 const MAX_PASSES = 200;
 const ID = /^p-[0-9a-f]{6}$/;
@@ -211,6 +216,59 @@ export function jobRef(jobId: string | null | undefined): string | null {
   return jobId ? `j_${createHash("sha256").update(jobId).digest("hex").slice(0, 12)}` : null;
 }
 
+/**
+ * The kinds of unattended run, other than a cron job, whose answers can be bound to where the run came from: a
+ * heartbeat (its agent), a webhook or event run (its hook), a subagent (its parent session) and, on Hermes, an
+ * API-server run (its key's name).
+ */
+export const SOURCE_KINDS = ["heartbeat", "hook", "subagent", "api"] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
+const SOURCE_PREFIX: Record<SourceKind, string> = { heartbeat: "a_", hook: "w_", subagent: "p_", api: "k_" };
+
+/** Where an unattended run that is not a cron job came from, as the host's run metadata names it. */
+export interface Source {
+  kind: SourceKind;
+  /** `sourceRef` of the kind and the host's value. */
+  ref: string;
+  /** What the owner's notice and the passes list show: the agent id, the hook's name, the parent session's ref. */
+  name: string;
+}
+
+/** A source's ref: the kind and the host's value, hashed as `session_ref` is. Null with no value. */
+export function sourceRef(kind: SourceKind, value: string | null | undefined): string | null {
+  if (typeof value !== "string" || !value.trim() || !(kind in SOURCE_PREFIX)) return null;
+  return `${SOURCE_PREFIX[kind]}${createHash("sha256").update(`${kind}\n${value.trim()}`).digest("hex").slice(0, 12)}`;
+}
+
+/** The source of kind `kind` named by the host's `value` (`name` shown, default the value); null with no value. */
+export function sourceOf(kind: SourceKind, value: string | null | undefined, name?: string | null): Source | null {
+  const ref = sourceRef(kind, value);
+  return ref ? { kind, ref, name: (name ?? value)!.trim() } : null;
+}
+
+/** What a pass, denial or hold is bound to: its job's ref, else its source's ref, else null (exact arguments). */
+export function scopeRef(e: Entry | null | undefined): string | null {
+  if (!e || typeof e !== "object") return null;
+  const ref = e.job_ref ?? e.source_ref ?? (e.source && typeof e.source === "object" ? e.source.ref : null);
+  return typeof ref === "string" && ref ? ref : null;
+}
+
+/** How the owner's texts name a source: what its passes are on, and who makes its calls. */
+const SOURCE_TEXT: Record<SourceKind, string> = {
+  heartbeat: "the heartbeat of agent {name}",
+  hook: "webhook {name}",
+  subagent: "subagents of session {name}",
+  api: "API key {name}",
+};
+
+/** A source as the owner's texts name it (`SOURCE_TEXT`), with a name the host's settings chose quoted. */
+export function sourceText(kind: unknown, name: unknown): string {
+  const k = (SOURCE_KINDS as readonly unknown[]).includes(kind) ? (kind as SourceKind) : null;
+  if (k === null) return "an unattended run";
+  const shown = k === "subagent" ? clean(name ?? "?", 40) : JSON.stringify(clean(String(name ?? "?").replace(/[[\]()<>|@`]/g, ""), 60));
+  return SOURCE_TEXT[k].replace("{name}", shown);
+}
+
 /** The approval fingerprint names nothing the call acts on (`afp1:<kind>` alone, or only the provider), or none. */
 export function namesNothing(fingerprint: unknown): boolean {
   if (typeof fingerprint !== "string" || !fingerprint) return true;
@@ -265,7 +323,8 @@ export function covers(held: Entry | null | undefined, later: Match | Entry): bo
  * The answers a hold offers, in the notice's order. On a cron job: allow when the scanner lets the owner pass the
  * call at all, then allow later (allow starts the job again now), or allow now when the held run had already acted
  * (allow then waits for the next run); allow always when it lets it pass for good and the call names its parties below
- * the block line; and deny. Elsewhere only allow (bound to the exact call).
+ * the block line; and deny. On another run with a source (`source`): the same without allow later or now (nothing is
+ * started). Elsewhere only allow (bound to the exact call).
  */
 export function offers(
   jobId: string | null,
@@ -274,12 +333,13 @@ export function offers(
   risk: number | null,
   blockAt: number,
   acted = false,
+  source = false,
 ): string[] {
-  if (!jobId) return level !== null ? [ALLOW] : [];
+  if (!jobId && !source) return level !== null ? [ALLOW] : [];
   const out: string[] = [];
   if (level !== null) {
     out.push(ALLOW);
-    out.push(acted ? ALLOW_NOW : ALLOW_LATER);
+    if (jobId) out.push(acted ? ALLOW_NOW : ALLOW_LATER);
     if (level === "always" && named && risk !== null && risk < blockAt) out.push(ALLOW_ALWAYS);
   }
   out.push(DENY);
@@ -338,7 +398,9 @@ export function add(
     const taken = new Set(data.passes.map((p) => (p as Entry).id));
     let id = `p-${randomBytes(3).toString("hex")}`;
     while (taken.has(id)) id = `p-${randomBytes(3).toString("hex")}`;
-    const ttl = b.hold.job_ref ? PASS_TTL_MS : ARGS_TTL_MS;
+    // a source's one-use pass lasts as long as a hold may be answered; standing ones as long as a job's
+    const source = !b.hold.job_ref && b.hold.source && typeof b.hold.source === "object" ? (b.hold.source as Entry) : null;
+    const ttl = b.hold.job_ref || (source && b.uses !== "once") ? PASS_TTL_MS : ARGS_TTL_MS;
     const entry: Entry = {
       id,
       kind: b.kind,
@@ -346,6 +408,9 @@ export function add(
       level: b.kind === "allow" ? b.level : null,
       job_id: b.hold.job_id ?? null,
       job_ref: b.hold.job_ref ?? null,
+      source_kind: source ? (source.kind ?? null) : null,
+      source_ref: source ? (source.ref ?? null) : null,
+      source_name: source ? (source.name ?? null) : null,
       tool: b.hold.tool ?? null,
       description: b.hold.description ?? null,
       match: b.hold.match ?? null,
@@ -385,7 +450,9 @@ export function add(
 }
 
 /**
- * The denial or pass that settles this call, or null. A denial of the same job and action wins over any pass. A pass
+ * The denial or pass that settles this call, or null. `ref`: the call's job ref, else its source's ref (`scopeRef`),
+ * else null (only a pass bound to exact arguments can settle it). A denial of the same job or source and action wins
+ * over any pass. A pass
  * applies only to an eligible scan that it covers at an `owner_pass` level at or above its own. A one-use pass is used
  * up; a standing one counts the use. A file that cannot be read settles nothing (the call is held as before).
  */
@@ -404,7 +471,7 @@ export function check(
     const found = live(data, now);
     const same = found.filter(
       (p) =>
-        p.job_ref === ref &&
+        scopeRef(p) === ref &&
         p.match &&
         typeof p.match === "object" &&
         p.match.key === match.key &&
@@ -448,23 +515,36 @@ export function revoke(stateDir: string, rest: string, now: Date, beforeWrite: (
     store.savePasses(data);
     return {
       reply: `Revoked ${found.kind === "deny" ? "denial" : "pass"} ${id}.`,
-      change: { op: "revoke", id, pass_kind: found.kind, job_ref: found.job_ref ?? null },
+      change: {
+        op: "revoke",
+        id,
+        pass_kind: found.kind,
+        job_ref: found.job_ref ?? null,
+        ...(found.source_ref ? { source_kind: found.source_kind ?? null, source_ref: found.source_ref } : {}),
+      },
     };
   });
 }
 
 const jobText = (p: Entry) => (p.job_id ? `job ${clean(p.job_id, 40)}` : "an unattended run");
 
-/** One pass or denial, as the list and the dashboard show it. */
+/** One pass or denial, as the list and the dashboard show it; one bound to a source names its kind and name. */
 export function describe(p: Entry): string {
   const at = readTime(p.expires_at);
   const until = at ? show(at) : "?";
   const call = `${clean(p.tool ?? "?", 60)}: ${clean(p.description ?? "?", 120)}`;
+  const used = Number(p.use_count ?? 0);
+  const times = `used ${used} time${used === 1 ? "" : "s"}`;
+  if (!p.job_ref && p.source_ref) {
+    const from = sourceText(p.source_kind, p.source_name);
+    if (p.kind === "deny") return `denied from ${from} until ${until}: ${call}`;
+    if (p.uses === "once") return `allowed once from ${from}, until ${until}: ${call}`;
+    return `allowed from ${from} until ${until}, ${times}: ${call}`;
+  }
   if (p.kind === "deny") return `denied on ${jobText(p)} until ${until}: ${call}`;
   if (p.uses === "once" && p.run_bound) return `allowed once in the run of ${jobText(p)} started for it, until ${until}: ${call}`;
   if (p.uses === "once") return `allowed once on ${jobText(p)}'s next run, until ${until}: ${call}`;
-  const used = Number(p.use_count ?? 0);
-  return `allowed on ${jobText(p)} until ${until}, used ${used} time${used === 1 ? "" : "s"}: ${call}`;
+  return `allowed on ${jobText(p)} until ${until}, ${times}: ${call}`;
 }
 
 export function formatPasses(stateDir: string, now: Date, cmd: (sub: string) => string): string {
