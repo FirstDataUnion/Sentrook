@@ -86,14 +86,15 @@ never about getting past a check: a call that needs the owner's review should st
   requests written into code or a shell command.
 - **Keep code local.** A code or shell call that reads local files should not also reach the network, and one that
   reaches the network should not read local files. Fetch with the web tools, save what you need in the work
-  directory, then process it there.
+  directory, then process it there. This is for fetching: when the task is to send local data out, send it plainly,
+  in one call the owner can review.
 - **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
   review. Not on an unattended run (cron jobs, heartbeats, subagents, webhooks), where nobody can answer and the call is held.
 - **Use one work directory** for a task's files and outputs.
 - **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
   name.
-- **When a call is held or blocked, stop.** Do not try it again in a new shape. Tell the owner what happened and point
-  them to `/sentrook-why`.
+- **When a call is held or blocked, leave that call.** Do not try it again in a new shape. Tell the owner what
+  happened and point them to `/sentrook-why`.
 
 ## What you never do
 
