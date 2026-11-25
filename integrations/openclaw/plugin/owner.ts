@@ -13,6 +13,12 @@
  * Inside the handler the owner is `senderIsOwner === true` with `assertOwnerCurrent` present and passing; the
  * command calls `gate.beforeWrite()` before each write, so an owner demoted mid-command writes nothing more.
  *
+ * OpenClaw decides the owner by the sender, not the room: the owner's own message in a group or channel room counts
+ * as the owner's too, and OpenClaw writes the command and its reply into that room's session transcript. So every
+ * owner command also refuses a group or channel room, the agent's main session while OpenClaw routes rooms into it
+ * (from the Control UI too), and a chat on a chat channel it cannot tell from a room (no session key): its reply
+ * (scans, hosts, file paths, reasons, grants) would be shown to everyone there.
+ *
  * Anyone holding the shared gateway token has `operator.admin` and so counts as the owner. Control UI
  * connections carry no sender id, so their audit records show the basis, not a name.
  *
@@ -27,6 +33,8 @@
 
 import { createHmac } from "node:crypto";
 
+import { channelOf, chatKindOfTurn, GROUP_SEGMENT, mainSharedWithRooms } from "./planir.ts";
+
 export const OWNER_SCOPES = ["operator.admin"];
 
 /** The fields of OpenClaw's command context the owner check reads. */
@@ -36,6 +44,10 @@ export interface OwnerContext {
   senderIsOwner?: unknown;
   assertOwnerCurrent?: () => void;
   gatewayClientScopes?: unknown;
+  /** The session the command was sent in and its reply addresses, which say whether the chat is a room. */
+  sessionKey?: unknown;
+  from?: unknown;
+  to?: unknown;
 }
 
 export interface OwnerAudit {
@@ -46,6 +58,8 @@ export interface OwnerAudit {
 export interface OwnerGate {
   owner: boolean;
   basis: string[];
+  /** Why the sender was refused: `not_owner`, `stale_owner`, `group_chat` or `unknown_chat`. */
+  reason?: string;
   /** Call before each write; throws `OwnerRefused` (and audits it) once the sender is no longer the owner. */
   beforeWrite: () => void;
 }
@@ -63,6 +77,37 @@ export const OWNER_ROUTES =
 
 export function refusal(verb: string): string {
   return `Only the owner can run /sentrook ${verb}: send /sentrook-${verb} ${OWNER_ROUTES}.`;
+}
+
+/** The reply to the owner's command in a room, in a session a room shares, or in a chat Sentrook cannot tell from one. */
+export function roomRefusal(verb: string): string {
+  return (
+    `Run /sentrook-${verb} in your own direct message to the agent or in the Control UI, in a session no group or ` +
+    `channel shares, or as openclaw sentrook ${verb} on the machine: this chat is a group or channel, shares its ` +
+    "session with one, or is one Sentrook cannot tell from one, and everyone there could see the reply. Nothing was " +
+    "shown or changed."
+  );
+}
+
+const ROOM_REASONS = new Set(["group_chat", "unknown_chat"]);
+
+/**
+ * Why an owner command may not answer in the chat it came from:
+ * - `group_chat` for a group or channel room, or a thread or topic in one: by its session key, as scans read a turn's
+ *   chat, or by a reply address that names a room;
+ * - `unknown_chat` for the agent's main session while OpenClaw routes rooms into it, from any surface (its transcript
+ *   is the rooms' too), and for a chat on a chat channel whose kind nothing says (no session key);
+ * null for a direct chat (a thread or topic in one included), OpenClaw's own surfaces (the Control UI, webchat, the
+ * terminal) and a gateway client with the admin scope, outside those.
+ */
+export function roomOf(ctx: OwnerContext, hostConfig: unknown, admin: boolean): "group_chat" | "unknown_chat" | null {
+  const channel = channelOf(ctx.channel);
+  const kind = chatKindOfTurn(ctx.sessionKey, channel, hostConfig);
+  const addressed = [ctx.to, ctx.from].some((v) => typeof v === "string" && GROUP_SEGMENT.test(v.trim()));
+  if (kind === "group" || addressed) return "group_chat";
+  if (mainSharedWithRooms(ctx.sessionKey, hostConfig)) return "unknown_chat";
+  if (kind === "direct" || channel === "chat" || admin) return null;
+  return "unknown_chat";
 }
 
 /** Write one `command` record to the traffic log. */
@@ -85,10 +130,19 @@ export function auditCommand(
   });
 }
 
-/** Decide whether the sender may run this command and audit the decision. */
-export function ownerGate<C extends OwnerContext>(ctx: C, verb: string, audit: OwnerAudit): OwnerGate {
+/**
+ * Decide whether the sender may run this command in this chat and audit the decision. `hostConfig` is OpenClaw's
+ * config as it is now: it says whether rooms share the agent's main session.
+ */
+export function ownerGate<C extends OwnerContext>(
+  ctx: C,
+  verb: string,
+  audit: OwnerAudit,
+  hostConfig: () => unknown = () => undefined,
+): OwnerGate {
   const scopes = ctx.gatewayClientScopes;
-  const basis = Array.isArray(scopes) && scopes.includes("operator.admin") ? ["operator.admin"] : ["sender_is_owner"];
+  const admin = Array.isArray(scopes) && scopes.includes("operator.admin");
+  const basis = admin ? ["operator.admin"] : ["sender_is_owner"];
   const record = (outcome: "allowed" | "refused", recordBasis: string[], reason?: string) =>
     auditCommand(audit, ctx, verb, outcome, recordBasis, reason);
   // The host's check is synchronous; anything else cannot vouch for this write, so it counts as stale.
@@ -110,6 +164,7 @@ export function ownerGate<C extends OwnerContext>(ctx: C, verb: string, audit: O
     return {
       owner: false,
       basis: recordBasis,
+      reason,
       beforeWrite: () => {
         throw new OwnerRefused(reason);
       },
@@ -119,6 +174,8 @@ export function ownerGate<C extends OwnerContext>(ctx: C, verb: string, audit: O
     return refused(["none"], "not_owner");
   }
   if (!current()) return refused(basis, "stale_owner");
+  const room = roomOf(ctx, hostConfig(), admin);
+  if (room) return refused(basis, room);
   record("allowed", basis);
   return {
     owner: true,
@@ -140,8 +197,15 @@ export interface OwnerCommandDef<C extends OwnerContext> {
   handler: (ctx: C, gate: OwnerGate) => { text?: string } | Promise<{ text?: string }>;
 }
 
-/** A command definition for `api.registerCommand` that runs `handler` only for the owner. */
-export function ownerCommand<C extends OwnerContext>(def: OwnerCommandDef<C>, audit: OwnerAudit) {
+/**
+ * A command definition for `api.registerCommand` that runs `handler` only for the owner, and only outside a group or
+ * channel room (see `ownerGate`).
+ */
+export function ownerCommand<C extends OwnerContext>(
+  def: OwnerCommandDef<C>,
+  audit: OwnerAudit,
+  hostConfig: () => unknown = () => undefined,
+) {
   const verb = def.verb ?? def.name;
   return {
     name: def.name,
@@ -150,7 +214,7 @@ export function ownerCommand<C extends OwnerContext>(def: OwnerCommandDef<C>, au
     handler: async (ctx: C): Promise<{ text?: string }> => {
       let gate: OwnerGate;
       try {
-        gate = ownerGate(ctx, verb, audit);
+        gate = ownerGate(ctx, verb, audit, hostConfig);
       } catch {
         try {
           auditCommand(audit, {}, verb, "refused", ["none"], "error");
@@ -159,7 +223,7 @@ export function ownerCommand<C extends OwnerContext>(def: OwnerCommandDef<C>, au
         }
         return { text: refusal(verb) };
       }
-      if (!gate.owner) return { text: refusal(verb) };
+      if (!gate.owner) return { text: ROOM_REASONS.has(gate.reason ?? "") ? roomRefusal(verb) : refusal(verb) };
       try {
         return await def.handler(ctx, gate);
       } catch (err) {

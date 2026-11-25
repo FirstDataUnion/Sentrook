@@ -6,6 +6,27 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The `sentrook-setup` skill tells the agent never to read Sentrook's folder or traffic log to work out what is
+  routine, and to call the `sentrook_setup_report` tool instead: the log holds content from earlier tool calls, so
+  reading it made the rest of the chat count as exposed to it.
+- A password or token with `&`, `,` or `;` in it is now redacted whole. After a key in an assignment, an `.env` line
+  or a quoted value (`password=<value>&<rest>`, `export DB_PASSWORD=…`, `password='…'`) the value used to end at the
+  first of these characters, so the rest of it left the machine as written, and the same password written `password:
+  …` got another placeholder. What follows a value is still kept where it is something else: another parameter in a
+  link's query or a form body (`?password=…&page=2`, `user=a&password=…&remember=1`), the next key of a list or a
+  connection string (`a=1,b=2`, `;Initial Catalog=…`), an HTML entity (`&quot;`), and a command or statement after the
+  value (`…; echo ok`, `…;npm publish`, `…&&next`, `…;$(…)`, `…;./run.sh`, `…;return x`), so the scanner still sees
+  it; in double quotes a value ends where `$(` starts. A lone command word at the end of a line after a value
+  (`TOKEN=…;make`) is read as part of the value, as a password's tail would be.
+- A quoted example value that only stands in for a secret is no longer redacted as if it were one, so docs and notes
+  that show a token file's shape can be saved into a skill or memory without being scored as saving a secret. Kept
+  under any key: the word `REDACTED` and a mask of `*`, `•` or `·` (`"••••••••"`). Kept only in a quoted value under a
+  token or key that does not name a password: a token cut short with an ellipsis after at most ten token characters
+  (`"access_token": "ya29.a0..."`, `"refresh_token": "1//0g..."`), and a short phrase that says what it is
+  (`"short-lived token"`, `"your api key"`). Still redacted as before: a full token, with or without an ellipsis;
+  anything under a password (`"password": "<short value>..."`, a passphrase); a phrase that does not say what the
+  value is; a value after a command-line flag, `mysql -p` or `sshpass -p`; an unquoted value before an ellipsis; and
+  any value under a credential key in a parsed object.
 - A credential field's name is no longer redacted as if it were a secret. In text, a value after a password, token
   or API-key key that names such a field or stands in for one (`api_key:api_secret` quoted from an API's docs,
   `password: your_password`, `apiKey=apiSecret`, `token: xxxxxxxx`) or is a short lower-case word
@@ -263,6 +284,20 @@ since the version the catalog pins.
   you, not in cron jobs or subagents; keep a task's files in one work directory; refer to keys by name; and when a
   call is held or blocked, tell you and point to `/sentrook why` rather than try it again in a new shape. It says
   plainly that this is about clear scans, never about getting past a check.
+- **A destination grant over a whole public suffix is refused.** A destination may use a wildcard on a host or a mail
+  domain only as `*.` and one registrable domain (`*.example.com`, `*.example.co.uk`, `*.myname.github.io`), or as
+  `*.` and a name that never resolves on the public internet (`*.lan`, `*.local`, `*.internal`, `*.test`,
+  `*.example` and the like). `/sentrook grant destination *.com` is refused with the reason, and so is a wildcard
+  over another top-level domain or a common shared suffix where anyone can get a name (`*.co.uk`, `*.ne.jp`,
+  `*.github.io`, `*.vercel.app`, `*.amazonaws.com`; the common ones, not every one), or inside a name
+  (`api*.example.com`), as Sentrook ignores such a grant: it would let calls reach sites run by strangers. A
+  wildcard in a channel's name (`discord:#daily-*`) or before an `@` (`*@example.com`) is still taken. Such a grant
+  in `config.yaml`, or one already in the grants file, is never sent: `/sentrook grants`, `/sentrook status` and
+  `hermes sentrook verify` list it as too broad, and the other grants still apply. A channel binding like it is
+  listed as too broad and never sent. A credential grant's host follows the same list of shared suffixes. A wildcard
+  address such as `192.168.1.*` is refused too, and one already in the config is listed as too broad and never sent:
+  write the exact hosts instead. A bare name with a wildcard such as `daily-*` is refused as a destination, as it
+  would match hosts too: write `#daily-*` or `discord:#daily-*` for channel names.
 
 ## 2.0.0-beta.17
 

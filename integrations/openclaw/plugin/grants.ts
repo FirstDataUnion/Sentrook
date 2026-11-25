@@ -11,7 +11,9 @@
  * A `credential` grant (`NAME@host`: a key's environment name, or `PREFIX*`, and the host it is meant
  * for, or `*.example.com`) is `persistent` unless the owner asks for `session`: a key's home rarely
  * changes. Its pattern is checked here as Sentrook reads it, so a typo is refused at once rather than
- * relieving nothing.
+ * relieving nothing. A `destination` grant is checked the same way (`config.destinationOk`): a wildcard that can
+ * reach a host or a mail domain may only be `*.` and one registrable domain, so `*.com` or `*.co.uk` is refused, and
+ * one in the config, or in the file from before, is listed as too broad and never sent.
  *
  * A session grant is bound to one session: the one the command was sent from, or the one `--session`
  * names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan of
@@ -21,8 +23,8 @@
  * no session to be bound to, so one with scope session, or with an unknown scope (read as session), is
  * never sent either; the listing, status, verify and the startup log name it. A scan sends a session
  * grant with its `session_ref` and a grant with an expiry with its `expires_at`, and Sentrook checks
- * both. An expired grant is not sent, and is dropped from the file on the next change. Patterns are
- * passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
+ * both. An expired grant is not sent, and is dropped from the file on the next change. Other patterns
+ * are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
  *
  * Every change is written to the traffic log as a `grants` record (none when the owner has turned the
  * traffic log off). The Hermes plugin keeps the same file format and prints the same text.
@@ -31,41 +33,16 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
-import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
+import { credentialPatternOk, destinationOk, type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
 import { bindingProblem, HOST_TASK_KINDS } from "./planir.ts";
 import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
 export const KINDS = ["destination", "file", "provider", "repo", "credential"];
-/**
- * A credential grant's pattern as Sentrook reads it: a name (or a prefix of three or more characters
- * and `*`), `@`, and a host (or `*.` and a domain of two or more labels), with no scheme, port or path.
- */
-const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
-export const CREDENTIAL_PATTERN = new RegExp(
-  `^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{2,}\\*)@(?:\\*\\.)?${LABEL}(?:\\.${LABEL})+$`,
-);
-/**
- * Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard there,
- * or on part of a numeric address, covers strangers, and Sentrook refuses it.
- */
-export const SHARED_SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
-
-/** `NAME@host` as Sentrook reads it (the host already lower-cased). */
-export function credentialPatternOk(pattern: string): boolean {
-  if (!CREDENTIAL_PATTERN.test(pattern)) return false;
-  const host = pattern.slice(pattern.indexOf("@") + 1);
-  if (!host.startsWith("*.")) return true;
-  const labels = host.slice(2).split(".");
-  if (labels.every((l) => /^\d+$/.test(l))) return false;
-  return !(labels.length === 2 && SHARED_SECOND_LEVEL.has(labels[0]!) && labels[1]!.length === 2);
-}
-/**
- * `pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared country
- * second level (`*.co.uk`) or part of a numeric address. The rule is `credentialPatternOk`'s, for the host alone.
- */
-export function wildcardDomainOk(pattern: string): boolean {
-  return pattern.startsWith("*.") && credentialPatternOk(`NAME@${pattern.toLowerCase().replace(/\.+$/, "")}`);
-}
+/** Why the grant command refuses a destination `destinationOk` refuses; `{pattern}` is the pattern as typed. */
+export const TOO_BROAD =
+  '"{pattern}" is too broad for a destination grant: a wildcard may cover only one registrable domain ' +
+  "(*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix " +
+  "many owners share, such as *.com or *.co.uk.";
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
 export const SESSION_REF = /^s_[0-9a-f]{12}$/;
@@ -143,7 +120,9 @@ function bound(raw: Entry): string | null {
  * file entries (a session grant only in its own session).
  */
 export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date, sessionRef: string): GrantConfig[] {
-  const out: GrantConfig[] = cfg.grants.filter((g) => g.scope === "persistent").map((g) => ({ ...g }));
+  const out: GrantConfig[] = cfg.grants
+    .filter((g, i) => g.scope === "persistent" && !(i in cfg.unsentGrants))
+    .map((g) => ({ ...g }));
   for (const pattern of cfg.channelBindings) out.push({ kind: "destination", pattern, scope: "persistent" });
   for (const [raw, g] of fileGrants(data)) {
     if (expired(raw, now) || (g.scope === "session" && bound(raw) !== sessionRef)) continue;
@@ -198,6 +177,7 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
   const file = fileGrants(data);
   for (const [raw, g] of file) {
     const details = g.scope === "session" ? [sessionOf(raw, ref)] : [];
+    if (g.kind === "destination" && !destinationOk(g.pattern)) details.push("too broad, never sent");
     if (g.allows?.length) details.push(`allows ${g.allows.join(",")}`);
     if ("expires_at" in raw) {
       const at = readTime(raw.expires_at);
@@ -332,6 +312,7 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
       );
     }
   }
+  if (kind === "destination" && !destinationOk(pattern)) return TOO_BROAD.replace("{pattern}", clean(pattern, 80));
   // a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
   const scope = opts.scope ?? (kind === "credential" && opts.session === undefined ? "persistent" : "session");
   if (!SCOPES.includes(scope)) return `Unknown scope "${clean(scope, 40)}": use session or persistent.`;

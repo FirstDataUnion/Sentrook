@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -1266,4 +1266,23 @@ test("a read of the plugin's own shipped skill goes to the scanner as the plugin
   assert.deepEqual(inputs.map((i: any) => [i.call_id, i.tool]), [["c1", "plugin_skill:read"], ["c2", "read"], ["c3", "read"]]);
   assert.equal(inputs[0].provider.kind, "host");
   dumpPlanirs(h.scans);
+});
+
+test("code run from OpenClaw's copy of the plugin: a read of the installed skill (api.rootDir) is the plugin's skill read", async () => {
+  // OpenClaw 2026.11 runs plugin code from a copy under its state dir; api.rootDir is the installed folder its
+  // plugin-skills links point into. Here the code runs from source and the "install" is a separate folder.
+  const text = readFileSync(new URL("./skills/sentrook-setup/SKILL.md", import.meta.url), "utf8");
+  const install = mkdtempSync(path.join(tmpdir(), "sentrook-install-"));
+  mkdirSync(path.join(install, "skills", "sentrook-setup"), { recursive: true });
+  writeFileSync(path.join(install, "openclaw.plugin.json"), "{}");
+  const installed = path.join(install, "skills", "sentrook-setup", "SKILL.md");
+  writeFileSync(installed, text);
+  for (const [extra, want] of [[{ rootDir: install }, "plugin_skill:read"], [{}, "read"]] as const) {
+    const h = setup({}, {}, extra);
+    await h.fire("before_agent_run", { runId: "r1", senderIsOwner: true });
+    await h.fire("before_tool_call", { toolName: "read", toolCallId: "c1", runId: "r1", params: { path: installed } });
+    await h.fire("after_tool_call", { toolName: "read", toolCallId: "c1", runId: "r1", params: { path: installed }, result: text });
+    await h.fire("before_tool_call", call("c2", "ls"));
+    assert.deepEqual(h.scans.at(-1).history.map((s: any) => s.tool), [want], JSON.stringify(extra));
+  }
 });

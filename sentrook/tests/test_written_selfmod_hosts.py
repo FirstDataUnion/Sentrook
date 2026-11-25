@@ -328,7 +328,7 @@ def test_a_job_prompt_naming_a_granted_host_stays_silent(twin_case):
             {
                 "grant_ref": "g_1",
                 "kind": "destination",
-                "pattern": "*.example",
+                "pattern": "*.brackenfold.example",
                 "granted_at": "2026-09-12T09:10:00Z",
                 "scope": "persistent",
             }
@@ -623,7 +623,7 @@ def test_a_destination_grant_does_not_sanction_running_code_from_the_host(twin_c
             {
                 "grant_ref": "g_1",
                 "kind": "destination",
-                "pattern": "*.example",
+                "pattern": "*.brackenfold.example",
                 "granted_at": "2026-09-12T09:10:00Z",
                 "scope": "persistent",
             }

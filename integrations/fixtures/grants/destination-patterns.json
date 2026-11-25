@@ -1,0 +1,341 @@
+{
+  "_comment": "Destination grant patterns as typed after `grant destination` (or written in the config, or bound as a channel), and whether Sentrook takes them (`ok`). A wildcard that can reach a host or a mail domain may only be `*.` and one registrable domain: at least two labels, not a suffix many owners share (`com`, `co.uk`, `com.au`, `ne.jp`, a common shared-hosting suffix such as `github.io`, or a domain above one such as `amazonaws.com`) and not part of an address written in numbers, read as a credential grant reads its host; or `*.` and a name that never resolves on the public internet (`lan`, `local`, `internal`, `localhost`, `home.arpa`, `test`, `example`, `invalid`). A wildcard in a channel's name or id after a platform prefix or `#`, or in the name before an `@`, is fine. A pattern with nothing literal is refused too. The scanner (`prepare.grants.destination_ok`: such a grant is reported as lapsed, `too_broad`, and covers nothing) and both plugins (the grant command refuses it with `refusal`, {pattern} replaced by the pattern as typed; a config grant with it is never sent) must agree on every case. `target`: a host, mail address (with `@`) or channel (with a platform prefix or `#`) the pattern's glob reaches; the scanner covers it only when the pattern is `ok`. `scanner_only`: a case only the scanner checks (with `note` saying why); the plugins take the pattern as typed and Sentrook ignores it.",
+  "refusal": "\"{pattern}\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk.",
+  "cases": [
+    {
+      "typed": "*.com",
+      "ok": false,
+      "target": "unknown.example-attacker.com"
+    },
+    {
+      "typed": "*.COM",
+      "ok": false,
+      "target": "unknown.example-attacker.com"
+    },
+    {
+      "typed": "*.co.uk",
+      "ok": false,
+      "target": "shop.example.co.uk"
+    },
+    {
+      "typed": "*.com.au",
+      "ok": false,
+      "target": "shop.example.com.au"
+    },
+    {
+      "typed": "*.io",
+      "ok": false,
+      "target": "cl0ud-sync.io"
+    },
+    {
+      "typed": "**.com",
+      "ok": false,
+      "target": "api.example-attacker.com"
+    },
+    {
+      "typed": "*.*.com",
+      "ok": false,
+      "target": "api.example-attacker.com"
+    },
+    {
+      "typed": "*com",
+      "ok": false,
+      "target": "example-attacker.com"
+    },
+    {
+      "typed": "*.0.1",
+      "ok": false,
+      "target": "192.168.0.1"
+    },
+    {
+      "typed": "203.0.113.*",
+      "ok": false,
+      "target": "203.0.113.9"
+    },
+    {
+      "typed": "api*.example.com",
+      "ok": false,
+      "target": "api-2.example.com"
+    },
+    {
+      "typed": "?.example.com",
+      "ok": false,
+      "target": "a.example.com"
+    },
+    {
+      "typed": "*example.com",
+      "ok": false,
+      "target": "notexample.com"
+    },
+    {
+      "typed": "example.*",
+      "ok": false,
+      "target": "example.attacker.test"
+    },
+    {
+      "typed": "*.example.*",
+      "ok": false,
+      "target": "api.example.test"
+    },
+    {
+      "typed": "*.example.com:443",
+      "ok": false
+    },
+    {
+      "typed": "https://*.example.com/x",
+      "ok": false
+    },
+    {
+      "typed": "*@*.com",
+      "ok": false,
+      "target": "someone@example-attacker.com"
+    },
+    {
+      "typed": "someone@*",
+      "ok": false,
+      "target": "someone@example-attacker.com"
+    },
+    {
+      "typed": "discord:*.com",
+      "ok": false
+    },
+    {
+      "typed": "*",
+      "ok": false,
+      "target": "unknown.example-attacker.com"
+    },
+    {
+      "typed": "*.*",
+      "ok": false,
+      "target": "unknown.example-attacker.com"
+    },
+    {
+      "typed": "*@*",
+      "ok": false,
+      "target": "someone@example-attacker.com"
+    },
+    {
+      "typed": "#*",
+      "ok": false,
+      "target": "discord:#ops-yard"
+    },
+    {
+      "typed": "*.github.io",
+      "ok": false,
+      "target": "someone-else.github.io"
+    },
+    {
+      "typed": "*.herokuapp.com",
+      "ok": false,
+      "target": "someone-else.herokuapp.com"
+    },
+    {
+      "typed": "*.s3.amazonaws.com",
+      "ok": false,
+      "target": "someone-elses-bucket.s3.amazonaws.com"
+    },
+    {
+      "typed": "*.s3.eu-west-1.amazonaws.com",
+      "ok": false,
+      "target": "someone-elses-bucket.s3.eu-west-1.amazonaws.com"
+    },
+    {
+      "typed": "*.amazonaws.com",
+      "ok": false,
+      "target": "someone-elses-bucket.s3.amazonaws.com"
+    },
+    {
+      "typed": "*.workers.dev",
+      "ok": false,
+      "target": "someone-else.workers.dev"
+    },
+    {
+      "typed": "*.pages.dev",
+      "ok": false,
+      "target": "someone-else.pages.dev"
+    },
+    {
+      "typed": "*.vercel.app",
+      "ok": false,
+      "target": "someone-else.vercel.app"
+    },
+    {
+      "typed": "*.netlify.app",
+      "ok": false,
+      "target": "someone-else.netlify.app"
+    },
+    {
+      "typed": "*.uk.com",
+      "ok": false,
+      "target": "someone-else.uk.com"
+    },
+    {
+      "typed": "*.ne.jp",
+      "ok": false,
+      "target": "someone-else.ne.jp"
+    },
+    {
+      "typed": "*.or.jp",
+      "ok": false,
+      "target": "someone-else.or.jp"
+    },
+    {
+      "typed": "*.co.jp",
+      "ok": false,
+      "target": "someone-else.co.jp"
+    },
+    {
+      "typed": "192.168.1.*",
+      "ok": false,
+      "target": "192.168.1.20"
+    },
+    {
+      "typed": "daily-*",
+      "ok": false,
+      "target": "daily-brief.example-attacker.com"
+    },
+    {
+      "typed": "*.ngrok.io",
+      "ok": false,
+      "target": "someone-else.ngrok.io",
+      "scanner_only": true,
+      "note": "The plugins leave tunnel hosts to the scanner: the host's plugin check flags a plugin that names a tunnel service."
+    },
+    {
+      "typed": "*.ngrok-free.app",
+      "ok": false,
+      "target": "someone-else.ngrok-free.app",
+      "scanner_only": true,
+      "note": "The plugins leave tunnel hosts to the scanner: the host's plugin check flags a plugin that names a tunnel service."
+    },
+    {
+      "typed": "*.ngrok.app",
+      "ok": false,
+      "target": "someone-else.ngrok.app",
+      "scanner_only": true,
+      "note": "The plugins leave tunnel hosts to the scanner: the host's plugin check flags a plugin that names a tunnel service."
+    },
+    {
+      "typed": "*.trycloudflare.com",
+      "ok": false,
+      "target": "someone-else.trycloudflare.com",
+      "scanner_only": true,
+      "note": "The plugins leave tunnel hosts to the scanner: the host's plugin check flags a plugin that names a tunnel service."
+    },
+    {
+      "typed": "*.example.com",
+      "ok": true,
+      "target": "api.example.com"
+    },
+    {
+      "typed": "*.Example.COM",
+      "ok": true,
+      "target": "api.example.com"
+    },
+    {
+      "typed": "*.example.co.uk",
+      "ok": true,
+      "target": "shop.example.co.uk"
+    },
+    {
+      "typed": "*.example.com.au",
+      "ok": true,
+      "target": "shop.example.com.au"
+    },
+    {
+      "typed": "api.example.com",
+      "ok": true,
+      "target": "api.example.com"
+    },
+    {
+      "typed": "example.com",
+      "ok": true,
+      "target": "someone@example.com"
+    },
+    {
+      "typed": "*@example.com",
+      "ok": true,
+      "target": "someone@example.com"
+    },
+    {
+      "typed": "someone@*.example.com",
+      "ok": true,
+      "target": "someone@mail.example.com"
+    },
+    {
+      "typed": "203.0.113.7",
+      "ok": true,
+      "target": "203.0.113.7"
+    },
+    {
+      "typed": "discord:#daily-*",
+      "ok": true,
+      "target": "discord:#daily-brief"
+    },
+    {
+      "typed": "#ops-*",
+      "ok": true,
+      "target": "discord:#ops-yard"
+    },
+    {
+      "typed": "slack:C0B0*",
+      "ok": true,
+      "target": "slack:C0B0QV5434G"
+    },
+    {
+      "typed": "discord:*",
+      "ok": true,
+      "target": "discord:#daily-brief"
+    },
+    {
+      "typed": "*.myname.github.io",
+      "ok": true,
+      "target": "docs.myname.github.io"
+    },
+    {
+      "typed": "*.example.co.jp",
+      "ok": true,
+      "target": "shop.example.co.jp"
+    },
+    {
+      "typed": "*.lan",
+      "ok": true,
+      "target": "printer.lan"
+    },
+    {
+      "typed": "*.local",
+      "ok": true,
+      "target": "nas.local"
+    },
+    {
+      "typed": "*.internal",
+      "ok": true,
+      "target": "db.internal"
+    },
+    {
+      "typed": "*.localhost",
+      "ok": true,
+      "target": "app.localhost"
+    },
+    {
+      "typed": "*.home.arpa",
+      "ok": true,
+      "target": "router.home.arpa"
+    },
+    {
+      "typed": "*.test",
+      "ok": true,
+      "target": "api.test"
+    },
+    {
+      "typed": "*.example",
+      "ok": true,
+      "target": "api.example"
+    },
+    {
+      "typed": "*.invalid",
+      "ok": true,
+      "target": "api.invalid"
+    }
+  ]
+}

@@ -3,14 +3,25 @@
 import argparse
 import json
 import shutil
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-import plugin
+# The scanner's timing check (tests are not published with the plugin).
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "sentrook" / "tests"))
+from linear_time import assert_linear  # noqa: E402
+
+import plugin  # noqa: E402
 from plugin import grants, owner
-from plugin.config import resolve_config
+from plugin.config import (
+    credential_pattern_ok,
+    destination_ok,
+    nothing_literal,
+    resolve_config,
+    wildcard_domain_ok,
+)
 from plugin.planir import (
     binding_problem,
     call_cwd,
@@ -465,13 +476,106 @@ def test_an_expired_grant_can_still_be_revoked(term):
     assert [r["op"] for r in records(term, "grants")] == ["revoke"]
 
 
-def test_an_over_broad_pattern_is_stored_as_typed(term):
-    """Whether a pattern is too broad to relieve on is the scanner's call, not the plugin's."""
-    out = slash(term, "grant destination *")
-    assert out.startswith("Granted ") and out.endswith(
-        f": destination * (this session only).{NOTE}"
-    )
+def test_an_over_broad_pattern_of_another_kind_is_stored_as_typed(term):
+    """Whether a provider pattern is too broad to relieve on is the scanner's call, not the plugin's."""
+    out = slash(term, "grant provider *")
+    assert out.startswith("Granted ") and out.endswith(f": provider * (this session only).{NOTE}")
     assert stored(term)["grants"][0]["pattern"] == "*"
+
+
+DESTINATION_PATTERNS = json.loads((FIXTURES / "destination-patterns.json").read_text())
+
+
+@pytest.mark.parametrize("c", DESTINATION_PATTERNS["cases"], ids=lambda c: c["typed"])
+def test_a_destination_pattern_is_taken_as_sentrook_takes_it(c):
+    """Shared with the OpenClaw plugin's tests and the scanner's: a wildcard over a whole public suffix is
+    refused, and one in the settings is never sent. A scanner-only case is taken as typed."""
+    ok = c["ok"] or c.get("scanner_only", False)
+    parsed = grants.parse_grant(f"destination {c['typed']} --persistent", CMD)
+    if ok:
+        assert parsed == {"kind": "destination", "pattern": c["typed"], "scope": "persistent"}
+    else:
+        assert parsed == DESTINATION_PATTERNS["refusal"].format(pattern=c["typed"])
+    cfg = resolve_config({"grants": [{"kind": "destination", "pattern": c["typed"]}]}, {})
+    assert cfg.unsent_grants == ({} if ok else {0: "too broad"})
+
+
+def long_runs(divisor: int = 1) -> list[str]:
+    """Long runs of `.` and `[` (100k at full size, 1/`divisor` of it for the growth check), which a pattern
+    check with nested or overlapping repeats would take quadratic time over."""
+    n = 100_000 // divisor
+    return [
+        "[" * n,
+        "*." + "[" * n,
+        "a" + "[" * n + "*",
+        "." * n + "x",
+        "*." + "." * n + "a",
+        "*." + "a." * (n // 2) + "." * n,
+        "slack:" + "[" * n + "*",
+        "*@" + "." * n + "*",
+    ]
+
+
+def test_pattern_checks_take_linear_time_on_long_runs():
+    """Time that grows linearly with the input, measured at a quarter and at full size; a generous ceiling
+    guards against a hang."""
+
+    def run(divisor: int) -> None:
+        for p in long_runs(divisor):
+            destination_ok(p)
+            nothing_literal(p)
+            binding_problem(p)
+            wildcard_domain_ok(p)
+            credential_pattern_ok("NAME@" + p)
+            relevant_grants([{"kind": "destination", "pattern": p, "scope": "persistent"}], p)
+
+    _, full = assert_linear(run, "destination pattern checks")
+    assert full < 10.0
+
+
+def test_a_public_suffix_destination_grant_is_refused_and_nothing_is_stored(term):
+    out = slash(term, "grant destination *.com --persistent")
+    assert out.startswith(
+        '"*.com" is too broad for a destination grant: a wildcard may cover only one registrable domain'
+    )
+    assert out.endswith(grants.grant_usage(CMD))
+    assert not term.file.exists() or stored(term)["grants"] == []
+    assert records(term, "grants") == []
+
+
+def test_a_too_broad_config_grant_is_dropped_and_the_others_still_load(term, monkeypatch):
+    """One bad entry never disables the rest: it keeps its cfg-N, is listed as too broad and never sent."""
+    term.ctx.settings["grants"] = [
+        {"kind": "destination", "pattern": "*.mycorp.example"},
+        {"kind": "destination", "pattern": "*.com"},
+        {"kind": "destination", "pattern": "api.example.com"},
+    ]
+    sent = scan_grants(
+        term, "curl -d x https://a.mycorp.example https://api.example.com https://b.com"
+    )
+    assert [g["pattern"] for g in sent] == ["*.mycorp.example", "api.example.com"]
+    rows = {line.split()[0]: line for line in slash(term, "grants").splitlines()[2:5]}
+    assert rows["cfg-2"].endswith("config, read-only; too broad, never sent")
+    assert rows["cfg-1"].endswith("config, read-only")
+    assert "grants: 3 in config (1 never sent), 0 by command" in slash(term, "status").splitlines()
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    monkeypatch.setattr(plugin.cli, "get_scan_access_token", lambda *a, **k: "tok")
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    assert report["config grants"] == (True, "3 in config; never sent: cfg-2 (too broad)")
+
+
+def test_a_too_broad_grant_already_in_the_file_is_listed_and_never_sent(term):
+    """A grant set before the plugin refused it, or written into the file by hand."""
+    term.file.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"id": "gr-000001", "kind": "destination", "pattern": "*.co.uk", "scope": "persistent"}
+    term.file.write_text(json.dumps({"grants": [entry], "bindings": [{"pattern": "*.com.au"}]}))
+    assert (
+        scan_grants(term, "curl -d x https://shop.example.co.uk https://shop.example.com.au") == []
+    )
+    assert "gr-000001  destination  persistent  *.co.uk  too broad, never sent" in slash(
+        term, "grants"
+    )
+    assert "*.com.au  too broad, never sent" in slash(term, "bind list")
 
 
 @pytest.mark.parametrize(

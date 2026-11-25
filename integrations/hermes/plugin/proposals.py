@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import grants, setup
+from .config import destination_ok
 from .planir import binding_problem
 from .redact import Redactor
 from .store import LockTimeout, Store, file_lock, read_time
@@ -244,11 +245,12 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
         if not isinstance(expires, str) or any(c.isspace() for c in expires):
             return BAD_EXPIRES
         words.append("--expires=" + expires)
+    # The agent's own, stricter rule first: the grant command's refusal would offer it forms it may not propose.
+    if kind.lower() == "destination" and _too_broad(pattern):
+        return BROAD
     parsed = grants.parse_grant(" ".join(words), lambda sub: sub)
     if isinstance(parsed, str):
         return parsed or NOT_A_GRANT
-    if parsed["kind"] == "destination" and _too_broad(parsed["pattern"]):
-        return BROAD
     if parsed["kind"] == "credential" and _value_shaped(parsed["pattern"].partition("@")[0]):
         return VALUE_NAME
     out: dict[str, Any] = {"kind": parsed["kind"], "pattern": parsed["pattern"]}
@@ -260,10 +262,13 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
 
 
 def _too_broad(pattern: str) -> bool:
-    """A destination the agent may not propose: a wildcard anywhere but as `*.` and one registrable domain
-    (`grants.wildcard_domain_ok`). The owner's own grant command is not limited this way."""
+    """A destination the agent may not propose: a wildcard anywhere but as `*.` and a domain the grant command takes
+    (`config.destination_ok`: one registrable domain, or a name that never resolves on the public internet). Only the
+    owner may put a wildcard in a channel's name or before an `@`."""
     return bool(_WILDCARD.search(pattern)) and (
-        _WILDCARD.search(pattern[2:]) is not None or not grants.wildcard_domain_ok(pattern)
+        not pattern.startswith("*.")
+        or _WILDCARD.search(pattern[2:]) is not None
+        or not destination_ok(pattern)
     )
 
 

@@ -348,8 +348,8 @@ class Prepared:
     grant_actions: dict[str, frozenset[str]] = field(default_factory=dict)
     #: Grants that cover the whole call (a `tool` grant covering every command it runs).
     call_grants: list[str] = field(default_factory=list)
-    #: Grants that do not apply to this request: grant_ref → `expired`, `unbound_session` or
-    #: `other_session` (`grants.lapse`).
+    #: Grants that do not apply to this request: grant_ref → `too_broad`, `expired`,
+    #: `unbound_session` or `other_session` (`grants.lapse`).
     grants_lapsed: dict[str, str] = field(default_factory=dict)
     #: Views version per view name (`trim-v1` for `exposure`/`call`, `trim-v2` for the v2 views).
     views_version: dict[str, str] = field(default_factory=dict)

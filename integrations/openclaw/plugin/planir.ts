@@ -9,7 +9,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { homedir, platform as osPlatform } from "node:os";
 
-import type { GrantConfig, PluginConfig } from "./config.ts";
+import { destinationOk, type GrantConfig, nothingLiteral, type PluginConfig, TOO_BROAD } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
 import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
@@ -311,6 +311,23 @@ function groupsInMain(config: any): boolean {
 }
 
 /**
+ * The part of a session key that names the chat (after `agent:<id>:`, the agent id being any word, without a thread or
+ * topic suffix), and whether that is the agent's main session.
+ */
+function chatOfKey(sessionKey: unknown, config: any): { main: boolean; rest: string } {
+  const full = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase() : "";
+  const agent = /^agent:[^:]+:/.exec(full);
+  const rest = (agent ? full.slice(agent[0].length) : full).replace(THREAD_SUFFIX, "");
+  const mainKey = String(config?.session?.mainKey ?? "").trim().toLowerCase() || "main";
+  return { main: agent !== null && rest === mainKey, rest };
+}
+
+/** Whether the session key is the agent's main session while OpenClaw routes group or channel rooms into it. */
+export function mainSharedWithRooms(sessionKey: unknown, config: any): boolean {
+  return chatOfKey(sessionKey, config).main && groupsInMain(config);
+}
+
+/**
  * The kind of chat a turn came from, read from its session key as OpenClaw builds it: a room gets its own
  * `agent:<id>:<channel>:group|channel:<id>` key, a direct chat `...:direct:<peer>` or, under the default
  * `session.dmScope: "main"`, the agent's main key `agent:<id>:<mainKey>`. A thread or topic is the chat it is in.
@@ -318,12 +335,8 @@ function groupsInMain(config: any): boolean {
  * operator's. `unknown` when nothing says.
  */
 export function chatKindOfTurn(sessionKey: unknown, channel: string | null, config: any): ChatKind {
-  const full = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase() : "";
-  // Only the part after `agent:<id>:` names the chat; the agent id is any word.
-  const agent = /^agent:[^:]+:/.exec(full);
-  const rest = (agent ? full.slice(agent[0].length) : full).replace(THREAD_SUFFIX, "");
-  const mainKey = String(config?.session?.mainKey ?? "").trim().toLowerCase() || "main";
-  if (agent && rest === mainKey) return groupsInMain(config) ? "unknown" : "direct";
+  const { main, rest } = chatOfKey(sessionKey, config);
+  if (main) return groupsInMain(config) ? "unknown" : "direct";
   if (GROUP_SEGMENT.test(rest)) return "group";
   if (DIRECT_SEGMENT.test(rest)) return "direct";
   if (channel === "chat") return "direct";
@@ -472,13 +485,12 @@ function destinationForms(pattern: string, platform: string | null): Array<[stri
 }
 
 /** What is left of a pattern once glob characters and separators are removed; nothing left means it matches everything, and the scanner ignores it. */
-const NOT_LITERAL = /\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]/g;
-
 /** Why a channel binding can never relieve a send, as the listing and verify say it; null when it can. */
 export function bindingProblem(pattern: string): string | null {
   pattern = pattern.trim();
-  if (!pattern.replace(NOT_LITERAL, "")) return "matches every channel, ignored";
+  if (nothingLiteral(pattern)) return "matches every channel, ignored";
   if (!destinationForms(pattern.toLowerCase(), null).some(([f]) => longEnough(f))) return "too short, never sent";
+  if (!destinationOk(pattern)) return `${TOO_BROAD}, never sent`;
   return null;
 }
 
@@ -522,7 +534,7 @@ function credentialForms(pattern: string): Array<[string, boolean]> {
  * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send names
  * `platform` (`callPlatform`). A credential grant (`NAME@host`) is sent on every exec call (`execCall`: the key and
  * the host may be only in a script the call runs, which Sentrook reads too), and on any other call that shows either
- * its name or its host.
+ * its name or its host. A destination grant Sentrook would ignore as too broad (`config.destinationOk`) is never sent.
  */
 export function relevantGrants(
   grants: GrantConfig[],
@@ -548,6 +560,7 @@ export function relevantGrants(
   }
   const out: Array<Record<string, unknown>> = [];
   grants.forEach((g, i) => {
+    if (g.kind === "destination" && !destinationOk(g.pattern)) return;
     const hay = [...texts];
     if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
     const forms: Array<[string, boolean]> =

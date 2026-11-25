@@ -21,8 +21,9 @@ spans, where chat apps turn no link, mention or emphasis on. A name in `xn--` fo
 that are not plain ASCII. Warnings name what to check: characters that are not plain ASCII (with
 the registrable domain in ASCII), deleting files, a folder at or above the home folder, a whole package registry, a
 grant in force that already covers the item, a cron job's target, and, for the agent's items, a proposing chat where
-the scanner flagged exposure (or the traffic log is off, so it could not be checked). Whether a pattern is too broad
-to relieve anything is the scanner's call: the plugin passes patterns on as typed.
+the scanner flagged exposure (or the traffic log is off, so it could not be checked). A destination with a wildcard
+over more than one registrable domain (`*.com`) is refused as the grant command refuses it; whether any other
+pattern is too broad to relieve anything is the scanner's call.
 
 Lifetimes: a grant backed by reviews the owner approved lasts until revoked; any other lasts 30 days (`hold.GRANT_TTL`,
 as for a grant set from a suggestion), or less when the agent asked for less. A channel binding lasts until removed.
@@ -47,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from . import grants, history, hold
-from .config import PluginConfig
+from .config import SHARED_SECOND_LEVEL, PluginConfig, destination_ok
 from .planir import binding_problem, server_identity
 from .store import Store, file_lock, read_time
 
@@ -499,9 +500,11 @@ def in_force(
     cfg: PluginConfig, data: dict[str, Any] | None, now: datetime
 ) -> list[tuple[str, dict[str, Any]]]:
     """(label, grant) for each grant in force everywhere: persistent config and file grants that have not expired,
-    and every channel binding as a destination grant."""
+    and every channel binding as a destination grant. A destination Sentrook ignores as too broad is not in force."""
     out: list[tuple[str, dict[str, Any]]] = [
-        (f"cfg-{i + 1}", g) for i, g in enumerate(cfg.grants) if g["scope"] == "persistent"
+        (f"cfg-{i + 1}", g)
+        for i, g in enumerate(cfg.grants)
+        if g["scope"] == "persistent" and i not in cfg.unsent_grants
     ]
     out += [
         ("a channel binding", {"kind": "destination", "pattern": p}) for p in cfg.channel_bindings
@@ -513,7 +516,7 @@ def in_force(
         ("a channel binding", {"kind": "destination", "pattern": b["pattern"].strip()})
         for b in grants._file_bindings(data)
     ]
-    return out
+    return [(k, g) for k, g in out if g["kind"] != "destination" or destination_ok(g["pattern"])]
 
 
 def covers(existing: dict[str, Any], cand: dict[str, Any]) -> bool:
@@ -574,11 +577,7 @@ def registrable(host: str | None) -> str | None:
     labels = (host or "").split(".")
     if len(labels) < 2 or not all(labels):
         return None
-    n = (
-        3
-        if len(labels) >= 3 and labels[-2] in grants._SHARED_SECOND_LEVEL and len(labels[-1]) == 2
-        else 2
-    )
+    n = 3 if len(labels) >= 3 and labels[-2] in SHARED_SECOND_LEVEL and len(labels[-1]) == 2 else 2
     try:
         return ".".join(
             label if label.isascii() else "xn--" + label.encode("punycode").decode("ascii")

@@ -237,7 +237,8 @@ including a send that names Discord in its own argument, as the `message` tool d
 "#daily-brief"}`). `discord:*` covers every Discord channel a send delivers to. Neither form covers a direct message
 (`user:`, `dm:`, an `@handle`), an email address or anything else the call reaches. `/sentrook-bind add` and
 `/sentrook-bind list` say when a binding can never apply, and `openclaw sentrook verify` does for the bindings in
-`openclaw.json`: one that matches every channel (`*`, `#*`), or one too short to be sent with a scan (such as `ab`).
+`openclaw.json`: one that matches every channel (`*`, `#*`), or one too short to be sent with a scan (such as `ab`), or one too broad to be sent (`*.com`, or a
+bare name with a wildcard such as `daily-*`, which would match hosts too).
 
 ### Typical grants
 
@@ -274,6 +275,15 @@ A pattern ending in `/` covers that folder and everything in it. `--allows` must
 the file: deleting it (`rm`, or moving it away) needs `delete`. Without `--allows` a file grant allows reading only.
 A provider pattern is the server's package as `/sentrook-why` shows it, for example `npm:@yourteam/notes-mcp@1.4.0`;
 ending it in `/` covers the whole scope. Patterns that would match everything (`*`, `*.*`, `/`) are ignored.
+A destination may use a wildcard on a host or a mail domain only as `*.` and one registrable domain
+(`*.example.com`, `*.example.co.uk`, `*.myname.github.io`), or as `*.` and a name that never resolves on the public
+internet (`*.lan`, `*.local`, `*.internal`, `*.localhost`, `*.home.arpa`, `*.test`, `*.example`, `*.invalid`).
+`/sentrook-grant` refuses a wildcard over a top-level domain or a common shared suffix where anyone can get a name
+(`*.com`, `*.co.uk`, `*.ne.jp`, `*.github.io`, `*.vercel.app`, `*.amazonaws.com`), a wildcard inside a name
+(`api*.example.com`, `daily-*`) and a wildcard address (`192.168.1.*`: write the exact hosts instead), and Sentrook
+ignores such a grant wherever it comes from. It knows the common shared suffixes, not every one, so grant a
+shared host's own name (`*.myname.github.io`). A wildcard in a channel's name (`#daily-*`, `discord:#daily-*`) or
+before an `@` (`*@example.com`) is fine.
 Anyone can publish on GitHub and Hugging Face, so a script fetched from one and run counts as code from an unknown source until a
 repo grant covers its repository: `github.com/<owner>/<repo>` (raw.githubusercontent.com and git remotes count as
 github.com), `github.com/<owner>/*` for an account, `huggingface.co/<org>/<name>`. The host and owner must be written
@@ -285,7 +295,8 @@ out; a release-asset download (objects.githubusercontent.com) names no repositor
 
 Grants and bindings can also live in `openclaw.json`, where the commands show them as read-only. Grants there apply
 in every session until you remove them, so they need no `scope`. A config grant with scope `session`, or with a scope
-Sentrook does not know, has no session to apply in and is never sent; `/sentrook-grants`, `/sentrook status` and `openclaw sentrook verify` flag it. Use
+Sentrook does not know, has no session to apply in and is never sent, and so is a destination too broad to
+take (`*.com`), while the other grants still apply; `/sentrook-grants`, `/sentrook status` and `openclaw sentrook verify` flag it. Use
 `/sentrook-grant` for a grant in one session.
 
 ```json
@@ -346,12 +357,15 @@ commands run only for the owner, from any of three places:
   does anyone holding the shared gateway token. Limited Control UI sessions are refused.
 - **The machine**: whoever can run `openclaw` there counts as the owner.
 
-OpenClaw decides who the owner is by the sender, not the room, so in a group or channel room your own message runs
-them too, and the reply is shown to everyone there. `/sentrook-setup` refuses in a room (show and apply alike), since
-its list would be shown to the room, and in a chat it cannot tell from one (a chat channel with no session key, or
-the agent's main session when `session.groupScope` routes rooms into it); run it in your direct message, the Control
-UI or on the machine instead. Every attempt, allowed or refused, is
-recorded in the traffic log (unless you turned it off).
+OpenClaw decides who the owner is by the sender, not the room, and keeps a command and its reply in the room's
+transcript. So every dashed command refuses in a group or channel room, even from you, since its reply (recent scans,
+hosts, file paths, reasons, grants, setup codes) would be shown to everyone there; and in a chat it cannot tell from
+one: a chat channel with no session key, or the agent's main session when `session.groupScope` routes rooms into it.
+This includes a Control UI session that is a room's, and the Control UI on the main session when rooms share it, since
+its transcript is theirs too. A thread or topic is the chat it is in: one in your DM works, one in a room is refused.
+Run them in your direct message, the Control UI (in a session no room shares) or on the machine instead.
+`/sentrook-notify here` also needs a direct message on a chat channel, since that is where it sends notices. Every
+attempt, allowed or refused, is recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
@@ -791,13 +805,15 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   change the setting) and keeps nothing.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
-similar) are replaced with placeholders such as `⟦secret:github:…⟧`. So are access codes and PINs named as such ("the
+similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
+`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept. So are access codes and PINs named as such ("the
 gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
 header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
 hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
 kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
-`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too. Your
+`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too, and so is a quoted
+example value that only stands in for one, such as `"access_token": "ya29.a0..."` or `"token": "REDACTED"`. Your
 files, messages and tool output can still contain other personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,

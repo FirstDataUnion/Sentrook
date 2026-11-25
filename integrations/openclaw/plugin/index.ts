@@ -64,6 +64,8 @@ interface OpenClawPluginApi {
   config?: any;
   logger: PluginLogger;
   registrationMode?: string;
+  /** The folder OpenClaw installed the plugin in; the code may run from a copy elsewhere. */
+  rootDir?: string;
   runtime?: {
     version?: unknown;
     config?: { current?: () => unknown };
@@ -242,6 +244,8 @@ const plugin = {
     }
     /** The plugin's own skill texts as it loaded them: a read is the plugin's skill read only if it returned these. */
     const skillTexts = shippedSkillTexts();
+    /** The folder OpenClaw installed the plugin in: its plugin-skills links point there, not into a copy the code runs from. */
+    const installRoot = typeof api.rootDir === "string" && api.rootDir ? api.rootDir : null;
     /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
     const ocDir = openclawDir(process.env);
     const hostVersion = runtimeVersion();
@@ -266,8 +270,8 @@ const plugin = {
         api.logger.warn(`${LOG} dashboard unavailable: ${String(err)}`);
       }
     }
-    // `/sentrook-history`, `/sentrook-why`, the grants commands and `/sentrook-snooze`: owner only,
-    // audited in the traffic log.
+    // `/sentrook-history`, `/sentrook-why`, the grants commands and the rest: owner only, never in a group or channel
+    // room, audited in the traffic log.
     for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
       try {
         api.registerCommand?.({
@@ -308,6 +312,7 @@ const plugin = {
               }),
             },
             { traffic, salt: () => store.salt() },
+            hostConfig,
           ),
           acceptsArgs: true,
         });
@@ -716,6 +721,7 @@ const plugin = {
             const ok = ran && !event?.error;
             entry.tool = reportedTool(entry.tool, ok ? (event?.params ?? entry.arguments) : null, ok ? text : "", {
               texts: skillTexts,
+              installRoot,
             });
           }
           if (ran) {

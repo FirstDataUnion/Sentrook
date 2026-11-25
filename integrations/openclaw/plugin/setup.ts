@@ -24,8 +24,8 @@
  * characters that are not plain ASCII (with the registrable domain in ASCII), deleting files, a folder at or above the
  * home folder, a whole package registry, a grant in force that already covers the item, a cron job's target, and,
  * for the agent's items, a proposing chat where the scanner flagged exposure (or the traffic log is off, so it could
- * not be checked). Whether a pattern is too broad to relieve anything is the scanner's call: the plugin passes
- * patterns on as typed.
+ * not be checked). A destination with a wildcard over more than one registrable domain (`*.com`) is refused as the
+ * grant command refuses it; whether any other pattern is too broad to relieve anything is the scanner's call.
  *
  * Lifetimes: a grant backed by reviews the owner approved lasts until revoked; any other lasts 30 days
  * (`hold.GRANT_TTL_MS`, as for a grant set from a suggestion), or less when the agent asked for less. A channel
@@ -42,7 +42,7 @@
 import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
-import type { PluginConfig } from "./config.ts";
+import { destinationOk, type PluginConfig, SHARED_SECOND_LEVEL } from "./config.ts";
 import { listCronJobs, roomPattern } from "./cronDelivery.ts";
 import * as grants from "./grants.ts";
 import { actionOf, recordsBackward, reviewOf } from "./history.ts";
@@ -459,12 +459,12 @@ export function loadProposals(stateDir: string, now: Date): Proposal[] | null {
 
 /**
  * [label, grant] for each grant in force everywhere: persistent config and file grants that have not expired, and
- * every channel binding as a destination grant.
+ * every channel binding as a destination grant. A destination Sentrook ignores as too broad is not in force.
  */
 export function inForce(cfg: PluginConfig, data: GrantsFile | null, now: Date): Array<[string, Entry]> {
   const out: Array<[string, Entry]> = [];
   cfg.grants.forEach((g, i) => {
-    if (g.scope === "persistent") out.push([`cfg-${i + 1}`, g]);
+    if (g.scope === "persistent" && !(i in cfg.unsentGrants)) out.push([`cfg-${i + 1}`, g]);
   });
   for (const p of cfg.channelBindings) out.push(["a channel binding", { kind: "destination", pattern: p }]);
   for (const [raw, g] of grants.fileGrants(data)) {
@@ -474,7 +474,7 @@ export function inForce(cfg: PluginConfig, data: GrantsFile | null, now: Date): 
     }
   }
   for (const b of grants.fileBindings(data)) out.push(["a channel binding", { kind: "destination", pattern: b.pattern.trim() }]);
-  return out;
+  return out.filter(([, g]) => g.kind !== "destination" || destinationOk(g.pattern));
 }
 
 /**
@@ -535,7 +535,7 @@ export function registrable(host: string | null): string | null {
   const labels = (host ?? "").split(".");
   if (labels.length < 2 || labels.some((l) => !l)) return null;
   const n =
-    labels.length >= 3 && grants.SHARED_SECOND_LEVEL.has(labels.at(-2)!) && labels.at(-1)!.length === 2 ? 3 : 2;
+    labels.length >= 3 && SHARED_SECOND_LEVEL.has(labels.at(-2)!) && labels.at(-1)!.length === 2 ? 3 : 2;
   const ascii = labels.slice(-n).map((l) => (isAscii(l) ? l : punycodeLabel(l)));
   return ascii.every((l) => l) ? ascii.join(".") : null;
 }

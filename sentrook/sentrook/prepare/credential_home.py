@@ -31,8 +31,8 @@ holds, and the call's credential does not count as sensitive data sent, only whe
 
 The owner can tie a key to a service the library does not list with a `credential` grant: `NAME@host`, the name
 exact or a `PREFIX*` (three or more characters before the `*`), the host exact or `*.example.com` (that domain and
-every name under it; at least two labels after the wildcard, and not a shared suffix such as `co.uk` or an address
-written in numbers). A live grant whose host pattern covers a host adds its
+every name under it; at least two labels after the wildcard, and not a shared suffix such as `co.uk`, a common
+shared-hosting suffix such as `github.io`, or an address written in numbers). A live grant whose host pattern covers a host adds its
 name to the names that host lists, exactly as a library entry would; every other condition above still holds. A
 grant never covers a host the oracle marks known-bad. A malformed or over-broad pattern covers nothing. Where a grant
 supplied a name the call uses, the check records the grant on that host (`CredentialHome.grants`).
@@ -119,16 +119,72 @@ _GRANT_HOST_RE = re.compile(rf"(?:\*\.)?{_LABEL}(?:\.{_LABEL})+")
 _MIN_PREFIX = 3
 
 
-#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`, `com.au`): a
-#: wildcard there covers strangers. The oracle's near-miss check reads registrable domains the same way.
-_SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`, `com.au`, `ne.jp`):
+#: a wildcard there covers strangers.
+_SHARED_SECOND_LEVEL = frozenset(
+    {"co", "com", "org", "net", "ac", "gov", "edu", "ne", "or", "go", "ed", "lg", "gr"}
+)
+#: Common shared-hosting and shared-registration suffixes, where anyone can get a name of their own
+#: (`someone.github.io`): a wildcard on one of these, or on a domain above one (`*.amazonaws.com`), covers strangers.
+#: Not every such suffix: the most common ones. The plugins keep the same list less the tunnel services, which they
+#: leave to the scanner.
+SHARED_HOSTING = frozenset(
+    {
+        "github.io",
+        "gitlab.io",
+        "herokuapp.com",
+        "vercel.app",
+        "netlify.app",
+        "pages.dev",
+        "workers.dev",
+        "web.app",
+        "firebaseapp.com",
+        "appspot.com",
+        "azurewebsites.net",
+        "cloudfront.net",
+        "s3.amazonaws.com",
+        "blob.core.windows.net",
+        "onrender.com",
+        "fly.dev",
+        "ngrok.io",
+        "ngrok-free.app",
+        "ngrok.app",
+        "glitch.me",
+        "replit.dev",
+        "repl.co",
+        "blogspot.com",
+        "wordpress.com",
+        "myshopify.com",
+        "trycloudflare.com",
+        "supabase.co",
+        "deno.dev",
+        "uk.com",
+        "us.com",
+        "eu.com",
+    }
+)
 
 
 def _wildcard_too_broad(base: str) -> bool:
     labels = base.split(".")
     if all(label.isdigit() for label in labels):
         return True  # part of a numeric address: `*.113.9`
-    return len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2
+    if len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2:
+        return True
+    if any(s == base or s.endswith("." + base) for s in SHARED_HOSTING):
+        return True
+    # an S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`, `s3-website-us-east-1.amazonaws.com`)
+    return base.startswith(("s3.", "s3-")) and base.endswith(".amazonaws.com")
+
+
+def host_pattern_ok(host: str) -> bool:
+    """A host as a grant may name it (lower-cased, no scheme, port or path): exact, or `*.` and one registrable domain,
+    with at least two labels after the wildcard and not a shared suffix such as `co.uk`, a common shared-hosting suffix
+    such as `github.io` (`SHARED_HOSTING`) or an address written in numbers. Destination grants read a wildcard host
+    the same way."""
+    if not _GRANT_HOST_RE.fullmatch(host):
+        return False
+    return not (host.startswith("*.") and _wildcard_too_broad(host[2:]))
 
 
 def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
@@ -138,11 +194,9 @@ def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
     name, sep, host = str(pattern).strip().partition("@")
     host = host.strip().lower().rstrip(".")
     name = name.strip()
-    if not sep or not _GRANT_NAME_RE.fullmatch(name) or not _GRANT_HOST_RE.fullmatch(host):
+    if not sep or not _GRANT_NAME_RE.fullmatch(name) or not host_pattern_ok(host):
         return None
     if name.endswith("*") and len(name) - 1 < _MIN_PREFIX:
-        return None
-    if host.startswith("*.") and _wildcard_too_broad(host[2:]):
         return None
     return name, host
 
