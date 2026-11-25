@@ -201,7 +201,7 @@ def test_a_scheduled_send_at_risk_47_is_held_and_the_owner_told_once(h):
         entry["id"],
         ["allow"],
         notice_cmd,
-        on_job=False,
+        scope=None,
     )
     assert notice["args"]["message"] == as_sent(text)
     table = history.format_history(
@@ -507,10 +507,14 @@ def test_observe_mode_holds_nothing(h):
 @pytest.mark.parametrize("case", FIXTURES["notices"], ids=lambda c: c["name"])
 def test_notice_text(case):
     w = case["where"]
-    where = hold.where_text(w["run"], w["session_ref"], w["job_id"], w["job_name"])
+    src = w.get("source")
+    source = hold.passes.source_of(src["kind"], src["value"]) if src else None
+    where = hold.where_text(w["run"], w["session_ref"], w["job_id"], w["job_name"], source)
     assert where == case["where_text"]
     job = w["job_id"]
-    match = hold.passes.match_of(case["tool"], case["response"], {}, "salt", exact=job is None)
+    match = hold.passes.match_of(
+        case["tool"], case["response"], {}, "salt", exact=job is None and source is None
+    )
     level = hold.passes.offered_level(case["response"])
     offers = hold.passes.offers(
         job,
@@ -519,11 +523,13 @@ def test_notice_text(case):
         case["response"].get("risk"),
         FIXTURES["block_at"],
         case.get("acted", False),
+        source is not None,
     )
     assert offers == case["offers"]
+    scope = "job" if job is not None else source["kind"] if source else None
     assert (
         hold.notice_text(
-            case["response"], case["tool"], where, case["id"], offers, notice_cmd, job is not None
+            case["response"], case["tool"], where, case["id"], offers, notice_cmd, scope
         )
         == case["text"]
     )

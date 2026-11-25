@@ -23,10 +23,13 @@ process with no terminal. There the plugin holds the call:
   - `deny <id>`: a standing denial for this job and action, for 30 days. A matching call is refused with a
     plain declined result and no notice.
   - `approve <id>` is the same as `allow <id>`, kept for one release.
-  A hold on a run that is not a cron job has no job to bind to: it offers `allow` only, bound to the call's
+  A hold on another unattended run is bound to where the run came from, when Hermes names it (`passes.source_of`:
+  a subagent's parent session, a webhook's route, an API-server key's name): `allow` is a one-use pass for the
+  next matching call from that source within 7 days, with nothing started, and `allow always` and `deny` are
+  bound to the source. A run with no source has nothing to bind to: it offers `allow` only, bound to the call's
   exact arguments. The notice lists only the answers the hold offers. A wider grant the scanner suggests is
   never set by an answer: `why` shows its command, for the owner to set by hand.
-- A later hold of the same job and action, at no higher risk and with no new warning, updates the waiting
+- A later hold of the same job (or source) and action, at no higher risk and with no new warning, updates the waiting
   hold (its count and when it was last seen) and sends no new notice.
 - After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next
   changed (a new hold or an answer).
@@ -152,17 +155,39 @@ def inert(s: Any, cap: int) -> str:
 # ---- the text ---------------------------------------------------------------------------------------
 
 
+#: How the notice's run line names a source, before its name.
+_SOURCE_LABELS = {
+    "heartbeat": "agent",
+    "hook": "hook",
+    "subagent": "parent session",
+    "api": "API key",
+}
+
+
 def where_text(
-    run: str, session_ref: str, job_id: str | None = None, job_name: str | None = None
+    run: str,
+    session_ref: str,
+    job_id: str | None = None,
+    job_name: str | None = None,
+    source: dict[str, Any] | None = None,
 ) -> str:
     """Which run a hold belongs to: a cron job by its id, with its name quoted and labelled as the
     job's name (whoever made the job chose it, possibly the agent, so it must read as a name, never as
-    an instruction), else the kind of run; then the session."""
+    an instruction), else the kind of run and, when the run has a source, the source by its name (quoted,
+    as a job's name is; a parent session by its ref); then the session."""
     if job_id:
         name = (
             f", job name {json.dumps(inert(job_name, 60), ensure_ascii=False)}" if job_name else ""
         )
         return f"cron job {inert(job_id, 40)}{name}, session {session_ref}"
+    label = _SOURCE_LABELS.get(str((source or {}).get("kind")))
+    if source and label:
+        shown = (
+            inert(source.get("name"), 40)
+            if source.get("kind") == "subagent"
+            else json.dumps(inert(source.get("name"), 60), ensure_ascii=False)
+        )
+        return f"{run}, {label} {shown}, session {session_ref}"
     return f"{run}, session {session_ref}"
 
 
@@ -178,6 +203,18 @@ _OFFER_LINES = {
 _NEXT_RUN_LINE = "- let this call through once, on the job's next scheduled run: {c} {id}"
 #: A hold that is not on a cron job: `allow` is bound to the exact call.
 _EXACT_LINE = "- let this exact call through once, within 7 days: {c} {id}"
+#: A hold bound to a source: the answers name the source by its kind (`{src}`, from `_SOURCE_NOUNS`).
+_SOURCE_LINES = {
+    passes.ALLOW: "- let this call through once more from {src}, within 7 days: {c} {id}",
+    passes.ALLOW_ALWAYS: "- let {src} make this call for 30 days: {c} {id} always",
+    passes.DENY: "- refuse it from {src} for 30 days, with no more notices: {c} {id}",
+}
+_SOURCE_NOUNS = {
+    "heartbeat": "this agent's heartbeat",
+    "hook": "this hook",
+    "subagent": "subagents of the same parent session",
+    "api": "this API key",
+}
 
 
 def notice_text(
@@ -187,14 +224,15 @@ def notice_text(
     hold_id: str,
     offers: list[str],
     cmd: Cmd,
-    on_job: bool = True,
+    scope: str | None = "job",
 ) -> str:
     """The owner's notice. It may be copied into the agent's own transcript (Hermes keeps what
     `send_message` sends), so it carries only what a steered agent cannot use: that a call was held,
     which run, the tool and its target as a review prompt names them, the block category, and the ids
     and the commands of the answers this hold offers (`offers`, from `passes.offers`). The risk, reason
     codes, scores and entities are for the owner, through `why`. `cmd`: a verb (allow, deny, why) -> the
-    command as the owner types it."""
+    command as the owner types it. `scope`: what the answers are bound to: `job`, a source kind
+    (`passes.SOURCE_KINDS`), or None (the exact call)."""
     lines = [
         "Sentrook held a tool call on an unattended run; it did not run.",
         f"Run: {_clean(where, 200)}",
@@ -204,9 +242,12 @@ def notice_text(
     if offers:
         lines.append("Reply within 7 days:")
         for verb in offers:
+            noun = _SOURCE_NOUNS.get(str(scope))
             line = (
-                _EXACT_LINE
-                if verb == passes.ALLOW and not on_job
+                _SOURCE_LINES[verb].replace("{src}", noun)
+                if noun
+                else _EXACT_LINE
+                if verb == passes.ALLOW and not scope
                 else _NEXT_RUN_LINE
                 if verb == passes.ALLOW and passes.ALLOW_NOW in offers
                 else _OFFER_LINES[verb]
@@ -264,11 +305,12 @@ def sweep(state_dir: Path, now: datetime, record: Record) -> None:
 
 
 def _repeat_of(
-    data: dict[str, Any], job_ref: str | None, match: dict[str, Any]
+    data: dict[str, Any], ref: str | None, match: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """The waiting hold a new hold of the same job and action repeats: same job, same match key, at no higher
-    risk and with no new warning (`passes.covers`). Only holds on a cron job repeat."""
-    if job_ref is None:
+    """The waiting hold a new hold of the same job (or source) and action repeats: same job or source, same match
+    key, at no higher risk and with no new warning (`passes.covers`). Only holds on a cron job or a source
+    repeat."""
+    if ref is None:
         return None
     return next(
         (
@@ -276,7 +318,7 @@ def _repeat_of(
             for h in data["holds"]
             if isinstance(h, dict)
             and h.get("v") == 2
-            and h.get("job_ref") == job_ref
+            and passes.scope_ref(h) == ref
             and passes.covers(h.get("match") or {}, match)
         ),
         None,
@@ -296,6 +338,7 @@ def create(
     record: Record,
     sid: str = "",
     job_id: str | None = None,
+    source: dict[str, Any] | None = None,
     match: dict[str, Any] | None = None,
     level: str | None = None,
     offers: list[str] | None = None,
@@ -308,9 +351,11 @@ def create(
     cannot be read: the call is still held, but cannot be answered) and whether it was a repeat (no new notice).
     `job_digest`: the job's settings as `run_now.digest` gives them; `acted`: the held run had sent or written
     something before the held call; `run_key`: the held run, which never counts as one started for an answer. A
-    repeat keeps the first notice's digest, takes the latest run, and has acted when any of its runs had."""
+    repeat keeps the first notice's digest, takes the latest run, and has acted when any of its runs had.
+    `source`: where a run that is not a cron job came from (`passes.source_of`); its answers are bound to it."""
     store = Store(state_dir)
     ref = passes.job_ref(job_id)
+    source = source if ref is None and isinstance(source, dict) and source.get("ref") else None
     match = match or {}
     with _LOCK, file_lock(state_dir / "holds.json"):
         data = store.load_holds()
@@ -318,7 +363,7 @@ def create(
             return None, False
         _sweep(data, now, record)
         data["version"] = 2
-        same = _repeat_of(data, ref, match)
+        same = _repeat_of(data, ref or (source or {}).get("ref"), match)
         if same is not None:
             same["count"] = int(same.get("count") or 1) + 1
             same["last_seen_at"] = _iso(now)
@@ -347,6 +392,11 @@ def create(
                 "where": where,
                 "job_id": job_id,
                 "job_ref": ref,
+                "source": (
+                    {"kind": source["kind"], "ref": source["ref"], "name": source.get("name")}
+                    if source
+                    else None
+                ),
                 "match": match,
                 "level": level,
                 "offers": list(offers or []),
@@ -488,26 +538,53 @@ class RunNow:
         raise NotImplementedError
 
 
+def source_of_hold(found: dict[str, Any]) -> dict[str, Any] | None:
+    """The source a version 2 hold off a cron job is bound to, or None."""
+    src = None if found.get("job_ref") else found.get("source")
+    return src if isinstance(src, dict) and isinstance(src.get("ref"), str) and src["ref"] else None
+
+
+def _subject(found: dict[str, Any]) -> str:
+    """Who makes the calls a hold's answer is bound to, to start the owner's reply: the job, else the source."""
+    src = source_of_hold(found)
+    if src is None:
+        return f"Job {_clean(found.get('job_id'), 40)}"
+    text = passes.source_text(src.get("kind"), src.get("name"))
+    return text[:1].upper() + text[1:]
+
+
+#: A hold with nothing to bind an answer to beyond the exact call.
+_UNBOUND = "comes from a run with no cron job or other source Sentrook can bind an answer to"
+
+
 def _refusal(found: dict[str, Any], want: str, hid: str, cmd: Cmd) -> str:
     """Why a hold does not offer the answer `want`; the hold keeps waiting."""
     on_job = bool(found.get("job_ref"))
+    src = source_of_hold(found)
     level = found.get("level")
     why = f"{cmd('why')} {hid} shows the reasons"
     if want == passes.DENY:
         return (
-            f"Not set: {hid} is not on a cron job, so there is no job to refuse it for. Leave it and it "
-            "expires; the call never runs."
+            f"Not set: {hid} {_UNBOUND}, so there is nothing to refuse it for. Leave it and it expires; "
+            "the call never runs."
         )
     if level is None:
-        alt = (
-            f"{cmd('deny')} {hid} refuses it on this job with no more notices; "
+        on = (
+            "on this job"
             if on_job
+            else f"from {passes.source_text(src.get('kind'), src.get('name'))}"
+            if src
+            else None
+        )
+        alt = (
+            f"{cmd('deny')} {hid} refuses it {on} with no more notices; "
+            if on
             else "leave it and it expires; "
         )
         return f"Not allowed: Sentrook does not offer to let this call through. {alt}{why}."
-    if not on_job:
+    if not on_job and src is None:
         return (
-            f"Not set: {hid} is not on a cron job, so there is no job to let this call through for good. "
+            f"Not set: {hid} {_UNBOUND}, so it cannot be let through for good. "
             f"{cmd('allow')} {hid} lets this exact call through once."
         )
     if level != "always":
@@ -676,6 +753,11 @@ def answer(
             "pass_kind": entry["kind"],
             "uses": entry["uses"],
             "job_ref": entry.get("job_ref"),
+            **(
+                {"source_kind": entry.get("source_kind"), "source_ref": entry["source_ref"]}
+                if entry.get("source_ref")
+                else {}
+            ),
             "hold_id": hid,
             "expires_at": entry["expires_at"],
             "by": who,
@@ -699,12 +781,17 @@ def answer(
     )
     until = read_time(entry["expires_at"])
     shown = passes.show(until) if until else "?"
-    job = f"Job {_clean(found.get('job_id'), 40)}"
+    job = _subject(found)
     undo = f"Undo: {cmd('passes')} revoke {entry['id']}."
     if want == passes.DENY:
         return f"{job} will not make this call until {shown}; you won't be told again. {undo}"
     if want == passes.ALLOW_ALWAYS:
         return f"{job} may make this call until {shown}. {undo}"
+    if not found.get("job_ref") and source_of_hold(found):
+        return (
+            f"{job} may make this call once more, until {shown}. Sentrook does not run the held call "
+            f"itself. {undo}"
+        )
     if not found.get("job_ref"):
         return (
             f"The next identical call from an unattended run may go through once, until {shown}. Sentrook "
