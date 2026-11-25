@@ -31,7 +31,7 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
-import { wildcardDomainOk } from "./config.ts";
+import { destinationOk } from "./config.ts";
 import * as grants from "./grants.ts";
 import { bindingProblem } from "./planir.ts";
 import { createRedactor } from "./redact.ts";
@@ -190,9 +190,10 @@ function grantItem(r: Entry): Entry | string {
     if (typeof expires !== "string" || hasSpace(expires)) return BAD_EXPIRES;
     words.push(`--expires=${expires}`);
   }
+  // The agent's own, stricter rule first: the grant command's refusal would offer it forms it may not propose.
+  if (kind.toLowerCase() === "destination" && tooBroad(pattern)) return BROAD;
   const parsed = grants.parseGrant(words.join(" "), (sub) => sub);
   if (typeof parsed === "string") return parsed || NOT_A_GRANT;
-  if (parsed.kind === "destination" && tooBroad(parsed.pattern)) return BROAD;
   if (parsed.kind === "credential" && valueShaped(parsed.pattern.slice(0, parsed.pattern.indexOf("@")))) return VALUE_NAME;
   const out: Entry = { kind: parsed.kind, pattern: parsed.pattern };
   if (parsed.allows?.length) out.allows = parsed.allows;
@@ -201,12 +202,14 @@ function grantItem(r: Entry): Entry | string {
 }
 
 /**
- * A destination the agent may not propose: a wildcard anywhere but as `*.` and one registrable domain
- * (`config.wildcardDomainOk`). The grant command refuses a wildcard over more than one registrable domain from anyone
- * (`config.destinationOk`); only the owner may put one in a channel's name or before an `@`.
+ * A destination the agent may not propose: a wildcard anywhere but as `*.` and a domain the grant command takes
+ * (`config.destinationOk`: one registrable domain, or a name that never resolves on the public internet). Only the
+ * owner may put a wildcard in a channel's name or before an `@`.
  */
 function tooBroad(pattern: string): boolean {
-  return WILDCARD.test(pattern) && (WILDCARD.test(pattern.slice(2)) || !wildcardDomainOk(pattern));
+  return (
+    WILDCARD.test(pattern) && (!pattern.startsWith("*.") || WILDCARD.test(pattern.slice(2)) || !destinationOk(pattern))
+  );
 }
 
 /** A credential name that the plugin's redactor would take for a secret value (a token's own shape). */

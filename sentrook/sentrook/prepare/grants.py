@@ -12,8 +12,10 @@ Every grant passes the same gates before its kind is consulted:
 - **Not over-broad**: a pattern that would match everything (`*`, `**`, `*.*`, `/`, `~/`) is refused.
   A destination pattern may use a wildcard where it can reach a host or a mail domain only as `*.` and
   one registrable domain (`*.example.com`, `*.example.co.uk`: at least two labels, not a suffix many
-  owners share such as `com` or `co.uk`, nor part of an address written in numbers), the way a
-  credential grant names its host (`credential_home.host_pattern_ok`). A wildcard elsewhere in a
+  owners share such as `com`, `co.uk` or a common shared-hosting suffix such as `github.io`, nor part
+  of an address written in numbers), the way a credential grant names its host
+  (`credential_home.host_pattern_ok`), or as `*.` and a name that never resolves on the public
+  internet (`*.lan`, `*.internal`, `*.test`: `PRIVATE_USE`). A wildcard elsewhere in a
   destination is fine: in a channel's name or id after a platform prefix or `#` (`discord:#ops-*`,
   `slack:C0B*`), or in the name before an `@` (`*@example.com`). Any other destination pattern
   (`*.com`, `*.co.uk`, `**.com`, `*.0.1`, `api*.example.com`, `*@*.com`) covers nothing and is reported
@@ -25,8 +27,9 @@ Matching, by kind:
 
 - `destination`: a host, recipient or channel against a glob; `*.example.com` also covers
   `example.com`, and a recipient is matched by its domain when the pattern has no `@`. A host, or a
-  recipient's domain, is covered by a wildcard only in the `*.` and one registrable domain form, also
-  when the pattern is read without the platform a send names. A channel is
+  recipient's mail domain, is covered by a wildcard only in those forms, also when the pattern is read
+  without the platform a send names. A recipient with no `@` (a chat name such as `general`) is read
+  as a channel name. A channel is
   also matched by the shorter names an owner writes for it: the id or `#name` after a platform prefix
   (`C0B0QV5434G` covers `slack:C0B0QV5434G`, `#bot-home` covers `discord:#bot-home`) and the name in
   `channel:ops-yard`, never a direct message (`user:ops`, `dm:ops`). A pattern that names the platform
@@ -189,10 +192,20 @@ _GLOB_CHARS = re.compile(r"[*?\[\]]")
 _PLATFORM_PREFIX = re.compile(r"[a-z][a-z0-9_-]*:(?!//)")
 
 
+#: Names that never resolve on the public internet (local networks, reserved for tests and examples): a
+#: wildcard over one reaches no one else's server.
+PRIVATE_USE = frozenset(
+    {"lan", "local", "internal", "localhost", "home.arpa", "test", "example", "invalid"}
+)
+
+
 def host_glob_ok(host: str) -> bool:
-    """A host (or mail domain) pattern with no wildcard, or `*.` and one registrable domain."""
+    """A host (or mail domain) pattern with no wildcard, or `*.` and one registrable domain, or `*.` and
+    a private-use name (`*.lan`, `*.internal`)."""
     host = host.strip().lower().rstrip(".")
-    return not _GLOB_CHARS.search(host) or (host.startswith("*.") and host_pattern_ok(host))
+    if not _GLOB_CHARS.search(host):
+        return True
+    return host.startswith("*.") and (host[2:] in PRIVATE_USE or host_pattern_ok(host))
 
 
 def destination_ok(pattern: str) -> bool:
@@ -309,9 +322,10 @@ def _destination(pat: str, entity: Entity, host_os: OS, platform: str | None = N
     if platform and sep and rest and head == platform.strip().lower():
         if _destination(rest, entity, host_os):
             return True
-    if entity.kind in (EntityKind.HOST, EntityKind.RECIPIENT) and not host_glob_ok(
-        pat.rpartition("@")[2]
-    ):
+    reaches_host = entity.kind is EntityKind.HOST or (
+        entity.kind is EntityKind.RECIPIENT and "@" in entity.value
+    )
+    if reaches_host and not host_glob_ok(pat.rpartition("@")[2]):
         return False  # a wildcard over hosts of many owners
     value = entity.value.lower()
     if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:

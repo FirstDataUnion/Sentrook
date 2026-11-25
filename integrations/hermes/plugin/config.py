@@ -47,9 +47,56 @@ _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 CREDENTIAL_PATTERN = re.compile(
     rf"(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{{2,}}\*)@(?:\*\.)?{_LABEL}(?:\.{_LABEL})+"
 )
-#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard
-#: there, or on part of a numeric address, covers strangers, and Sentrook refuses it.
-SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`, `ne.jp`): a
+#: wildcard there, or on part of a numeric address, covers strangers, and Sentrook refuses it.
+SHARED_SECOND_LEVEL = frozenset(
+    {"co", "com", "org", "net", "ac", "gov", "edu", "ne", "or", "go", "ed", "lg", "gr"}
+)
+#: Common shared-hosting and shared-registration suffixes, where anyone can get a name of their own
+#: (`someone.github.io`): a wildcard on one of these, or on a domain above one (`*.amazonaws.com`), covers strangers,
+#: and Sentrook refuses it. Not every such suffix: the most common ones.
+SHARED_HOSTING = frozenset(
+    {
+        "github.io",
+        "gitlab.io",
+        "herokuapp.com",
+        "vercel.app",
+        "netlify.app",
+        "pages.dev",
+        "workers.dev",
+        "web.app",
+        "firebaseapp.com",
+        "appspot.com",
+        "azurewebsites.net",
+        "cloudfront.net",
+        "s3.amazonaws.com",
+        "blob.core.windows.net",
+        "onrender.com",
+        "fly.dev",
+        "ngrok.io",
+        "ngrok-free.app",
+        "ngrok.app",
+        "glitch.me",
+        "replit.dev",
+        "repl.co",
+        "blogspot.com",
+        "wordpress.com",
+        "myshopify.com",
+        "trycloudflare.com",
+        "supabase.co",
+        "deno.dev",
+        "uk.com",
+        "us.com",
+        "eu.com",
+    }
+)
+#: An S3 endpoint in a region or another form (`s3.eu-west-1.amazonaws.com`).
+_S3_ENDPOINT = re.compile(r"s3[.-][a-z0-9.-]*\.amazonaws\.com")
+#: Names that never resolve on the public internet (local networks, reserved for tests and examples): a destination
+#: wildcard over one reaches no one else's server.
+PRIVATE_USE = frozenset(
+    {"lan", "local", "internal", "localhost", "home.arpa", "test", "example", "invalid"}
+)
 #: What is left of a pattern once glob characters and separators are removed; nothing left means it
 #: matches everything, and the scanner ignores it.
 NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
@@ -67,28 +114,35 @@ def credential_pattern_ok(pattern: str) -> bool:
     host = pattern.partition("@")[2]
     if not host.startswith("*."):
         return True
-    labels = host[2:].split(".")
+    base = host[2:]
+    labels = base.split(".")
     if all(label.isdigit() for label in labels):
         return False
-    return not (len(labels) == 2 and labels[0] in SHARED_SECOND_LEVEL and len(labels[1]) == 2)
+    if len(labels) == 2 and labels[0] in SHARED_SECOND_LEVEL and len(labels[1]) == 2:
+        return False
+    if any(s == base or s.endswith("." + base) for s in SHARED_HOSTING):
+        return False
+    return not _S3_ENDPOINT.fullmatch(base)
 
 
 def wildcard_domain_ok(pattern: str) -> bool:
     """`pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared
-    country second level (`*.co.uk`) or part of a numeric address. The rule is `credential_pattern_ok`'s, for the
-    host alone."""
+    country second level (`*.co.uk`), a common shared-hosting suffix (`*.github.io`) or part of a numeric address.
+    The rule is `credential_pattern_ok`'s, for the host alone."""
     return pattern.startswith("*.") and credential_pattern_ok("NAME@" + pattern.lower().rstrip("."))
 
 
 def _host_glob_ok(host: str) -> bool:
     host = host.strip().lower().rstrip(".")
-    return not _GLOB.search(host) or wildcard_domain_ok(host)
+    if not _GLOB.search(host):
+        return True
+    return host.startswith("*.") and (host[2:] in PRIVATE_USE or wildcard_domain_ok(host))
 
 
 def destination_ok(pattern: str) -> bool:
     """A destination pattern Sentrook takes: something literal, and a wildcard that can reach a host or a mail domain
     only as `*.` and one registrable domain (`wildcard_domain_ok`), never over a suffix many owners share (`*.com`,
-    `*.co.uk`). A channel's name or id after a platform prefix or `#` (`discord:#ops-*`), and the name before an `@`
+    `*.co.uk`, `*.github.io`), or as `*.` and a name that never resolves on the public internet (`PRIVATE_USE`). A channel's name or id after a platform prefix or `#` (`discord:#ops-*`), and the name before an `@`
     (`*@example.com`), may hold a wildcard. Sentrook ignores any other destination grant."""
     pat = pattern.strip().lower()
     if not NOT_LITERAL.sub("", pat):

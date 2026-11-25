@@ -149,6 +149,23 @@ def test_a_channel_wildcard_never_covers_a_host(pattern):
         assert not grant_matches("destination", pattern, host)
 
 
+@pytest.mark.parametrize(
+    ("value", "pattern", "platform"),
+    [
+        ("general", "slack:*", "slack"),
+        ("general", "slack:gen*", "slack"),
+        ("daily-brief", "discord:dai*", "discord"),
+        ("daily-brief", "discord:*", "discord"),
+        ("town-square", "mattermost:*", "mattermost"),
+    ],
+)
+def test_a_platform_wildcard_still_covers_a_bare_chat_name(value, pattern, platform):
+    """A chat target written as a bare name (`{channel: slack, target: general}`) is a recipient with no
+    `@`: a channel name, not a host, so a platform's wildcard still covers it."""
+    to = Entity(id="E1", kind=EntityKind.RECIPIENT, value=value, display=value)
+    assert grant_matches("destination", pattern, to, platform=platform)
+
+
 def test_a_wildcard_mail_domain_is_read_like_a_host():
     to = Entity(id="E1", kind=EntityKind.RECIPIENT, value="sam@mail.example.com", display="x")
     assert grant_matches("destination", "*@mail.example.com", to)

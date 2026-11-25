@@ -1,5 +1,5 @@
 {
-  "_comment": "Destination grant patterns as typed after `grant destination` (or written in the config, or bound as a channel), and whether Sentrook takes them (`ok`). A wildcard that can reach a host or a mail domain may only be `*.` and one registrable domain: at least two labels, not a suffix many owners share (`com`, `co.uk`, `com.au`) and not part of an address written in numbers, read as a credential grant reads its host. A wildcard in a channel's name or id after a platform prefix or `#`, or in the name before an `@`, is fine. A pattern with nothing literal is refused too. The scanner (`prepare.grants.destination_ok`: such a grant is reported as lapsed, `too_broad`, and covers nothing) and both plugins (the grant command refuses it with `refusal`, {pattern} replaced by the pattern as typed; a config grant with it is never sent) must agree on every case. `target`: a host, mail address (with `@`) or channel (with a platform prefix or `#`) the pattern's glob reaches; the scanner covers it only when the pattern is `ok`.",
+  "_comment": "Destination grant patterns as typed after `grant destination` (or written in the config, or bound as a channel), and whether Sentrook takes them (`ok`). A wildcard that can reach a host or a mail domain may only be `*.` and one registrable domain: at least two labels, not a suffix many owners share (`com`, `co.uk`, `com.au`, `ne.jp`, a common shared-hosting suffix such as `github.io`, or a domain above one such as `amazonaws.com`) and not part of an address written in numbers, read as a credential grant reads its host; or `*.` and a name that never resolves on the public internet (`lan`, `local`, `internal`, `localhost`, `home.arpa`, `test`, `example`, `invalid`). A wildcard in a channel's name or id after a platform prefix or `#`, or in the name before an `@`, is fine. A pattern with nothing literal is refused too. The scanner (`prepare.grants.destination_ok`: such a grant is reported as lapsed, `too_broad`, and covers nothing) and both plugins (the grant command refuses it with `refusal`, {pattern} replaced by the pattern as typed; a config grant with it is never sent) must agree on every case. `target`: a host, mail address (with `@`) or channel (with a platform prefix or `#`) the pattern's glob reaches; the scanner covers it only when the pattern is `ok`.",
   "refusal": "\"{pattern}\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk.",
   "cases": [
     {
@@ -120,6 +120,81 @@
       "target": "discord:#ops-yard"
     },
     {
+      "typed": "*.github.io",
+      "ok": false,
+      "target": "someone-else.github.io"
+    },
+    {
+      "typed": "*.herokuapp.com",
+      "ok": false,
+      "target": "someone-else.herokuapp.com"
+    },
+    {
+      "typed": "*.s3.amazonaws.com",
+      "ok": false,
+      "target": "someone-elses-bucket.s3.amazonaws.com"
+    },
+    {
+      "typed": "*.s3.eu-west-1.amazonaws.com",
+      "ok": false,
+      "target": "someone-elses-bucket.s3.eu-west-1.amazonaws.com"
+    },
+    {
+      "typed": "*.amazonaws.com",
+      "ok": false,
+      "target": "someone-elses-bucket.s3.amazonaws.com"
+    },
+    {
+      "typed": "*.workers.dev",
+      "ok": false,
+      "target": "someone-else.workers.dev"
+    },
+    {
+      "typed": "*.pages.dev",
+      "ok": false,
+      "target": "someone-else.pages.dev"
+    },
+    {
+      "typed": "*.vercel.app",
+      "ok": false,
+      "target": "someone-else.vercel.app"
+    },
+    {
+      "typed": "*.netlify.app",
+      "ok": false,
+      "target": "someone-else.netlify.app"
+    },
+    {
+      "typed": "*.uk.com",
+      "ok": false,
+      "target": "someone-else.uk.com"
+    },
+    {
+      "typed": "*.ne.jp",
+      "ok": false,
+      "target": "someone-else.ne.jp"
+    },
+    {
+      "typed": "*.or.jp",
+      "ok": false,
+      "target": "someone-else.or.jp"
+    },
+    {
+      "typed": "*.co.jp",
+      "ok": false,
+      "target": "someone-else.co.jp"
+    },
+    {
+      "typed": "192.168.1.*",
+      "ok": false,
+      "target": "192.168.1.20"
+    },
+    {
+      "typed": "daily-*",
+      "ok": false,
+      "target": "daily-brief.example-attacker.com"
+    },
+    {
       "typed": "*.example.com",
       "ok": true,
       "target": "api.example.com"
@@ -183,6 +258,56 @@
       "typed": "discord:*",
       "ok": true,
       "target": "discord:#daily-brief"
+    },
+    {
+      "typed": "*.myname.github.io",
+      "ok": true,
+      "target": "docs.myname.github.io"
+    },
+    {
+      "typed": "*.example.co.jp",
+      "ok": true,
+      "target": "shop.example.co.jp"
+    },
+    {
+      "typed": "*.lan",
+      "ok": true,
+      "target": "printer.lan"
+    },
+    {
+      "typed": "*.local",
+      "ok": true,
+      "target": "nas.local"
+    },
+    {
+      "typed": "*.internal",
+      "ok": true,
+      "target": "db.internal"
+    },
+    {
+      "typed": "*.localhost",
+      "ok": true,
+      "target": "app.localhost"
+    },
+    {
+      "typed": "*.home.arpa",
+      "ok": true,
+      "target": "router.home.arpa"
+    },
+    {
+      "typed": "*.test",
+      "ok": true,
+      "target": "api.test"
+    },
+    {
+      "typed": "*.example",
+      "ok": true,
+      "target": "api.example"
+    },
+    {
+      "typed": "*.invalid",
+      "ok": true,
+      "target": "api.invalid"
     }
   ]
 }
