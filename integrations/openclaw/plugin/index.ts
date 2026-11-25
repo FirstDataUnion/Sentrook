@@ -266,8 +266,8 @@ const plugin = {
         api.logger.warn(`${LOG} dashboard unavailable: ${String(err)}`);
       }
     }
-    // `/sentrook-history`, `/sentrook-why`, the grants commands and `/sentrook-snooze`: owner only,
-    // audited in the traffic log.
+    // `/sentrook-history`, `/sentrook-why`, the grants commands and the rest: owner only, never in a group or channel
+    // room, audited in the traffic log.
     for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
       try {
         api.registerCommand?.({
@@ -308,6 +308,7 @@ const plugin = {
               }),
             },
             { traffic, salt: () => store.salt() },
+            hostConfig,
           ),
           acceptsArgs: true,
         });

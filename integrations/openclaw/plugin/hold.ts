@@ -70,6 +70,7 @@ import { formatWhy, recentScans, recordsBackward } from "./history.ts";
 import * as grants from "./grants.ts";
 import { OwnerRefused } from "./owner.ts";
 import * as passes from "./passes.ts";
+import { chatKindOf } from "./planir.ts";
 import type { ScanResponse } from "./scanClient.ts";
 import { type HoldsFile, type NotifyTarget, readTime, Store, withFileLock } from "./store.ts";
 
@@ -1151,18 +1152,6 @@ export interface NotifyContext {
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-
-/**
- * Whether a command came from a direct message, as far as the context says: OpenClaw names the chat in the session
- * key and the reply address (`...:direct:...` or `user:` for one person, `...:group:...`, `channel:` and the like
- * for many). `unknown` when neither says, as in the agent's main session.
- */
-export function chatKindOf(ctx: NotifyContext): "direct" | "group" | "unknown" {
-  const said = [ctx.sessionKey, ctx.to, ctx.from].map(str).filter((v): v is string => v !== undefined);
-  if (said.some((v) => /(^|:)(group|channel|room|space|thread|topic)(:|$)/i.test(v))) return "group";
-  if (said.some((v) => /(^|:)(direct|dm|user)(:|$)/i.test(v))) return "direct";
-  return "unknown";
-}
 
 /** Channels whose sends take a thread id, as OpenClaw's own device-pair plugin forwards one. */
 const THREAD_CHANNELS = new Set(["telegram", "slack"]);

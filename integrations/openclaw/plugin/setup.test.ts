@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { OWNER_SUBCOMMANDS, runSentrookCommand, SETUP_IN_GROUP } from "./commands.ts";
+import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
+import { roomRefusal } from "./owner.ts";
 import { resolveConfig } from "./config.ts";
 import { deliveryPattern } from "./cronDelivery.ts";
 import * as grants from "./grants.ts";
@@ -396,7 +397,7 @@ test("the registered /sentrook-setup reads OpenClaw's MCP servers and job store,
     for (const sessionKey of ["agent:main:telegram:group:-1001234567890", "agent:main:discord:channel:123456"]) {
       for (const args of ["", `apply ${code} 1`]) {
         const reply = String((await def.handler({ ...dm(args), sessionKey })).text);
-        assert.equal(reply, SETUP_IN_GROUP);
+        assert.equal(reply, roomRefusal("setup"));
       }
     }
     assert.equal(readFileSync(path.join(s.state, "grants.json"), "utf8"), before);
@@ -439,7 +440,7 @@ test("/sentrook-setup refuses a chat it cannot tell from a room; the Control UI 
       { senderId: "123", channel: "telegram" },
       { senderId: "U1", channel: "slack", to: "slack:C123" },
     ]) {
-      assert.equal(await text(ctx), SETUP_IN_GROUP, JSON.stringify(ctx));
+      assert.equal(await text(ctx), roomRefusal("setup"), JSON.stringify(ctx));
     }
     // The owner's own DM, by its own key; the Control UI on the main key (no sender, the admin scope).
     assert.ok((await text({ senderId: "123", channel: "telegram", sessionKey: "agent:main:telegram:direct:123" })).startsWith("Sentrook setup: "));

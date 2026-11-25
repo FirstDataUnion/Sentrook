@@ -331,6 +331,20 @@ export function chatKindOfTurn(sessionKey: unknown, channel: string | null, conf
 }
 
 /**
+ * Whether a command came from a direct message, as far as its context says: OpenClaw names the chat in the session
+ * key and the reply address (`...:direct:...` or `user:` for one person, `...:group:...`, `channel:` and the like
+ * for many). `unknown` when neither says, as in the agent's main session.
+ */
+export function chatKindOf(ctx: { sessionKey?: unknown; to?: unknown; from?: unknown }): ChatKind {
+  const said = [ctx.sessionKey, ctx.to, ctx.from]
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v !== "");
+  if (said.some((v) => /(^|:)(group|channel|room|space|thread|topic)(:|$)/i.test(v))) return "group";
+  if (said.some((v) => /(^|:)(direct|dm|user)(:|$)/i.test(v))) return "direct";
+  return "unknown";
+}
+
+/**
  * Who sent the turn. An owner's message in a group or channel room stays the owner's, with basis `group_chat`
  * (the room is shared, so nobody there is attending alone); an owner's message from a chat whose kind the
  * session key does not say keeps the owner relation with basis `none`, claiming no direct chat. A system agent

@@ -19,6 +19,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { clearScanTokenCache } from "./auth.ts";
 import { formatHistory, recentScans, actionOf, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
+import { roomRefusal } from "./owner.ts";
 import * as passes from "./passes.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
 import plugin from "./index.ts";
@@ -704,13 +705,18 @@ test("/sentrook-why with a hold id gives the owner the reasons", async () => {
 
 test("/sentrook-notify here refuses a group or channel, and a message with no sender", async () => {
   const r = registered();
+  // A room, by its session key or reply address: refused like every owner command.
   for (const ctx of [
     { ...DM, sessionKey: "agent:main:telegram:group:-1002003004" },
     { ...DM, channel: "discord", sessionKey: "agent:main:main", to: "channel:1498333845953712258" },
-    { ...DM, channel: "discord", senderId: "channel:1498333845953712258", sessionKey: "agent:main:main" },
   ]) {
-    assert.match(await r.command("sentrook-notify", "here", ctx), /not in a group or channel/);
+    assert.equal(await r.command("sentrook-notify", "here", ctx), roomRefusal("notify"));
   }
+  // A sender that is a channel: notify's own rule, a notice goes to one person.
+  assert.match(
+    await r.command("sentrook-notify", "here", { ...DM, channel: "discord", senderId: "channel:1498333845953712258", sessionKey: "agent:main:main" }),
+    /not in a group or channel/,
+  );
   assert.match(await r.command("sentrook-notify", "here", { ...DM, senderId: "", from: "telegram:100200300" }), /did not say who sent this/);
   assert.equal(existsSync(path.join(stateDir, "notify.json")), false);
 });

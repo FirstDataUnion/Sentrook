@@ -346,12 +346,13 @@ commands run only for the owner, from any of three places:
   does anyone holding the shared gateway token. Limited Control UI sessions are refused.
 - **The machine**: whoever can run `openclaw` there counts as the owner.
 
-OpenClaw decides who the owner is by the sender, not the room, so in a group or channel room your own message runs
-them too, and the reply is shown to everyone there. `/sentrook-setup` refuses in a room (show and apply alike), since
-its list would be shown to the room, and in a chat it cannot tell from one (a chat channel with no session key, or
-the agent's main session when `session.groupScope` routes rooms into it); run it in your direct message, the Control
-UI or on the machine instead. Every attempt, allowed or refused, is
-recorded in the traffic log (unless you turned it off).
+OpenClaw decides who the owner is by the sender, not the room, and keeps a command and its reply in the room's
+transcript. So every dashed command refuses in a group or channel room, even from you, since its reply (recent scans,
+hosts, file paths, reasons, grants, setup codes) would be shown to everyone there; and in a chat it cannot tell from
+one: a chat channel with no session key, or the agent's main session when `session.groupScope` routes rooms into it.
+This includes a Control UI session that is a room's. Run them in your direct message, the Control UI or on the machine
+instead. `/sentrook-notify here` also needs a direct message on a chat channel, since that is where it sends notices.
+Every attempt, allowed or refused, is recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
