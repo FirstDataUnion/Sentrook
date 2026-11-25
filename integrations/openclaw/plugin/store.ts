@@ -118,6 +118,20 @@ export interface Session {
 
 export type RunContext = Record<string, any>;
 
+/**
+ * A cron run as the plugin keeps it for a session: the job OpenClaw's run metadata named and the cron run's own agent
+ * run id (its run key and start are read from it as the run's own calls read them). `via`: `cron` on the run's own
+ * session, `subagent` on a sub-agent's session that took it from its parent at spawn.
+ */
+export interface JobRunLink {
+  job_id: string;
+  run_id: string;
+  via: "cron" | "subagent";
+}
+
+/** The session links `jobruns.json` keeps, newest last. */
+const JOB_RUN_LINKS = 500;
+
 export interface GrantsFile {
   version?: number;
   grants: unknown[];
@@ -524,5 +538,32 @@ export class Store {
 
   parents(): Record<string, string> {
     return this.readJson<Record<string, string>>(path.join(this.dir, "subagents.json"), {});
+  }
+
+  /**
+   * The cron run a session serves now, or the one a sub-agent's session belongs to (`JobRunLink`), by session key;
+   * null when none.
+   */
+  jobRunOf(sessionKey: unknown): JobRunLink | null {
+    if (typeof sessionKey !== "string" || !sessionKey) return null;
+    const m = this.readJson<Record<string, JobRunLink>>(path.join(this.dir, "jobruns.json"), {});
+    const rec = Object.hasOwn(m, sessionKey) ? m[sessionKey] : undefined;
+    return rec && typeof rec === "object" && typeof rec.job_id === "string" && rec.job_id && typeof rec.run_id === "string" && rec.run_id
+      ? rec
+      : null;
+  }
+
+  /** Sets (or with null, drops) a session's cron run link; the oldest go past `JOB_RUN_LINKS`. */
+  setJobRun(sessionKey: string, link: JobRunLink | null): void {
+    const file = path.join(this.dir, "jobruns.json");
+    withFileLock(file, () => {
+      const m = this.readJson<Record<string, JobRunLink>>(file, {});
+      if (link === null && !Object.hasOwn(m, sessionKey)) return;
+      delete m[sessionKey];
+      if (link) m[sessionKey] = link;
+      const keys = Object.keys(m);
+      for (const k of keys.slice(0, Math.max(0, keys.length - JOB_RUN_LINKS))) delete m[k];
+      this.writeJson(file, m);
+    });
   }
 }

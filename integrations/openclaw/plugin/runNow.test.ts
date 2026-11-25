@@ -588,3 +588,47 @@ test("a started run whose end was never seen does not capture a later one", asyn
   assert.equal(later.out, undefined);
   assert.equal(later.rec.decision, "allowed_by_pass");
 });
+
+// ---- a cron run's sub-agents ----------------------------------------------------------------------------------
+
+/**
+ * A send from a sub-agent of run `n` of job-j: the run's session starts its turn in the run, spawns the child, then the
+ * child's own turn and call, which OpenClaw starts with trigger `user` and no provenance.
+ */
+async function childCall(r: ReturnType<typeof registered>, n: number) {
+  const parent = { sessionKey: `agent:main:cron:cron-job-j-${n}`, sessionId: `cron-job-j-${n}`, agentId: "main", runId: `r-cron-job-j-${n}`, trigger: "cron", inputProvenance: { kind: "internal_system", sourceTool: "cron", jobId: "job-j" } };
+  await r.fire("before_prompt_build", { runId: parent.runId, prompt: "post the brief" }, parent);
+  const key = `agent:main:subagent:${parent.sessionId}`;
+  await r.fire("subagent_spawned", { childSessionKey: key, runId: `r-${key}` }, { childSessionKey: key, requesterSessionKey: parent.sessionKey });
+  const ctx = { sessionKey: key, sessionId: `sub-${parent.sessionId}`, agentId: "main", runId: `r-sub-${parent.sessionId}`, trigger: "user" };
+  await r.fire("before_prompt_build", { runId: ctx.runId, prompt: "Post the brief." }, ctx);
+  const out = await r.fire(
+    "before_tool_call",
+    { toolName: "message", toolCallId: "c1", runId: ctx.runId, params: { action: "send", channel: "discord", target: "#ops-reports", message: `Daily brief ${n}` } },
+    ctx,
+  );
+  await hold.waitForNotices();
+  return { out, rec: r.records("scan").at(-1) };
+}
+
+test("allow on a sub-agent's hold starts the job, and the started run's sub-agent passes once", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  const { out, rec } = await childCall(r, 1);
+  assert.deepEqual(out, HELD);
+  assert.ok(rec.hold.offers.includes("allow"), rec.hold.offers);
+  const answer = await r.command("sentrook-allow", rec.hold.id);
+  const [p] = stored();
+  assert.equal(answer, fill(RUN_NOW.replies.started, { job: "job-j", pass: p.id }));
+  assert.deepEqual(cliCalls(), ["cron run job-j --json"], "the job is started again");
+  // the started run: its receipt names the run id the command returned; its sub-agent makes the call
+  receipt("cron-request.started-1");
+  const again = await childCall(r, 2);
+  assert.equal(again.out, undefined);
+  assert.equal(again.rec.decision, "allowed_by_pass");
+  assert.equal(again.rec.pass.id, p.id);
+  await r.end(2);
+  finish("cron-request.started-1");
+  assert.equal(notices(r).at(-1), fill(RUN_NOW.outcomes.passed, { job: "job-j" }));
+  assert.deepEqual((await childCall(r, 3)).out, HELD, "the pass was used up in the started run");
+});

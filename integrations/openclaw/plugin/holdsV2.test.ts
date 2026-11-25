@@ -411,9 +411,9 @@ for (const name of ["sentrook-allow", "sentrook-deny", "sentrook-approve", "sent
 }
 
 for (const [name, args, want] of [
-  ["sentrook-allow", "", "usage: /sentrook-allow <id> [now|later|always]"],
-  ["sentrook-allow", "h-zzzzzz", "usage: /sentrook-allow <id> [now|later|always]"],
-  ["sentrook-allow", "h-1a2b3c sometimes", "usage: /sentrook-allow <id> [now|later|always]"],
+  ["sentrook-allow", "", "usage: /sentrook-allow <id> [now|later|always|all]"],
+  ["sentrook-allow", "h-zzzzzz", "usage: /sentrook-allow <id> [now|later|always|all]"],
+  ["sentrook-allow", "h-1a2b3c sometimes", "usage: /sentrook-allow <id> [now|later|always|all]"],
   ["sentrook-deny", "h-1a2b3c always", "usage: /sentrook-deny <id>"],
   ["sentrook-deny", "p-1a2b3c", "usage: /sentrook-deny <id>"],
   ["sentrook-allow", "h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."],
