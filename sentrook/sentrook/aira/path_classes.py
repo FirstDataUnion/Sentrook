@@ -174,7 +174,9 @@ def classify_path_detail(
     return locations_of(path, workspace_root, home), roles
 
 
-def derive_path_roles(text: str, groups: Mapping[str, PathList]) -> list[str]:
+def derive_path_roles(
+    text: str, groups: Mapping[str, PathList], tokens: Iterable[str] = ()
+) -> list[str]:
     """Groups referenced **anywhere in the text**, in declared order.
 
     Deliberately *not* per path, because the references that matter most often are not extractable
@@ -182,9 +184,19 @@ def derive_path_roles(text: str, groups: Mapping[str, PathList]) -> list[str]:
     target (`echo x >> ~/.bashrc` keeps the destination out of argv), a reference inside a quoted
     string, or a mechanism name rather than a path (`crontab`). URLs are removed first: a URL path
     is not a filesystem path, and `https://x/mail/` must not read as a mail store.
+
+    `tokens` are the command's parsed arguments. Each is also tested on its own, for the groups
+    that carry word basenames (`PathList.words`): a word counts in free text only where it reads as
+    a file name, and a whole argument (`cat credentials`) is one, while the same word in prose is
+    not.
     """
     stripped = _URL_RE.sub(" ", text)
-    return [name for name, group in groups.items() if group.search(stripped)]
+    words = [_URL_RE.sub(" ", t.strip("'\"")) for t in tokens]
+    return [
+        name
+        for name, group in groups.items()
+        if group.search(stripped) or (group.words and any(group.search(w) for w in words))
+    ]
 
 
 def extract_paths(tokens: Iterable[str]) -> list[str]:
@@ -219,7 +231,16 @@ def derive_paths(
     same path named in two segments is two references, because they are two different acts
     (`ls -la ~/.ssh && rm -rf ~/.ssh`).
     """
-    present = derive_path_roles(command, groups) if roles_present is None else list(roles_present)
+    segments = [list(tokens) if not isinstance(tokens, str) else tokens for tokens in segments]
+    present = (
+        derive_path_roles(
+            command,
+            groups,
+            [t for tokens in segments if not isinstance(tokens, str) for t in tokens],
+        )
+        if roles_present is None
+        else list(roles_present)
+    )
     out: list[ExecPath] = []
     seen: set[tuple[int, str]] = set()
     for index, tokens in enumerate(segments):
