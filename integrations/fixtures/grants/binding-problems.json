@@ -10,6 +10,11 @@
     { "pattern": "a*b", "problem": "too short, never sent" },
     { "pattern": "*", "problem": "matches every channel, ignored" },
     { "pattern": "#*", "problem": "matches every channel, ignored" },
-    { "pattern": "*:*", "problem": "matches every channel, ignored" }
+    { "pattern": "*:*", "problem": "matches every channel, ignored" },
+    { "pattern": "*.com", "problem": "too broad, never sent" },
+    { "pattern": "*.co.uk", "problem": "too broad, never sent" },
+    { "pattern": "daily-*", "problem": "too broad, never sent" },
+    { "pattern": "discord:#daily-*", "problem": null },
+    { "pattern": "*.example.com", "problem": null }
   ]
 }

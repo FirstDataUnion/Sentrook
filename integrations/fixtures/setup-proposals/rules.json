@@ -437,6 +437,22 @@
     {
       "item": {
         "kind": "destination",
+        "pattern": "*@example.com",
+        "reason": "Every address at one domain"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "discord:#ops-*",
+        "reason": "Every ops channel"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
         "pattern": "*.example.co.uk",
         "reason": "One registrable domain"
       },
@@ -444,6 +460,26 @@
         "kind": "destination",
         "pattern": "*.example.co.uk",
         "reason": "One registrable domain"
+      }
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.github.io",
+        "reason": "A shared-hosting suffix"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.internal",
+        "reason": "Names that never leave the network"
+      },
+      "stored": {
+        "kind": "destination",
+        "pattern": "*.internal",
+        "reason": "Names that never leave the network"
       }
     },
     {

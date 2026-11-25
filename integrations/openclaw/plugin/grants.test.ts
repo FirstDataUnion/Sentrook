@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
 import { helpText, OWNER_SUBCOMMANDS } from "./commands.ts";
-import { resolveConfig } from "./config.ts";
+import { credentialPatternOk, destinationOk, nothingLiteral, resolveConfig, wildcardDomainOk } from "./config.ts";
 import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
@@ -456,11 +456,141 @@ test("an expired grant can still be revoked", async () => {
   );
 });
 
-test("an over-broad pattern is stored as typed: whether it relieves is the scanner's call", async () => {
+test("an over-broad pattern of another kind is stored as typed: whether it relieves is the scanner's call", async () => {
   const r = await registered();
-  const out = await run(r, "sentrook-grant", "destination *");
-  assert.ok(out.startsWith("Granted ") && out.endsWith(`: destination * (this session only).${NOTE}`), out);
+  const out = await run(r, "sentrook-grant", "provider *");
+  assert.ok(out.startsWith("Granted ") && out.endsWith(`: provider * (this session only).${NOTE}`), out);
   assert.equal(stored().grants[0].pattern, "*");
+});
+
+/**
+ * Shared with the Hermes plugin's tests and the scanner's: a wildcard over a whole public suffix is refused, and one
+ * in the config is never sent.
+ */
+const DESTINATION_PATTERNS = JSON.parse(readFileSync(path.join(FIXTURES, "destination-patterns.json"), "utf8"));
+for (const c of DESTINATION_PATTERNS.cases) {
+  test(`destination pattern: ${c.typed}`, () => {
+    // A scanner-only case is taken as typed.
+    const ok = c.ok || c.scanner_only === true;
+    const parsed = grants.parseGrant(`destination ${c.typed} --persistent`, CMD);
+    if (ok) assert.deepEqual(parsed, { kind: "destination", pattern: c.typed, scope: "persistent" });
+    else assert.equal(parsed, DESTINATION_PATTERNS.refusal.replace("{pattern}", c.typed));
+    const cfg = resolveConfig({ grants: [{ kind: "destination", pattern: c.typed }] }, {});
+    assert.deepEqual(cfg.unsentGrants, ok ? {} : { 0: "too broad" });
+  });
+}
+
+/**
+ * Long runs of `.` and `[` (100k at full size, 1/`divisor` of it for the growth check), which a pattern check with
+ * nested or overlapping repeats would take quadratic time over.
+ */
+const longRuns = (divisor = 1) => {
+  const n = Math.floor(100_000 / divisor);
+  return [
+    "[".repeat(n),
+    `*.${"[".repeat(n)}`,
+    `a${"[".repeat(n)}*`,
+    `${".".repeat(n)}x`,
+    `*.${".".repeat(n)}a`,
+    `*.${"a.".repeat(Math.floor(n / 2))}${".".repeat(n)}`,
+    `slack:${"[".repeat(n)}*`,
+    `*@${".".repeat(n)}*`,
+  ];
+};
+
+/**
+ * How the time grows with the input, as the scanner's tests measure it (`sentrook/tests/linear_time.py`): the work at
+ * a quarter and at full size, the fastest of a few runs each; linear work takes about 4 times as long, quadratic about
+ * 16. A full-size run under 20 ms is too short to time and passes. Returns [quarter ms, full ms].
+ */
+function assertLinear(run: (divisor: number) => void, what: string, limit = 10): [number, number] {
+  const ms = (divisor: number) => {
+    const t0 = performance.now();
+    run(divisor);
+    return performance.now() - t0;
+  };
+  let small = ms(4);
+  let large = ms(1);
+  small = Math.min(small, ms(4));
+  for (let attempt = 1; attempt < 5 && large >= 20 && large / Math.max(small, 1e-6) >= 0.8 * limit; attempt++) {
+    small = Math.min(small, ms(4));
+    large = Math.min(large, ms(1));
+  }
+  const growth = large / Math.max(small, 1e-6);
+  assert.ok(large < 20 || growth < limit, `${what}: ${large.toFixed(1)} ms at full size vs ${small.toFixed(1)} ms at 1/4, ${growth.toFixed(1)}x`);
+  return [small, large];
+}
+
+test("pattern checks take linear time on long runs of . and [", () => {
+  // A generous ceiling guards against a hang.
+  const [, full] = assertLinear((divisor) => {
+    for (const p of longRuns(divisor)) {
+      destinationOk(p);
+      nothingLiteral(p);
+      bindingProblem(p);
+      wildcardDomainOk(p);
+      credentialPatternOk(`NAME@${p}`);
+      relevantGrants([{ kind: "destination", pattern: p, scope: "persistent" }], p);
+    }
+  }, "destination pattern checks");
+  assert.ok(full < 10_000, `${full} ms`);
+});
+
+test("a public-suffix destination grant is refused and nothing is stored", async () => {
+  const r = await registered();
+  const out = await run(r, "sentrook-grant", "destination *.com --persistent");
+  assert.ok(
+    out.startsWith('"*.com" is too broad for a destination grant: a wildcard may cover only one registrable domain'),
+    out,
+  );
+  assert.ok(out.endsWith(grants.grantUsage(CMD)), out);
+  assert.ok(!existsSync(file) || stored().grants.length === 0);
+  assert.deepEqual(records("grants"), []);
+});
+
+test("a too-broad config grant is dropped and the others still load", async () => {
+  // One bad entry never disables the rest: it keeps its cfg-N, is listed as too broad and never sent.
+  const config = {
+    grants: [
+      { kind: "destination", pattern: "*.mycorp.example" },
+      { kind: "destination", pattern: "*.com" },
+      { kind: "destination", pattern: "api.example.com" },
+    ],
+  };
+  const r = await registered(config);
+  const sent = await r.scan("curl -d x https://a.mycorp.example https://api.example.com https://b.com");
+  assert.deepEqual(
+    sent.map((g: any) => g.pattern),
+    ["*.mycorp.example", "api.example.com"],
+  );
+  const rows = Object.fromEntries(
+    (await run(r, "sentrook-grants", ""))
+      .split("\n")
+      .slice(2, 5)
+      .map((l) => [l.split(/\s+/)[0], l]),
+  );
+  assert.ok(rows["cfg-2"].endsWith("config, read-only; too broad, never sent"), rows["cfg-2"]);
+  assert.ok(rows["cfg-1"].endsWith("config, read-only"), rows["cfg-1"]);
+  const status = (await r.commands.sentrook.handler({ args: "status" })).text.split("\n");
+  assert.ok(status.includes("grants: 3 in config (1 never sent), 0 by command"), status.join("\n"));
+  const noFetch = (async () => {
+    throw new Error("offline");
+  }) as unknown as typeof fetch;
+  const verify = (await runVerify(config, { env: {}, fetchImpl: noFetch })).find((c) => c.name === "config grants");
+  assert.deepEqual(verify, { name: "config grants", ok: true, detail: "3 in config; never sent: cfg-2 (too broad)" });
+});
+
+test("a too-broad grant already in the file is listed and never sent", async () => {
+  // A grant set before the plugin refused it, or written into the file by hand.
+  mkdirSync(stateDir, { recursive: true });
+  const entry = { id: "gr-000001", kind: "destination", pattern: "*.co.uk", scope: "persistent" };
+  writeFileSync(file, JSON.stringify({ grants: [entry], bindings: [{ pattern: "*.com.au" }] }));
+  const r = await registered();
+  assert.deepEqual(await r.scan("curl -d x https://shop.example.co.uk https://shop.example.com.au"), []);
+  const listing = await run(r, "sentrook-grants", "");
+  assert.ok(listing.includes("gr-000001  destination  persistent  *.co.uk  too broad, never sent"), listing);
+  const bindings = await run(r, "sentrook-bind", "list");
+  assert.ok(bindings.includes("*.com.au  too broad, never sent"), bindings);
 });
 
 for (const expiresAt of [

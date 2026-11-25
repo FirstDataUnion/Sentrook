@@ -211,7 +211,8 @@ Discord only, including a send that names Discord in its own argument (`{channel
 `discord:*` covers every Discord channel a send delivers to. Neither form covers a direct message (`user:`, `dm:`, an
 `@handle`), an email address or anything else the call reaches. `/sentrook bind add` and `/sentrook bind list` say
 when a binding can never apply, and `hermes sentrook verify` does for the bindings in `config.yaml`: one that matches
-every channel (`*`, `#*`), or one too short to be sent with a scan (such as `ab`).
+every channel (`*`, `#*`), or one too short to be sent with a scan (such as `ab`), or one too broad to be sent (`*.com`, or a
+bare name with a wildcard such as `daily-*`, which would match hosts too).
 
 ### Typical grants
 
@@ -248,6 +249,15 @@ A pattern ending in `/` covers that folder and everything in it. `--allows` must
 the file: deleting it (`rm`, or moving it away) needs `delete`. Without `--allows` a file grant allows reading only.
 A provider pattern is the server's package as `/sentrook why` shows it, for example `npm:@yourteam/notes-mcp@1.4.0`;
 ending it in `/` covers the whole scope. Patterns that would match everything (`*`, `*.*`, `/`) are ignored.
+A destination may use a wildcard on a host or a mail domain only as `*.` and one registrable domain
+(`*.example.com`, `*.example.co.uk`, `*.myname.github.io`), or as `*.` and a name that never resolves on the public
+internet (`*.lan`, `*.local`, `*.internal`, `*.localhost`, `*.home.arpa`, `*.test`, `*.example`, `*.invalid`).
+`/sentrook grant` refuses a wildcard over a top-level domain or a common shared suffix where anyone can get a name
+(`*.com`, `*.co.uk`, `*.ne.jp`, `*.github.io`, `*.vercel.app`, `*.amazonaws.com`), a wildcard inside a name
+(`api*.example.com`, `daily-*`) and a wildcard address (`192.168.1.*`: write the exact hosts instead), and Sentrook
+ignores such a grant wherever it comes from. It knows the common shared suffixes, not every one, so grant a
+shared host's own name (`*.myname.github.io`). A wildcard in a channel's name (`#daily-*`, `discord:#daily-*`) or
+before an `@` (`*@example.com`) is fine.
 Anyone can publish on GitHub and Hugging Face, so a script fetched from one and run counts as code from an unknown source until a
 repo grant covers its repository: `github.com/<owner>/<repo>` (raw.githubusercontent.com and git remotes count as
 github.com), `github.com/<owner>/*` for an account, `huggingface.co/<org>/<name>`. The host and owner must be written
@@ -259,7 +269,8 @@ out; a release-asset download (objects.githubusercontent.com) names no repositor
 
 Grants and bindings can also live in `config.yaml`, where the commands show them as read-only. Grants there apply
 in every session until you remove them, so they need no `scope`. A config grant with scope `session`, or with a scope
-Sentrook does not know, has no session to apply in and is never sent; `/sentrook grants`, `/sentrook status` and
+Sentrook does not know, has no session to apply in and is never sent, and so is a destination too broad to
+take (`*.com`), while the other grants still apply; `/sentrook grants`, `/sentrook status` and
 `hermes sentrook verify` flag it. Use `/sentrook grant` for a grant in one session.
 
 ```yaml

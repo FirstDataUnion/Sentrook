@@ -10,13 +10,26 @@ Every grant passes the same gates before its kind is consulted:
   scope. A `session` grant covers only the session named by its `session_ref`; one without a
   `session_ref` covers no session.
 - **Not over-broad**: a pattern that would match everything (`*`, `**`, `*.*`, `/`, `~/`) is refused.
+  A destination pattern may use a wildcard where it can reach a host or a mail domain only as `*.` and
+  one registrable domain (`*.example.com`, `*.example.co.uk`: at least two labels, not a suffix many
+  owners share such as `com`, `co.uk` or a common shared-hosting suffix such as `github.io`, nor part
+  of an address written in numbers), the way a credential grant names its host
+  (`credential_home.host_pattern_ok`), or as `*.` and a name that never resolves on the public
+  internet (`*.lan`, `*.internal`, `*.test`: `PRIVATE_USE`). A wildcard elsewhere in a
+  destination is fine: in a channel's name or id after a platform prefix or `#` (`discord:#ops-*`,
+  `slack:C0B*`), or in the name before an `@` (`*@example.com`). Any other destination pattern
+  (`*.com`, `*.co.uk`, `**.com`, `*.0.1`, `api*.example.com`, `*@*.com`) covers nothing and is reported
+  as lapsed (`too_broad`).
 - **Allowed action**: for kinds with an `allows` vocabulary, the grant covers an entity only when it
   allows every action the call takes on it (an empty `allows` means the kind's default).
 
 Matching, by kind:
 
 - `destination`: a host, recipient or channel against a glob; `*.example.com` also covers
-  `example.com`, and a recipient is matched by its domain when the pattern has no `@`. A channel is
+  `example.com`, and a recipient is matched by its domain when the pattern has no `@`. A host, or a
+  recipient's mail domain, is covered by a wildcard only in those forms, also when the pattern is read
+  without the platform a send names. A recipient with no `@` (a chat name such as `general`) is read
+  as a channel name. A channel is
   also matched by the shorter names an owner writes for it: the id or `#name` after a platform prefix
   (`C0B0QV5434G` covers `slack:C0B0QV5434G`, `#bot-home` covers `discord:#bot-home`) and the name in
   `channel:ops-yard`, never a direct message (`user:ops`, `dm:ops`). A pattern that names the platform
@@ -50,6 +63,7 @@ from datetime import UTC, datetime
 
 from ..planir.canonical import CanonicalCall
 from ..planir.models import OS, Grant, GrantScope, PlanIR, ToolKind
+from .credential_home import host_pattern_ok
 from .entities import (
     _ENV_ASSIGN_RE,
     _SEGMENT_SPLIT_RE,
@@ -145,8 +159,10 @@ GRANT_KINDS: dict[str, GrantKind] = {
 
 
 def lapse(grant: Grant, planir: PlanIR) -> str | None:
-    """Why `grant` does not apply to this request (`expired`, `unbound_session`, `other_session`), or
-    None when it does."""
+    """Why `grant` does not apply to this request (`too_broad`, `expired`, `unbound_session`,
+    `other_session`), or None when it does."""
+    if grant.kind == "destination" and not destination_ok(grant.pattern):
+        return "too_broad"
     if grant.expires_at is not None and _aware(grant.expires_at) <= _aware(planir.sent_at):
         return "expired"
     if grant.scope is GrantScope.SESSION:
@@ -161,14 +177,70 @@ def _aware(t: datetime) -> datetime:
     return t if t.tzinfo is not None else t.replace(tzinfo=UTC)
 
 
-#: What is left of a pattern once its glob characters, separators and home markers are removed;
-#: nothing left means the pattern matches everything (`*@*`, `#*` and `*:*` included).
-_NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
+#: Characters that are never the literal part of a pattern: glob characters and separators.
+_NOT_LITERAL_CHARS = frozenset("*?/~.@:#_-")
 
 
 def over_broad(pattern: str) -> bool:
-    """`*`, `?*`, `[a-z]*`, `*.*`, `/`, `/*`, `~/*`, `* *`, `*@*` and the like: nothing literal."""
-    return _NOT_LITERAL.sub("", pattern) == ""
+    """`*`, `?*`, `[a-z]*`, `*.*`, `/`, `/*`, `~/*`, `* *`, `*@*` and the like: nothing literal once glob
+    characters, `[...]` sets, separators, whitespace and `$HOME` are left out (`*@*`, `#*` and `*:*`
+    included). One pass, in time linear in the pattern."""
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "[":
+            j = pattern.find("]", i + 1)
+            if j < 0:
+                return False  # a `[` that no `]` closes is literal
+            i = j + 1
+        elif pattern.startswith("$HOME", i):
+            i += 5
+        elif c in _NOT_LITERAL_CHARS or c.isspace():
+            i += 1
+        else:
+            return False
+    return True
+
+
+_GLOB_CHARS = re.compile(r"[*?\[\]]")
+#: A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme.
+_PLATFORM_PREFIX = re.compile(r"[a-z][a-z0-9_-]*:(?!//)")
+
+
+#: Names that never resolve on the public internet (local networks, reserved for tests and examples): a
+#: wildcard over one reaches no one else's server.
+PRIVATE_USE = frozenset(
+    {"lan", "local", "internal", "localhost", "home.arpa", "test", "example", "invalid"}
+)
+
+
+def host_glob_ok(host: str) -> bool:
+    """A host (or mail domain) pattern with no wildcard, or `*.` and one registrable domain, or `*.` and
+    a private-use name (`*.lan`, `*.internal`)."""
+    host = host.strip().lower().rstrip(".")
+    if not _GLOB_CHARS.search(host):
+        return True
+    return host.startswith("*.") and (host[2:] in PRIVATE_USE or host_pattern_ok(host))
+
+
+def destination_ok(pattern: str) -> bool:
+    """A destination pattern that is not too broad (see the module notes): something literal, and a
+    wildcard that can reach a host or a mail domain only as `*.` and one registrable domain. A channel's
+    name or id after a platform prefix or `#`, and the name before an `@`, may hold one."""
+    pat = pattern.strip().lower()
+    if over_broad(pat):
+        return False
+    if not _GLOB_CHARS.search(pat):
+        return True
+    prefix = _PLATFORM_PREFIX.match(pat)
+    rest = pat[prefix.end() :] if prefix else pat
+    if rest.startswith("#"):
+        return True
+    if "@" in rest:
+        return host_glob_ok(rest.rpartition("@")[2])
+    if prefix and "." not in rest:
+        return True  # a channel's name or id: `slack:C0B*`, `channel:ops-*`
+    return host_glob_ok(rest)
 
 
 def sends_off_host(call: CanonicalCall, pending: Iterable[Entity]) -> bool:
@@ -265,6 +337,11 @@ def _destination(pat: str, entity: Entity, host_os: OS, platform: str | None = N
     if platform and sep and rest and head == platform.strip().lower():
         if _destination(rest, entity, host_os):
             return True
+    reaches_host = entity.kind is EntityKind.HOST or (
+        entity.kind is EntityKind.RECIPIENT and "@" in entity.value
+    )
+    if reaches_host and not host_glob_ok(pat.rpartition("@")[2]):
+        return False  # a wildcard over hosts of many owners
     value = entity.value.lower()
     if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
         value = value.split("@", 1)[1]
@@ -295,9 +372,6 @@ def _provider(pat: str, entity: Entity, host_os: OS) -> bool:
     if pat.endswith("/"):
         return value.startswith(pat)
     return fnmatch.fnmatch(value, pat)
-
-
-_GLOB_CHARS = re.compile(r"[*?\[\]]")
 
 
 def _repo(pat: str, entity: Entity, host_os: OS) -> bool:
@@ -335,12 +409,12 @@ def grant_matches(
 ) -> bool:
     """Does a grant of `kind` with `pattern` cover `entity` on a `host_os` host, before scope, expiry
     and `allows`? `platform` is the chat platform the send names in its own argument, if any. Over-broad
-    patterns never match."""
+    patterns, and destination patterns that are too broad (`destination_ok`), never match."""
     spec = GRANT_KINDS.get(kind)
     matcher = _ENTITY_MATCHERS.get(kind)
     if spec is None or matcher is None or entity.kind not in spec.entity_kinds:
         return False
-    if over_broad(pattern):
+    if over_broad(pattern) or (kind == "destination" and not destination_ok(pattern)):
         return False
     if matcher is _destination:
         return _destination(pattern.strip(), entity, OS(host_os), platform)

