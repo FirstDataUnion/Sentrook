@@ -2609,5 +2609,24 @@
       "allow always": "allowed from {source} until {until}, used {used} times: {tool}: {description}",
       "deny": "denied from {source} until {until}: {tool}: {description}"
     }
+  },
+  "run_group": {
+    "_comment": "One notice per cron run: the end line listing a run's other held calls, and the replies to allow <lead> all (both plugins).",
+    "head": "Sentrook: the run of cron job {job} that held {lead} also held {n} other call(s); none of them ran:",
+    "item": "- {id}: {tool}: {description}{own}",
+    "own_answer": " (it sends or writes: answer it on its own)",
+    "all": "Let {lead} and the calls listed here through once, in one new run of the job: {allow} {lead} all",
+    "each": "Or answer each by its id: {allow} <id>, {deny} <id>. For the reasons: {why} <id>",
+    "covered": "In that run, these listed calls may also go through once: {ids}.",
+    "left": "Not covered, answer each on its own: {ids}.",
+    "none_listed": "No other call of this run has been listed yet, so this answers {lead} alone.",
+    "not_lead": "{id} is one of the calls held in the run that {lead} leads: answer it on its own id, or all of them with {allow} {lead} all."
+  },
+  "where_subagent": {
+    "_comment": "A held call from a sub-agent of a cron run (both plugins).",
+    "job_id": "9f1c2a",
+    "job_name": "daily-brief",
+    "session_ref": "s_0a1b2c3d4e5f",
+    "text": "a sub-agent of cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f"
   }
 }

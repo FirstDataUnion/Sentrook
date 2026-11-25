@@ -33,7 +33,11 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   `/sentrook-allow <id> always` lets the job make it for 30 days; `/sentrook-deny <id>` refuses the job the same call for 30 days. Off a cron job, the answers bind to where the run came from (a heartbeat's agent, a subagent's parent session) and nothing is started; a run with no such source (a webhook) offers only `/sentrook-allow`, for the exact call. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `/sentrook-why <id>` shows the grant Sentrook suggests, and `/sentrook-passes` lists what the answers set. A hold nobody
-  answers expires after 7 days. The owner gets one notice as a direct message on the chat where they ran `/sentrook-notify here`; until then, nothing is sent and the call is still held.
+  answers expires after 7 days. A cron job's sub-agents belong to the job: their held calls are the job's, and the
+  job's answers cover them. The owner gets one notice per run: the run's first held call sends it, and when the run
+  ends one line lists the run's other held calls; `/sentrook-allow <id> all`, on the id that line names, lets the listed
+  calls through once too in one new run, except calls that send or write, which are answered on their own.
+  The owner gets one notice as a direct message on the chat where they ran `/sentrook-notify here`; until then, nothing is sent and the call is still held.
 - **A declined call.** When the owner has denied a held call for a job, that job's same call is refused with "The
   owner declined this action for this job". Continue without it; do not retry it another way.
 - **A background-save notice.** OpenClaw saves skills and memory on its own (the Skill Workshop review, the memory flush, the skill collection review), with nobody there to answer a prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a save it would review is let through, saved as a Skill Workshop draft for the owner, or held; a blocked one is not saved. A notice where held-call notices go says which.
@@ -60,7 +64,7 @@ owner type it.
 - `/sentrook-revoke <id>`: removes a grant set by command.
 - `/sentrook-bind add|remove|list [channel]`: lists, adds or removes a channel binding: a channel this deployment normally delivers to.
 - `/sentrook-snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook enforces or unattended runs; `off` ends it.
-- `/sentrook-allow <id> [now|later|always]`: answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: runs the cron job again now and lets the call through once in that run (`now`: even when the held run had already sent or written something; `later`: on the job's next scheduled run instead), or with `always` for 30 days on that job, where the notice offers it; Sentrook never runs the held call itself.
+- `/sentrook-allow <id> [now|later|always|all]`: answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: runs the cron job again now and lets the call through once in that run (`now`: even when the held run had already sent or written something; `later`: on the job's next scheduled run instead), or with `always` for 30 days on that job, where the notice offers it; `all`, on the id a run's end line names, also lets the calls that line listed through once in that run; Sentrook never runs the held call itself.
 - `/sentrook-deny <id>`: refuses a call held on a cron job, or on another run with a source, by the id in Sentrook's notice: that job or source is refused the same call for 30 days, with no more notices.
 - `/sentrook-approve <id>`: the same as allow (kept for one release).
 - `/sentrook-passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
