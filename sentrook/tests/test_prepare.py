@@ -1219,6 +1219,12 @@ def test_a_project_runner_names_no_package(command):
         ("pipx run black .", ["pypi:black"]),
         ("pipx run --spec black==24.1 black .", ["pypi:black"]),
         ("cd x && npx cowsay hi; uv run pytest", ["npm:cowsay"]),
+        # The command a runner runs may itself install or fetch.
+        ("uv run pip install requests", ["pypi:requests"]),
+        ("poetry run pip install requests", ["pypi:requests"]),
+        ("uv run -- pip install requests", ["pypi:requests"]),
+        ("uv run python -m pip install requests", ["pypi:requests"]),
+        ("uv run npx cowsay hi", ["npm:cowsay"]),
         # Installers keep reading every operand.
         ("pip install foo", ["pypi:foo"]),
         ("pip install foo bar==2", ["pypi:foo", "pypi:bar"]),
@@ -1249,6 +1255,11 @@ def test_a_project_runner_names_no_package(command):
         "pipx-run",
         "pipx-run-spec",
         "segments",
+        "uv-run-pip-install",
+        "poetry-run-pip-install",
+        "uv-run-dashdash-pip-install",
+        "uv-run-python-m-pip-install",
+        "uv-run-npx",
         "pip-install",
         "pip-install-many",
         "npm-install",
@@ -1277,6 +1288,12 @@ def test_a_fetcher_registry_option_is_an_index(command, indexes):
     from sentrook.prepare.entities import _installs_in
 
     assert _installs_in(command)[2] == indexes
+
+
+def test_uv_run_with_editable_is_a_local_operand():
+    from sentrook.prepare.entities import _installs_in
+
+    assert _installs_in("uv run --with-editable ./lib python x.py") == ([], ["./lib"], [])
 
 
 def test_a_fetched_package_computed_by_the_shell_is_one_computed_package():
