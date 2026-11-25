@@ -91,19 +91,23 @@ test("nothing from a call but names", () => {
   }
 });
 
+/** The report's words, split on spaces, quotes, backticks and punctuation around names: a host is absent when no
+ * word is exactly that host. */
+const words = (s: string): Set<string> => new Set(s.split(/[\s`"'(),:;]+/));
+
 test("only owner-approved reviews from the owner's own message count", () => {
   const t = text(30);
   // Nine reviews of evil.example: denied, timed out, unanswered or from a group chat.
   assert.ok(!t.includes("`evil.example`"));
   // Approved three times, in a session where the scanner flagged exposure.
-  assert.doesNotMatch(t, /^reports\.example\.com$/);
+  assert.ok(!words(t).has("reports.example.com"));
   assert.ok(t.includes('"send_email": 3 reviews'));
   for (const name of ["GROUP_ONLY_TOKEN", "EXPOSED_API_KEY", "GRANTED_API_KEY", "FILE_ONLY_TOKEN"]) assert.ok(!t.includes(name), name);
 });
 
 test("a broader pattern does not inherit a narrower suggestion's count", () => {
   const t = text();
-  assert.doesNotMatch(t, /\*\.example\.com/);
+  assert.ok(!words(t).has("*.example.com"));
   assert.ok(t.includes("destination `api.example.com`: 3 reviews"));
 });
 
