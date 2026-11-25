@@ -821,7 +821,7 @@ def answer(
     record: Record,
     run_now: RunNow | None = None,
 ) -> str:
-    """`allow <id> [now|later|always]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers,
+    """`allow <id> [now|later|always|all]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers,
     removes the hold and records the answer; the reply says what was set and how to undo it. On a cron job's hold,
     `allow` also starts the job again now through `run_now` unless a guard applies (see the module note)."""
     parsed = _parse(verb, rest)
@@ -829,7 +829,7 @@ def answer(
         form = {
             "deny": f"{cmd('deny')} <id>",
             "approve": f"{cmd('approve')} <id>",
-        }.get(verb, f"{cmd('allow')} <id> [now|later|always]")
+        }.get(verb, f"{cmd('allow')} <id> [now|later|always|all]")
         return f"usage: {form}, with the id from Sentrook's notice (h- and 6 hex digits)"
     hid, want, mode = parsed
     #: Whether this answer starts the job again now, else why not (None: not asked to, `later` or not a job).

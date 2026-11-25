@@ -33,7 +33,11 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   `{{cmd allow}} <id> always` lets the job make it for 30 days; `{{cmd deny}} <id>` refuses the job the same call for 30 days. Off a cron job, the answers bind to where the run came from ({{run_sources}}) and nothing is started; a run with no such source ({{sourceless_runs}}) offers only `{{cmd allow}}`, for the exact call. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `{{cmd why}} <id>` shows the grant Sentrook suggests, and `{{cmd passes}}` lists what the answers set. A hold nobody
-  answers expires after 7 days. {{held_notice}}
+  answers expires after 7 days. A cron job's sub-agents belong to the job: their held calls are the job's, and the
+  job's answers cover them. The owner gets one notice per run: the run's first held call sends it, and when the run
+  ends one line lists the run's other held calls; `{{cmd allow}} <id> all`, on the id that line names, lets the listed
+  calls through once too in one new run, except calls that send or write, which are answered on their own.
+  {{held_notice}}
 - **A declined call.** When the owner has denied a held call for a job, that job's same call is refused with "The
   owner declined this action for this job". Continue without it; do not retry it another way.
 - **A background-save notice.** {{background_saves}}
