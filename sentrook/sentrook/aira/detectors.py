@@ -416,6 +416,10 @@ def _in_pipeline_tail(shape: ExecShape, index: int) -> bool:
 
 
 def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
+    if a.code_reach is not None and not a.code_reach.network:
+        # A program that reaches no network sink: a URL or a quoted `curl -X POST …` in its strings is
+        # text it holds, not a send.
+        return []
     sinks: list[Sink] = []
     shape = a.shape
     dests = a.destination_hosts()

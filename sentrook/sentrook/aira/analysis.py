@@ -19,11 +19,13 @@ from typing import Any
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ToolKind
 from ..prepare import Prepared
+from ..prepare.code_reach import CodeReach
 from ..prepare.entities import (
     Entity,
     EntityKind,
     Found,
     Role,
+    call_code_reach,
     display_path,
     extract_call,
     extract_exec,
@@ -83,6 +85,8 @@ class CallAnalysis:
     decoded_shape: ExecShape | None
     #: True for Hermes `execute_code` and similar: `command` is interpreter source, not shell.
     inline_code: bool
+    #: What that program can reach on the network, when it was read as Python (`prepare.code_reach`).
+    code_reach: CodeReach | None
     heads: set[str]
     paths: list[PathRef]
     #: Path groups referenced anywhere in the text (URLs removed), including bare basenames.
@@ -120,7 +124,11 @@ class CallAnalysis:
 
     def destination_hosts(self) -> list[EntityRef]:
         dest = [h for h in self.hosts if Role.DATA_DESTINATION in h.roles]
-        return dest or list(self.hosts)
+        if dest:
+            return dest
+        if self.code_reach is not None and not self.code_reach.network:
+            return []  # a program with no network sink sends nowhere; the hosts it writes are mentions
+        return list(self.hosts)
 
     def segment_texts(self) -> list[str]:
         """One line per parsed segment (`head arg …`), or the whole normalised command when the
@@ -188,10 +196,15 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
 
     # Entities with roles, from the same extractor preparation used (so values match the table).
     found: list[Found] = list(extract_call(call, home=home, workspace_root=ws))
+    code_reach = call_code_reach(call) if inline_code else None
     if command and normalised != text:
         decoded_cmd = normalise_text(command)
         if decoded_cmd != command:
-            found.extend(extract_exec(decoded_cmd, home=home, workspace_root=ws, cwd=cwd_raw))
+            found.extend(
+                extract_exec(
+                    decoded_cmd, home=home, workspace_root=ws, cwd=cwd_raw, reach=code_reach
+                )
+            )
     if inline_code and command:
         found.extend(
             extract_mentions(command, home=home, workspace_root=ws, role=None, inline_program=True)
@@ -294,6 +307,7 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
         shape=shape,
         decoded_shape=decoded_shape,
         inline_code=inline_code,
+        code_reach=code_reach,
         heads=heads,
         paths=list(paths.values()),
         text_groups=text_groups,

@@ -42,6 +42,7 @@ CEILING = 3.0
 #: The scanner's results cached per text: cleared before every timed run, or a second run of the same
 #: size would be a cache hit and the growth check would not time that work.
 TEXT_CACHES = (
+    "sentrook.prepare.code_reach.python_reach",
     "sentrook.prepare.entities._segments_of",
     "sentrook.prepare.views._protected_spans",
     "sentrook.prepare.views._secret_spans",

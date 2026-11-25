@@ -30,6 +30,7 @@ from ..aira.stage_programs import stage_runs_stdin
 from ..oracle.client import fold_pypi_name
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ProviderKind, ToolKind
+from .code_reach import CodeReach, python_reach
 
 
 class EntityKind(StrEnum):
@@ -1993,12 +1994,23 @@ def extract_exec(
     workspace_root: str | None,
     cwd: str | None,
     inline_program: bool = False,
+    reach: CodeReach | None = None,
 ) -> list[Found]:
     """Entities a shell command touches, with roles from the command's shape. A host the command
     fetches a file from and then runs that file (or clones and builds) is a code source, whatever
-    else the command does. `inline_program` marks the command as program source (see `_hosts_in`)."""
+    else the command does. `inline_program` marks the command as program source (see `_hosts_in`).
+
+    `reach` is what the program can reach when it was read as code (`code_reach.python_reach`): a host or
+    address it only writes in a string, with no network sink to act on it, is mentioned; with request
+    targets known, a host that is not one of them (a URL in the body) is mentioned too."""
     found: list[Found] = []
     egress = bool(_EGRESS_MARKERS.search(command))
+    if reach is not None and not reach.network:
+        egress = False
+    #: The only hosts the program can send to, when that is known; any other host it names is mentioned.
+    targets: frozenset[str] | None = None
+    if reach is not None:
+        targets = frozenset() if not reach.network else reach.targets
     to_interpreter = pipes_into_code(command, inline_program=inline_program)
     code_hosts, run_files = fetched_then_run(
         command, home=home, workspace_root=workspace_root, cwd=cwd
@@ -2006,7 +2018,16 @@ def extract_exec(
     published = set() if inline_program else publish_targets(command)
 
     named = _hosts_in(command, inline_program=inline_program)
+    if targets:
+        targets = frozenset(normalise_host(t) for t in targets)
+        if not targets <= set(named):
+            targets = (
+                None  # a target the host scan spells differently: keep every host a destination
+            )
     for h in named + sorted(published - set(named)):
+        if targets is not None and h not in targets:
+            found.append(Found(EntityKind.HOST, h, h, Role.MENTIONED))
+            continue
         if h in ("localhost",):
             role = Role.DATA_SOURCE
         elif h in code_hosts:
@@ -2278,6 +2299,14 @@ def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
     return out
 
 
+def call_code_reach(call: CanonicalCall) -> CodeReach | None:
+    """What a code tool's program can reach (`code_reach.python_reach`), for a Python program; None for a
+    shell command, another language or a program that does not parse."""
+    if call.tool_kind is not ToolKind.EXEC or call.get("interpreter") != "python":
+        return None
+    return python_reach(call.command or "")
+
+
 def extract_call(
     call: CanonicalCall, *, home: str | None, workspace_root: str | None
 ) -> list[Found]:
@@ -2299,9 +2328,15 @@ def _extract_call(
     if kind is ToolKind.EXEC:
         cmd = call.command or ""
         inline = bool(call.get("interpreter"))
+        reach = call_code_reach(call)
         found.extend(
             extract_exec(
-                cmd, home=home, workspace_root=workspace_root, cwd=cwd, inline_program=inline
+                cmd,
+                home=home,
+                workspace_root=workspace_root,
+                cwd=cwd,
+                inline_program=inline,
+                reach=reach,
             )
         )
         decoded = call.analysis_text
@@ -2313,6 +2348,7 @@ def _extract_call(
                     workspace_root=workspace_root,
                     cwd=cwd,
                     inline_program=inline,
+                    reach=reach,
                 )
             )
         if cwd:
