@@ -304,10 +304,12 @@ def add(
     who: dict[str, Any],
     now: datetime,
     run_bound: bool = False,
+    run_with: str | None = None,
 ) -> dict[str, Any] | None:
     """Stores a pass (`kind` allow) or denial (`deny`) set from `hold`; returns the entry, or None when the file
     cannot be read. `uses`: `once` or `standing`. `run_bound`: a one-use pass for a run the plugin is about to start,
-    with its record in `runs`. Called with the holds file locked."""
+    with its record in `runs`. `run_with`: a one-use pass that serves only the run started for the run-bound pass
+    with that id (`allow <lead> all`), and ends with it. Called with the holds file locked."""
     store = Store(state_dir)
     with _LOCK, file_lock(_path(state_dir)):
         data = store.load_passes()
@@ -342,6 +344,8 @@ def add(
             "use_count": 0,
             "last_used_at": None,
         }
+        if run_with:
+            entry["run_with"] = run_with
         data["runs"] = _live_runs(data, now)
         if run_bound:
             # an earlier started run of the job whose end was never seen must not capture this one
@@ -423,6 +427,8 @@ def not_started(state_dir: Path, pid: str) -> None:
         for p in data.get("passes") or []:
             if isinstance(p, dict) and p.get("id") == pid:
                 p.pop("run_bound", None)
+            if isinstance(p, dict) and p.get("run_with") == pid:
+                p.pop("run_with", None)
 
     _change_run(state_dir, pid, change)
 
@@ -500,12 +506,19 @@ def note(state_dir: Path, pid: str, *, passed: bool = False, held: str | None = 
 
 
 def _end(data: dict[str, Any], rec: dict[str, Any]) -> None:
-    """Marks a started run ended and drops its pass if the run did not use it."""
+    """Marks a started run ended and drops its passes the run did not use: its own and those set to go with it
+    (`run_with`)."""
     rec["ended"] = True
     data["passes"] = [
         p
         for p in data.get("passes") or []
-        if not (isinstance(p, dict) and p.get("id") == rec.get("id") and p.get("run_bound"))
+        if not (
+            isinstance(p, dict)
+            and (
+                (p.get("id") == rec.get("id") and p.get("run_bound"))
+                or (rec.get("id") and p.get("run_with") == rec.get("id"))
+            )
+        )
     ]
 
 
@@ -575,6 +588,7 @@ def check(
             and p["match"].get("key") == match.get("key")
             # a pass bound to a run the plugin started serves that run only
             and (not p.get("run_bound") or (in_run is not None and p.get("id") == in_run))
+            and (not p.get("run_with") or (in_run is not None and p.get("run_with") == in_run))
         ]
         hit = next((p for p in same if p["kind"] == "deny" and ref is not None), None)
         if hit is None and session_allow.eligible(resp):

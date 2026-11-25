@@ -22,6 +22,7 @@ CATEGORY = {
     "terminal": "runs_code_or_installer",
     "web_extract": "fetches_remote_content",
     "read_file": "reads_local_data",
+    "execute_code": "runs_code_or_installer",
     "send_message": "sends_data_off_host",
 }
 
@@ -163,3 +164,82 @@ def test_a_sub_agent_of_the_run_joins_the_runs_group(h):
     assert out == HELD
     assert {x["id"]: x for x in holds(h)}[rec["hold"]["id"]]["lead"] == lead_rec["hold"]["id"]
     assert len(notices(h)) == 1
+
+
+# ---- review findings ----------------------------------------------------------------------------------------------
+
+
+def test_calls_of_a_lead_answered_before_the_end_line_are_still_listed(h):
+    lead, second, third = three_holds(h)
+    slash(h, f"deny {lead}")
+    end_run(h, 1)
+    line = notices(h)[-1]
+    assert line.splitlines()[0] == GROUP["head"].format(job="job-j", n=2, lead=lead)
+    assert f"- {second}: " in line and f"- {third}: " in line
+    assert GROUP["all"].format(allow="/sentrook allow", lead=lead) not in line, (
+        "nothing leads them now"
+    )
+
+
+def test_passes_from_all_serve_only_the_started_run(h):
+    lead, second, _third = three_holds(h)
+    end_run(h, 1)
+    slash(h, f"allow {lead} all")
+    passes_now = {
+        p["hold_id"]: p for p in __import__("plugin").passes.load(h.dir / "sentrook")["passes"]
+    }
+    assert passes_now[second]["run_with"] == passes_now[lead]["id"]
+    # the started run makes only the lead's call and ends: the listed call's pass ends with it
+    later = datetime.now(UTC) + timedelta(seconds=5)
+    out, _rec = call(h, 2, "terminal", "c0", started_at=later)
+    assert out is None
+    end_run(h, 2, started_at=later)
+    out, rec = call(h, 3, "web_extract", "c1", started_at=later + timedelta(seconds=5))
+    assert out == HELD, "a later run does not get a pass meant for the started run"
+
+
+def test_all_waits_for_the_next_run_when_a_listed_call_came_after_the_run_acted(h):
+    lead, _rec = call(h, 1, "terminal", "c0")[1]["hold"]["id"], None
+    # the run sends something that is allowed, then holds another call
+    h.reply = {
+        "risk": 10,
+        "enforced": None,
+        "tool_description": {"category": "sends_data_off_host"},
+    }
+    sid = {"session_id": "cron-job-j-1", "task_id": "cron-job-j-1"}
+    in_run(h, 1)
+    assert (
+        h.ctx.hooks["pre_tool_call"](
+            tool_name="send_message",
+            args={"action": "send", "target": "discord:#ops-reports", "message": "x"},
+            tool_call_id="cs",
+            turn_id="t-cron-job-j-1",
+            **sid,
+        )
+        is None
+    )
+    out, rec = call(h, 1, "web_extract", "c1")
+    assert out == HELD
+    end_run(h, 1)
+    reply = slash(h, f"allow {lead} all")
+    assert h.started == [], (
+        "a listed call came after the run sent something: nothing is started now"
+    )
+    assert "next" in reply
+
+
+def test_a_late_call_of_an_earlier_run_does_not_close_the_current_runs_group(h):
+    # times kept to whole seconds, as the holds file keeps them: run 1 started well before run 2
+    t1 = datetime.now(UTC) - timedelta(seconds=60)
+    t2 = t1 + timedelta(seconds=30)
+    call(h, 1, "read_file", "c9", started_at=t1)
+    end_run(h, 1, started_at=t1)
+    lead2 = call(h, 2, "terminal", "c0", started_at=t2)[1]["hold"]["id"]
+    call(h, 2, "web_extract", "c1", started_at=t2)
+    before = len(notices(h))
+    # a sub-agent of run 1 holds late, while run 2 is still going
+    out, _rec = call(h, 1, "execute_code", "c7", started_at=t1)
+    assert out == HELD
+    assert not any(GROUP["head"].split("{")[0] in n and lead2 in n for n in notices(h)[before:])
+    end_run(h, 2, started_at=t2)
+    assert notices(h)[-1].splitlines()[0] == GROUP["head"].format(job="job-j", n=1, lead=lead2)

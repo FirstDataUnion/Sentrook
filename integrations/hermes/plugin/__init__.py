@@ -372,9 +372,17 @@ def on_pre_llm_call(**kw: Any) -> None:
             if not background:
                 # The cron run this session serves, or (a delegated child) the one its parent serves, for holds and
                 # passes of the job (`_inherited_run`).
-                run_rec = _cron_record() or _inherited_run(store, s, kw.get("parent_session_id"))
-                if run_rec is not None:
-                    s["cron"] = run_rec
+                parent_id = kw.get("parent_session_id")
+                own_rec = _cron_record()
+                if own_rec is not None:
+                    s["cron"] = {**own_rec, "session": sid}
+                elif isinstance(parent_id, str) and parent_id.strip():
+                    run_rec = _inherited_run(store, s, parent_id)
+                    if run_rec is not None:
+                        s["cron"] = run_rec
+                else:
+                    # a turn that is neither a cron run nor a delegated child: no run to pass on
+                    s.pop("cron", None)
                 # Without a turn id, calls that name none must not fall back to the previous turn.
                 s["last_turn_id"] = turn_id or None
                 # Only a turn whose request was stored can be carried later.
@@ -590,7 +598,10 @@ def _scan_one(
     # The cron run this call belongs to: kept on the run's own session, so its sub-agents find it (`_inherited_run`).
     own_run = _cron_record()
     if own_run is not None:
-        sess["cron"] = own_run
+        sess["cron"] = {**own_run, "session": sid}
+    elif not built["subagent"]:
+        # not a cron run now (a resumed cron session, say): its sub-agents must not take an old run
+        sess.pop("cron", None)
     built["job_run"] = (
         _inherited_run(store, sess, turn.get("parent_session_id"))
         if own_run is None and built["subagent"]
@@ -824,7 +835,7 @@ def _scan_one(
                     job_id=job_id,
                     source=source,
                     match=match,
-                    acted=_acted(sess),
+                    acted=_acted(sess) or _run_acted(store, built),
                 )
                 if rerun is not None and held.get("id"):
                     _note_rerun(cfg, rerun["id"], held=str(held["id"]))
@@ -1322,7 +1333,7 @@ def _inherited_run(store: Store, sess: dict[str, Any], parent_id: Any) -> dict[s
     rec = store.load_session(parent_id).get("cron")
     if not isinstance(rec, dict) or not isinstance(rec.get("job_id"), str) or not rec["job_id"]:
         return None
-    return {k: rec.get(k) for k in ("job_id", "job_name", "run_key", "started_at")}
+    return {k: rec.get(k) for k in ("job_id", "job_name", "run_key", "started_at", "session")}
 
 
 def _run_identity(built: dict[str, Any]) -> tuple[str | None, str | None, datetime | None]:
@@ -1342,6 +1353,19 @@ def _run_identity(built: dict[str, Any]) -> tuple[str | None, str | None, dateti
         except ValueError:
             at = None
     return str(rec["job_id"]), rec.get("run_key"), at
+
+
+def _run_acted(store: Store, built: dict[str, Any]) -> bool:
+    """For a sub-agent of a cron run: whether the run's own session had already sent or written something (`_acted`),
+    so `allow` does not start the job again and repeat it."""
+    rec = built.get("job_run")
+    sid = rec.get("session") if isinstance(rec, dict) else None
+    if not isinstance(sid, str) or not sid:
+        return False
+    try:
+        return _acted(store.load_session(sid))
+    except Exception:  # noqa: BLE001 - not known: treated as not acted, as for the run's own calls
+        return False
 
 
 def _acted(sess: dict[str, Any]) -> bool:
@@ -1426,9 +1450,9 @@ def _end_lines(cfg: PluginConfig, ref: str | None, key: str | None, now: datetim
     if not groups:
         return
     target, why = _notice_target(cfg)
-    for lead, members in groups:
+    for lead, members, can_all in groups:
         if target:
-            _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD))
+            _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD, can_all))
         else:
             logger.warning("sentrook run ended with held calls but sent no end line: %s", why)
         _state(cfg)[1].write(
@@ -1866,10 +1890,10 @@ def _hold(
     if job_id and target:
         # an earlier run of the job that ended where the plugin could not see it: its end line goes out first
         try:
-            for lead, members in hold.stale_groups(
-                cfg.state_dir, passes.job_ref(job_id), run_key, now
+            for lead, members, can_all in hold.stale_groups(
+                cfg.state_dir, passes.job_ref(job_id), run_key, _run_identity(built)[2], now
             ):
-                _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD))
+                _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD, can_all))
         except Exception as exc:  # noqa: BLE001 - those holds stay listed in status
             logger.warning("sentrook could not send an earlier run's end line: %s", exc)
     group: dict[str, Any] = {}

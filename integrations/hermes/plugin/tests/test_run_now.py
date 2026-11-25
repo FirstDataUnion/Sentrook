@@ -627,3 +627,27 @@ def test_allow_on_a_sub_agents_hold_starts_the_job_and_its_sub_agent_passes_once
     assert out is None and rec["decision"] == "allowed_by_pass"
     out, rec = child_call(h, 3, started_at=datetime.now(UTC) + timedelta(seconds=10))
     assert out == HELD, "the pass was used up in the started run"
+
+
+def test_allow_on_a_sub_agents_hold_waits_when_the_run_had_already_sent(h):
+    # the cron run's own session sends something that is allowed, then a sub-agent's call is held
+    parent = "cron-job-j-1"
+    in_run(h, 1)
+    turn(h, sid={"session_id": parent, "task_id": parent})
+    h.reply = {"risk": 10, "enforced": None}
+    assert (
+        h.ctx.hooks["pre_tool_call"](
+            tool_name="send_message",
+            args={"action": "send", "target": "discord:#ops-reports", "message": "x"},
+            tool_call_id="cs",
+            turn_id=f"t-{parent}",
+            session_id=parent,
+            task_id=parent,
+        )
+        is None
+    )
+    h.reply = dict(NAMED)
+    out, rec = child_call(h, 1)
+    assert out == HELD
+    slash(h, f"allow {rec['hold']['id']}")
+    assert h.started == [], "the run had already sent something: allow waits for the next run"

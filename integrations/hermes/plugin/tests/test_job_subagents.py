@@ -200,3 +200,22 @@ def test_the_run_is_taken_from_hermes_metadata_never_from_text(h, monkeypatch):
     hold.wait_for_notices()
     assert out == HELD
     assert all(x["job_ref"] is None for x in holds(h))
+
+
+def test_a_resumed_cron_session_passes_no_job_to_its_sub_agents(h, monkeypatch):
+    monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: True)
+    run1 = cron_turn(h, 1)
+    # the same session later serves a turn that is not a cron run
+    on_job(h, None)
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t-later",
+        user_message="Something else.",
+        platform="discord",
+        sender_id="u1",
+        parent_session_id="",
+        session_id=run1,
+        task_id=run1,
+    )
+    out, _rec, _ = child_call(h, run1, 9)
+    assert out == HELD
+    assert all(x["job_ref"] is None for x in holds(h))
