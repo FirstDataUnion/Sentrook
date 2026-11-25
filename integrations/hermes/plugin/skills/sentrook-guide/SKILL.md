@@ -90,7 +90,7 @@ never about getting past a check: a call that needs the owner's review should st
   directory, then process it there. This is for fetching: when the task is to send local data out, send it plainly,
   in one call the owner can review.
 - **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
-  review. Not on an unattended run (cron jobs, subagents, webhooks, the API server), where nobody can answer and the call is held.
+  review. Not on an unattended run (cron jobs, webhooks, the API server, subagents of those), where nobody can answer and the call is held.
 - **Use one work directory** for a task's files and outputs.
 - **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
   name.
