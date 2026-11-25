@@ -15,7 +15,9 @@ by the plugin itself: the job runs again, and the one-use pass the answer set le
 - `start` runs `hermes cron run <job>` through Hermes's `hermes` launcher, as notices run `hermes send`
   (`hold._hermes_launcher`), in a process of its own that outlives the answer: Hermes 0.23 runs the whole job inside
   that command. It is pinned to this process's Hermes home and gets no cron delivery variables, as `hermes send` is.
-  A command that exits with an error within `EARLY_EXIT` seconds (Hermes refused the run) counts as not started.
+  What the command prints within `EARLY_EXIT` seconds decides (`_outcome`): Hermes refusing the run, or skipping it
+  because the job is being fired or is paused, counts as not started; a run that ran (even one that failed) counts as
+  started; a command still running counts as started.
   Without the launcher, or for a turn another profile's home is serving, Hermes's own `cron.jobs.trigger_job` marks
   the job due now for the scheduler's next tick. No extra prompt is ever given: the job runs as it is.
 """
@@ -26,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -183,6 +186,7 @@ def _with_launcher(launcher: str, job_id: str, log: Path) -> tuple[bool, str]:
     env["PYTHONIOENCODING"] = "utf-8"
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
+        before = log.stat().st_size if log.exists() else 0
         with log.open("ab") as out:
             proc = subprocess.Popen(  # noqa: S603 - Hermes's own launcher, fixed arguments
                 [launcher, "cron", "run", job_id],
@@ -199,24 +203,51 @@ def _with_launcher(launcher: str, job_id: str, log: Path) -> tuple[bool, str]:
         code = proc.wait(timeout=EARLY_EXIT)
     except subprocess.TimeoutExpired:
         code = None  # still running: the run is under way
-    if code:
-        return False, f"hermes cron run exit {code}: {hold._clean(_last_line(log), 200)}"
+    if code is not None:
+        started, why = _outcome(code, _output_since(log, before))
+        if not started:
+            return False, why
     _children[:] = [p for p in _children if p.poll() is None]
     _children.append(proc)
     threading.Thread(target=_reap, args=(proc,), name="sentrook-run-now", daemon=True).start()
     return True, ""
 
 
-def _last_line(log: Path) -> str:
+def _output_since(log: Path, offset: int) -> str:
+    """What this command wrote to the shared log (it is appended to from `offset`)."""
     try:
-        lines = [
-            ln
-            for ln in log.read_text(encoding="utf-8", errors="replace").splitlines()
-            if ln.strip()
-        ]
+        with log.open("rb") as f:
+            f.seek(offset)
+            return f.read(64 * 1024).decode("utf-8", errors="replace")
     except OSError:
         return ""
-    return lines[-1] if lines else ""
+
+
+#: `hermes cron run` output lines, as Hermes 0.23 prints them.
+_REFUSED = re.compile(r"Failed to run job|Job not found|not found", re.IGNORECASE)
+_BUSY = re.compile(r"already being fired|not run again", re.IGNORECASE)
+_PAUSED = re.compile(r"\b(paused|disabled)\b", re.IGNORECASE)
+_RAN = re.compile(
+    r"Ran now:|Running in background|next scheduler tick|Triggered job", re.IGNORECASE
+)
+
+
+def _outcome(code: int, out: str) -> tuple[bool, str]:
+    """(started, why not) for a `hermes cron run` that ended with exit `code` and printed `out`. A refusal is
+    `failed` with what Hermes said; a skipped run is the guard reason it matches (`running`, `paused`); a run that ran,
+    successful or not, started."""
+    last = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
+    if _REFUSED.search(out):
+        return False, f"hermes cron run exit {code}: {hold._clean(last, 200)}"
+    if _BUSY.search(out):
+        return False, "running"
+    if "Triggered job" in out and _PAUSED.search(out.split("Triggered job", 1)[1]):
+        return False, "paused"
+    if _RAN.search(out):
+        return True, ""
+    if code:
+        return False, f"hermes cron run exit {code}: {hold._clean(last, 200)}"
+    return True, ""
 
 
 def _in_process(job_id: str) -> tuple[bool, str]:

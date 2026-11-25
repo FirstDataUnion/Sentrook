@@ -474,24 +474,87 @@ def test_the_plugin_registers_the_run_end_hook(h):
     assert h.ctx.hooks["on_session_end"] is plugin.on_session_end
 
 
-def test_a_launcher_that_exits_with_an_error_at_once_did_not_start_the_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("code", "out", "want"),
+    [
+        (
+            1,
+            "Failed to run job: Job not found\n",
+            (False, "hermes cron run exit 1: Failed to run job: Job not found"),
+        ),
+        (
+            0,
+            "Triggered job: x (job-j)\n  Already being fired by the scheduler; not run again.\n",
+            (False, "running"),
+        ),
+        (0, "Triggered job: x (job-j)\n  Job is paused; not run.\n", (False, "paused")),
+        (1, "Triggered job: x (job-j)\n  Ran now: failed.\n", (True, "")),
+        (0, "Triggered job: x (job-j)\n  Ran now: succeeded.\n", (True, "")),
+        (2, "Traceback: boom\n", (False, "hermes cron run exit 2: Traceback: boom")),
+    ],
+    ids=["refused", "already being fired", "paused", "ran and failed", "ran", "crashed"],
+)
+def test_what_hermes_cron_run_printed_decides_whether_the_run_started(
+    tmp_path, monkeypatch, code, out, want
+):
+    """Hermes exits 0 for a skipped run and 1 for a run that ran and failed: the output decides."""
+
     class Popen:
         def __init__(self, argv, stdout=None, **kw):
-            stdout.write(b"Failed to run job: already being fired\n")
+            stdout.write(out.encode())
             stdout.flush()
 
         def wait(self, timeout=None):
-            return 1
+            return code
 
         def poll(self):
-            return 1
+            return code
 
+    (tmp_path / "run-now.log").write_text(
+        "Failed to run job: an earlier command\n"
+    )  # not this command's output
     monkeypatch.setattr(hold, "_hermes_launcher", lambda: FAKE_LAUNCHER)
     monkeypatch.setattr(hold, "_other_home", lambda: None)
     monkeypatch.setattr(run_now.subprocess, "Popen", Popen)
     ok, how, why = run_now.start("job-j", tmp_path)
-    assert (ok, how) == (False, "hermes cron run")
-    assert why == "hermes cron run exit 1: Failed to run job: already being fired"
+    assert (ok, why) == want and how == "hermes cron run"
+
+
+def test_a_skipped_run_is_the_replys_reason(h):
+    hid = held(h, 1)
+    h.start_result = (False, "hermes cron run", "running")
+    reply = slash(h, f"allow {hid}")
+    assert f"It was not run again now: {RUN_NOW['reasons']['running']}." in reply
+
+
+def test_a_job_unreadable_at_the_first_notice_stays_unknown_after_a_repeat(h):
+    (h.dir / "cron" / "jobs.json").write_text("{not json")
+    hid = held(h, 1)
+    write_jobs(h, [dict(JOB)])
+    _out, rec = call(h, 2)
+    assert rec["hold"]["repeat"] is True
+    reply = slash(h, f"allow {hid}")
+    assert f"It was not run again now: {RUN_NOW['reasons']['unknown']}." in reply
+    assert h.started == []
+
+
+def test_a_started_run_whose_end_was_never_seen_does_not_capture_a_later_one(h):
+    first = held(h, 1)
+    slash(h, f"allow {first}")
+    # the started run never reported its end; two hours later another answer starts the job again
+    data = json.loads((h.dir / "sentrook" / "passes.json").read_text())
+    for r in data["runs"]:
+        r["requested_at"] = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (h.dir / "sentrook" / "passes.json").write_text(json.dumps(data))
+    h.reply = {**NAMED, "entities": {"E1": {"kind": "channel", "display": "discord:#general"}}}
+    _out, rec = call(h, 3, target="discord:#general")
+    second = rec["hold"]["id"]
+    assert slash(h, f"allow {second}").startswith("Running job job-j again now")
+    runs = json.loads((h.dir / "sentrook" / "passes.json").read_text())["runs"]
+    assert [r["hold_id"] for r in runs if not r.get("ended")] == [second]
+    # the new started run uses the new answer's pass
+    out, rec = call(h, 4, target="discord:#general")
+    assert out is None and rec["decision"] == "allowed_by_pass"
 
 
 def test_two_holds_of_one_job_allowed_back_to_back_start_one_run(h):

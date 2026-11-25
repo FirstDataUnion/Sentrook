@@ -293,9 +293,8 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
     same.count = Number(same.count ?? 1) + 1;
     same.last_seen_at = iso(now);
     same.held = [...(Array.isArray(same.held) ? same.held : []), held].slice(-MAX_HELD);
-    // the job as it was at the first notice (an edit since still counts as a change), the latest run, and acted when
-    // any of its runs had
-    if (!same.job_digest) same.job_digest = hold.jobDigest ?? null;
+    // the job as it was at the first notice (unreadable then: unknown for good, so an edit since still counts as a
+    // change), the latest run, and acted when any of its runs had
     same.run_key = hold.runKey ?? null;
     same.acted = !!same.acted || !!hold.acted;
     store.saveHolds(data);
@@ -352,7 +351,7 @@ export const RUN_NOW_REASONS: Record<string, string> = {
   missing: "the job no longer exists",
   paused: "the job is paused",
   terminal: "the job has finished and is not scheduled to run again",
-  running: "the job is running now",
+  running: "the job is running now, or a run started for an earlier answer has not finished",
   changed: "the job was changed since the call was held",
   acted: "the held run had already sent or written something before this call, and a new run would do it again",
   unavailable: "Sentrook cannot start the job from here",
@@ -380,7 +379,7 @@ export const OUTCOMES: Record<string, string> = {
   held:
     "Sentrook: cron job {job} ran again but did not make the call you allowed; it made a different call, held " +
     "as {hold}.",
-  none: "Sentrook: cron job {job} ran again without using your answer: it did not make that call, or made it without needing a pass.",
+  none: "Sentrook: cron job {job} ran again without using your answer.",
 };
 
 /**

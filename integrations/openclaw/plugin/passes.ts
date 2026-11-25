@@ -358,6 +358,8 @@ export function add(
     };
     const runs = liveRuns(data, b.now);
     if (b.runBound) {
+      // an earlier started run of the job whose end was never seen must not capture this one
+      for (const old of runs) if (old.job_ref === (b.hold.job_ref ?? null) && !old.ended) endRun(data, old);
       entry.run_bound = true;
       runs.push({
         id,

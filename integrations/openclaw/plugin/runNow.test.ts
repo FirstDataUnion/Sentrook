@@ -550,3 +550,41 @@ test("a job edited after the first notice counts as changed, even after a repeat
   assert.ok(answer.includes(`It was not run again now: ${RUN_NOW.reasons.changed}.`), answer);
   assert.deepEqual(cliCalls(), []);
 });
+
+test("a job unreadable at the first notice stays unknown after a repeat", async () => {
+  const r = registered();
+  writeFileSync(path.join(dir, "state", "openclaw.sqlite"), "not a database");
+  const { out, rec } = await r.call(1);
+  assert.deepEqual(out, HELD);
+  const id = rec.hold.id;
+  // the store is back (a fresh one with the job)
+  const { rmSync } = await import("node:fs");
+  rmSync(path.join(dir, "state", "openclaw.sqlite"));
+  putJob();
+  const again = await r.call(2);
+  assert.equal(again.rec.hold.repeat, true);
+  const answer = await r.command("sentrook-allow", id);
+  assert.ok(answer.includes(`It was not run again now: ${RUN_NOW.reasons.unknown}.`), answer);
+  assert.deepEqual(cliCalls(), []);
+});
+
+test("a started run whose end was never seen does not capture a later one", async () => {
+  const { r, id } = await heldSend();
+  await r.command("sentrook-allow", id);
+  // two hours later, the first started run never reported: another answer starts the job again
+  const file = path.join(stateDir, "passes.json");
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  for (const rec of data.runs) rec.requested_at = new Date(Date.now() - 2 * 3600_000).toISOString().replace(/\.\d+Z$/, "Z");
+  writeFileSync(file, JSON.stringify(data));
+  writeFileSync(path.join(dir, "cli.out"), JSON.stringify({ ok: true, enqueued: true, runId: "cron-request.started-2" }));
+  receipt("held-run-3");
+  reply = { ...NAMED, entities: GENERAL };
+  const { rec } = await r.call(3, { target: "#general" });
+  finish("held-run-3");
+  assert.ok((await r.command("sentrook-allow", rec.hold.id)).startsWith("Running job job-j again now"));
+  assert.deepEqual(runsOf().filter((x: any) => !x.ended).map((x: any) => x.hold_id), [rec.hold.id]);
+  receipt("cron-request.started-2");
+  const later = await r.call(4, { target: "#general" });
+  assert.equal(later.out, undefined);
+  assert.equal(later.rec.decision, "allowed_by_pass");
+});

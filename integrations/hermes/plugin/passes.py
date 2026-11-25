@@ -277,6 +277,10 @@ def add(
         }
         data["runs"] = _live_runs(data, now)
         if run_bound:
+            # an earlier started run of the job whose end was never seen must not capture this one
+            for old in data["runs"]:
+                if old.get("job_ref") == hold.get("job_ref") and not old.get("ended"):
+                    _end(data, old)
             entry["run_bound"] = True
             data["runs"].append(
                 {
