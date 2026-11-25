@@ -50,6 +50,45 @@ const PROSE_CUES = "password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
  * `(token=X)`), so one secret gets one placeholder however the sentence around it goes on.
  */
 const VALUE_END = `[^\\s"'&,;<>\`\\\\.:!?)\\]]`;
+/**
+ * What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
+ * maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
+ * `&9x=1`), a word with more after it on its line, which is a command or a statement (`;curl${IFS}…`, `;npm publish`, `;next()`),
+ * a word with quotes or an escape inside it (`;cu''rl`, `;c\url`), or a command led by a symbol: a substitution or a
+ * variable (`;$(…)`, `;$SHELL`, `;${IFS}`), a subshell or a group (`;(…)`, `;{…}`), a path (`;./run.sh`, `;../bin/x`,
+ * `;/bin/sh`, `;~/x.sh`) or a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a
+ * digit, is part of the value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
+ */
+const SEPARATOR_ENDS =
+  String.raw`(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});` +
+  String.raw`|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]` +
+  String.raw`|[0-9][A-Za-z0-9_.\[\]%-]{0,40}=` +
+  String.raw`|[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|()<>` + "`" + String.raw`{]|\\t|\$[{(])` +
+  String.raw`|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])` +
+  String.raw`|\$[(A-Za-z_{]|[({]|\.\.?/|/[A-Za-z]|~/|(?<=;)#`;
+/**
+ * A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, `&&`
+ * or `;;`, or `SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
+ * (`password=<value>&<rest>`, `password=<value>,;<rest>`).
+ */
+const VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[&,;](?=[^\\s"'<>\`\\\\])(?!(?<=&)&|(?<=;);|${SEPARATOR_ENDS}))`;
+/**
+ * In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
+ * there, from its first character.
+ */
+const QUERY_VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[,;](?=[^\\s"'&<>\`\\\\])(?!(?<=;);|${SEPARATOR_ENDS}))`;
+/**
+ * The rest of a quoted value after its first character: in single quotes anything up to the closing quote; in double
+ * quotes, where a shell runs a command substitution, not `$(` (`password="<value>;$(…)"` keeps the command visible).
+ */
+const SQ_CHAR = `[^\\s"'<>\`\\\\]`;
+const DQ_CHAR = `(?:[^\\s"'<>\`\\\\$]|\\$(?!\\())`;
+/** Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value. */
+const NOT_A_PORT = `(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\\s"'&,;<>\`\\\\]))`;
+const QUERY_VALUE = new RegExp(
+  `[\\s\\S](?:${QUERY_VALUE_CHAR}{6,}${VALUE_END}|${QUERY_VALUE_CHAR}{5}${VALUE_END}(?=[.:!?)\\]]))`,
+  "y",
+);
 /** A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. */
 const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>\\\\]{5,199}[^\\s\"'`⟦⟧$<>\\\\.,;:!?)\\]])";
 /**
@@ -230,6 +269,18 @@ const bareValue = (v: string) =>
  * command-line value is what the command runs with, so the flag rules are not among them.
  */
 const STAND_IN_CHECKS = new Set<(v: string) => boolean>([unquotedKeyValue, textKeyValue, innerKeyValue, innerQuotedValue, statedValue]);
+/** The checks of the rules whose unquoted value may hold `&` (`VALUE_CHAR`). */
+const UNQUOTED_CHECKS = new Set<(v: string) => boolean>([unquotedKeyValue, innerKeyValue]);
+/**
+ * Where the value at `start`-`end` ends when its key, at `keyStart`, is in a link's query (follows `?`, `&` or `#`):
+ * at its first `&`. null when what is left is too short to be a value.
+ */
+const queryValueEnd = (text: string, keyStart: number, start: number, end: number): number | null => {
+  if (keyStart === 0 || !"?&#".includes(text[keyStart - 1]) || !text.slice(start, end).includes("&")) return end;
+  QUERY_VALUE.lastIndex = start;
+  const m = QUERY_VALUE.exec(text);
+  return m ? start + m[0].length : null;
+};
 
 /**
  * A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names (a path,
@@ -359,11 +410,12 @@ const SHAPES: Shape[] = [
   {
     // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     // Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
-    // escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside.
+    // escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside, and
+    // `&`, `,` and `;` end the value only where `VALUE_CHAR` says (`password=<value>&3` is one value).
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
-        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:[^\\s"'&,;<>\`\\\\]{6,}${VALUE_END}|[^\\s"'&,;<>\`\\\\]{5}${VALUE_END}(?=[.:!?)\\]])))`,
+        `${NOT_A_PORT}(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:${VALUE_CHAR}{6,}${VALUE_END}|${VALUE_CHAR}{5}${VALUE_END}(?=[.:!?)\\]])))`,
       "gi",
     ),
     group: "v",
@@ -371,11 +423,11 @@ const SHAPES: Shape[] = [
   },
   {
     // `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included,
-    // as in a JSON pair or under an object key.
+    // as in a JSON pair or under an object key, and so are `&`, `,` and `;` (`PASSWORD='a&b;c'`).
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
-        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'&,;<>\`\\\\]{7,})(?=\\\\?["'])`,
+        `${NOT_A_PORT}(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:(?<='.)${SQ_CHAR}{7,}|${DQ_CHAR}{7,}))(?=\\\\?["'])`,
       "gi",
     ),
     group: "v",
@@ -395,7 +447,7 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*` +
-        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.]${VALUE_CHAR}{6,}${VALUE_END})`,
       "g",
     ),
     group: "v",
@@ -407,7 +459,7 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
-        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.](?:(?<='.)${SQ_CHAR}{6,}${VALUE_END}|${DQ_CHAR}{6,}(?!\\$\\()${VALUE_END}))`,
       "g",
     ),
     group: "v",
@@ -694,7 +746,13 @@ function spansOf(text: string): Array<[number, number, string]> {
         const idx = m.indices?.groups?.[shape.group];
         // A quoted value cut short in docs: `"access_token": "ya29.a0..."`.
         if (idx && shape.check && STAND_IN_CHECKS.has(shape.check) && quotedStandIn(text, m.index, idx[0], idx[1])) continue;
-        if (idx && (!shape.check || shape.check(text.slice(idx[0], idx[1])))) spans.push([idx[0], idx[1], shape.kind]);
+        let end = idx ? idx[1] : 0;
+        if (idx && shape.check && UNQUOTED_CHECKS.has(shape.check)) {
+          const queryEnd = queryValueEnd(text, m.index, idx[0], idx[1]);
+          if (queryEnd === null) continue;
+          end = queryEnd;
+        }
+        if (idx && end > idx[0] && (!shape.check || shape.check(text.slice(idx[0], end)))) spans.push([idx[0], end, shape.kind]);
       } else {
         spans.push([m.index, m.index + m[0].length, shape.kind]);
       }
