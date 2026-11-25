@@ -6,8 +6,16 @@ from __future__ import annotations
 import re
 import time
 
+import linear_time
 import pytest
-from linear_time import ALWAYS_ENV, CEILING, TEXT_CACHES, assert_fast_or_linear
+from linear_time import (
+    ALWAYS_ENV,
+    CEILING,
+    FACTOR,
+    TEXT_CACHES,
+    assert_fast_or_linear,
+    assert_linear,
+)
 
 _QUADRATIC = re.compile(r"QQ\w*?z")  # each start scans to the end of a run of Q
 
@@ -58,6 +66,54 @@ def test_a_linear_run_far_over_its_bound_fails(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(AssertionError, match="however it grows"):
         assert_fast_or_linear(1.0, 0.01, _sleep_linear, "linear")
     assert CEILING == 3.0
+
+
+def _scripted(monkeypatch: pytest.MonkeyPatch, small: list[float], large: list[float]) -> list[int]:
+    """Timed runs report these seconds in order, quarter size from `small` and full size from `large`,
+    so a noisy reading can be replayed. Returns the divisor of every timed run, in order."""
+    times = {FACTOR: iter(small), 1: iter(large)}
+    calls: list[int] = []
+
+    def seconds(run, divisor: int) -> float:
+        calls.append(divisor)
+        return next(times[divisor])
+
+    monkeypatch.setattr(linear_time, "_seconds", seconds)
+    return calls
+
+
+def test_a_quadratic_run_read_once_under_the_limit_still_fails(monkeypatch: pytest.MonkeyPatch):
+    """16x growth whose first reading is 9x, both quarter-size runs slowed (a busy runner): the reading
+    is not clear enough to pass on, and the next ones show the real growth."""
+    _scripted(monkeypatch, small=[0.111, 0.111] + [0.0625] * 4, large=[1.0] * 5)
+    with pytest.raises(AssertionError, match="super-linear"):
+        assert_linear(lambda d: None, "quadratic")
+
+
+def test_a_linear_run_read_once_near_the_limit_passes(monkeypatch: pytest.MonkeyPatch):
+    """4x growth whose first reading is 9x (the full-size run slowed): measured again, and passes."""
+    calls = _scripted(monkeypatch, small=[0.25] * 3, large=[2.25, 1.0])
+    assert assert_linear(lambda d: None, "linear") == (0.25, 1.0)
+    assert calls == [FACTOR, 1, FACTOR, FACTOR, 1]
+
+
+@pytest.mark.parametrize(
+    "large", [0.8, 1.46]
+)  # linear 4x, and 7.3x as the slowest-growing scans read
+def test_a_clear_reading_passes_with_no_more_runs(monkeypatch: pytest.MonkeyPatch, large: float):
+    """Three timed runs, the quarter-size ones on either side of the full-size one, so one pause
+    cannot slow both."""
+    calls = _scripted(monkeypatch, small=[0.2, 0.2], large=[large])
+    assert_linear(lambda d: None, "linear")
+    assert calls == [FACTOR, 1, FACTOR]
+
+
+def test_growth_steadily_under_the_limit_passes_after_every_try(monkeypatch: pytest.MonkeyPatch):
+    """9x on every reading is not a clear pass, but it is under the limit: the extra runs change the
+    cost, not the verdict."""
+    calls = _scripted(monkeypatch, small=[0.1] * 6, large=[0.9] * 5)
+    assert_linear(lambda d: None, "capped")
+    assert len(calls) == 2 + 1 + 2 * (linear_time.ATTEMPTS - 1)
 
 
 def test_every_cache_on_a_text_is_cleared_between_timed_runs():
