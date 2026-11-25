@@ -4,7 +4,9 @@ A URL or a quoted shell command inside a string literal (`"curl -X POST https://
 code holds. It names a destination only when the code reaches a network sink that could act on it: an
 HTTP library, a socket, a subprocess or shell, a host web tool, or anything this reading does not follow
 (a module outside the known-local list, a dynamic import, `exec`/`eval`, an attribute walk through
-dunders, a call of a name the code never binds). Code with no such sink only mentions the hosts it writes.
+dunders or stack frames, a name the code never binds). Code with no such sink only mentions the hosts it
+writes. Writing a file counts as a sink unless the file is plainly data (`.json`, `.txt`, …): a quoted
+command written into `~/.bashrc` or a `.pth` file runs later.
 
 When the code's only sinks are HTTP calls this module follows (`requests`, `httpx`, `urllib.request`) and
 every request call is aimed at a URL written in the code (directly, through a name set only to such URLs,
@@ -90,7 +92,6 @@ _LOCAL_MODULES = frozenset(
         "re",
         "secrets",
         "shlex",
-        "shutil",
         "statistics",
         "struct",
         "tarfile",
@@ -98,7 +99,6 @@ _LOCAL_MODULES = frozenset(
         "textwrap",
         "time",
         "tomllib",
-        "traceback",
         "unicodedata",
         "urllib.parse",
         "uuid",
@@ -133,8 +133,6 @@ _RESTRICTED: dict[str, frozenset[str]] = {
             "mkdir",
             "remove",
             "unlink",
-            "rename",
-            "replace",
             "rmdir",
             "stat",
             "lstat",
@@ -233,8 +231,33 @@ _OPAQUE_BUILTINS = frozenset(
         "vars",
         "__builtins__",
         "breakpoint",
+        "help",  # imports any module by name
     }
 )
+#: Dunder names a program may read: anything else (`__loader__`, `__spec__`, `__build_class__`) reaches
+#: the import machinery.
+_SAFE_DUNDER_NAMES = frozenset({"__name__", "__file__", "__doc__"})
+#: Attribute prefixes and names that reach stack frames, and through them every module and builtin
+#: (`gen.gi_frame.f_builtins["__import__"]`).
+_FRAME_PREFIXES = ("f_", "gi_", "cr_", "ag_", "tb_", "co_")
+_FRAME_ATTRS = frozenset({"walk_stack", "walk_tb", "stack", "currentframe"})
+#: Attributes that move, link or unpack files: a data file renamed to `~/.bashrc` runs later.
+_FILE_MOVES = frozenset(
+    {
+        "symlink_to",
+        "hardlink_to",
+        "link_to",
+        "extractall",
+        "extract",
+        "copyfile",
+        "copytree",
+        "move",
+    }
+)
+#: Calls that write a file at their path argument.
+_WRITE_CALLS = frozenset({"write_text", "write_bytes", "write_file", "patch"})
+#: Extensions of files a write may create: data, never read as code or configuration.
+_DATA_EXTENSIONS = (".json", ".jsonl", ".txt", ".md", ".csv", ".tsv")
 #: Dunder attributes that do not lead out of the object (`super().__init__()`); any other one can walk to
 #: modules and builtins the code never imports (`().__class__.__base__.__subclasses__()`).
 _SAFE_DUNDERS = frozenset(
@@ -290,7 +313,18 @@ _REQUEST_CALLS = frozenset(
     }
 )
 #: With a followed client, calls and keywords that set where requests go other than by their URL.
-_UNFOLLOWED_CALLS = frozenset({"build_opener", "install_opener", "OpenerDirector", "ProxyHandler"})
+_UNFOLLOWED_CALLS = frozenset(
+    {
+        "build_opener",
+        "install_opener",
+        "OpenerDirector",
+        "ProxyHandler",
+        "URLopener",
+        "FancyURLopener",
+        "set_proxy",
+        "mount",
+    }
+)
 _UNFOLLOWED_KEYWORDS = frozenset({"base_url", "proxies", "proxy", "mounts", "transport"})
 
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -328,13 +362,15 @@ def _call_name(func: ast.expr) -> str | None:
 
 def _url_arg(call: ast.Call) -> ast.expr | None:
     """A request call's URL argument: `url=`, else the first positional one, or the second after a method
-    (`requests.request("POST", url)`)."""
+    (`requests.request("POST", url)`; a `.request(…)` always takes the method first)."""
     for kw in call.keywords:
         if kw.arg == "url":
             return kw.value
     args = call.args
     if not args or any(isinstance(a, ast.Starred) for a in args):
         return None
+    if _call_name(call.func) == "request":
+        return args[1] if len(args) > 1 else None
     first = args[0]
     if (
         isinstance(first, ast.Constant)
@@ -441,6 +477,8 @@ class _Reader:
         names = [a.name for a in node.names]
         for a in node.names:
             self._bind(a.asname or a.name)
+            if a.name in _ATTR_CALLERS or a.name in _ATTR_BY_NAME or a.name in _OPAQUE_BUILTINS:
+                raise _Unfollowed  # `from operator import attrgetter as ag`
         if "*" in names and module not in _LOCAL_MODULES:
             raise _Unfollowed
         if module in _HTTP_MODULES or (module == "urllib" and "request" in names):
@@ -503,6 +541,8 @@ class _Reader:
                     globals_keys.add(key)
                 elif node.id in _OPAQUE_BUILTINS:
                     raise _Unfollowed
+                elif node.id.startswith("__") and node.id not in _SAFE_DUNDER_NAMES:
+                    raise _Unfollowed
                 if isinstance(node.ctx, (ast.Store, ast.Del)):
                     self._store(node)
             elif isinstance(node, ast.Attribute):
@@ -511,6 +551,10 @@ class _Reader:
                     and node.attr.endswith("__")
                     and node.attr not in _SAFE_DUNDERS
                 ):
+                    raise _Unfollowed
+                if node.attr.startswith(_FRAME_PREFIXES) or node.attr in _FRAME_ATTRS:
+                    raise _Unfollowed
+                if node.attr in _ATTR_CALLERS or node.attr in _FILE_MOVES:
                     raise _Unfollowed
             elif isinstance(node, ast.arg):
                 self._bind(node.arg)
@@ -573,15 +617,75 @@ class _Reader:
             obj = node.args[0]
             if isinstance(obj, ast.Name) and obj.id in self.restricted:
                 raise _Unfollowed
-        if (
-            isinstance(node.func, ast.Name)
-            and node.func.id not in self.bindings
-            and node.func.id not in _BUILTINS
-        ):
-            raise _Unfollowed  # a function the host provides (a tool), or one this reading cannot see
+        self._check_write(node, name)
+
+    def _check_write(self, node: ast.Call, name: str | None) -> None:
+        """A call that writes a file is followed only when the file is plainly data (`_DATA_EXTENSIONS`)."""
+        path: ast.expr | None = None
+        if name == "open":
+            receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+            module_open = receiver is None or (
+                isinstance(receiver, ast.Name) and inspect.ismodule(self.objects.get(receiver.id))
+            )
+            mode_at = 1 if module_open else 0
+            mode: ast.expr | None = next((k.value for k in node.keywords if k.arg == "mode"), None)
+            if mode is None and len(node.args) > mode_at:
+                mode = node.args[mode_at]
+            if mode is None:
+                return  # a read
+            if (
+                isinstance(mode, ast.Constant)
+                and isinstance(mode.value, str)
+                and not set(mode.value) & set("wax+")
+            ):
+                return
+            if module_open:
+                path = node.args[0] if node.args else None
+            else:
+                path = receiver
+        elif name in ("rename", "replace") and len(node.args) == 1 and not node.keywords:
+            raise _Unfollowed  # `Path.rename(target)`; `str.replace` takes two
+        elif name in _WRITE_CALLS:
+            if isinstance(node.func, ast.Attribute):
+                path = node.func.value
+            else:
+                kw = next((k.value for k in node.keywords if k.arg == "path"), None)
+                path = kw if kw is not None else (node.args[0] if node.args else None)
+        else:
+            return
+        if path is None or not self._data_path(path, frozenset()):
+            raise _Unfollowed
+
+    def _data_path(self, expr: ast.expr, seen: frozenset[str]) -> bool:
+        """`expr` is a path that ends in a data extension, however the rest of it is computed."""
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return expr.value.lower().endswith(_DATA_EXTENSIONS)
+        if isinstance(expr, ast.JoinedStr):
+            last = expr.values[-1] if expr.values else None
+            return last is not None and self._data_path(last, seen)
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
+            return self._data_path(expr.right, seen)
+        if isinstance(expr, ast.Call):
+            fn = _call_name(expr.func)
+            if (
+                fn in ("Path", "PurePath", "join", "expanduser", "abspath", "normpath")
+                and expr.args
+            ):
+                return self._data_path(expr.args[-1], seen)
+            return False
+        if isinstance(expr, ast.Name) and expr.id not in seen:
+            binds = self.bindings.get(expr.id) or []
+            return bool(binds) and all(
+                b is not None and self._data_path(b, seen | {expr.id}) for b in binds
+            )
+        return False
 
     def _check_name(self, node: ast.Name) -> None:
         parent = self.parents.get(node)
+        if node.id not in self.bindings and node.id not in _BUILTINS:
+            # A name the program never binds: a function the host provides (a tool, called or passed
+            # around), or one this reading cannot see.
+            raise _Unfollowed
         if node.id in _ATTR_BY_NAME | _ATTR_CALLERS and not (
             isinstance(parent, ast.Call) and parent.func is node
         ):
@@ -652,6 +756,14 @@ class _Reader:
         for node in ast.walk(self.tree):
             if isinstance(node, ast.keyword) and node.arg in _UNFOLLOWED_KEYWORDS:
                 return None
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                return None  # `req.full_url = …`, `s.proxies = …`: the request changes after it is built
+            if (isinstance(node, ast.Attribute) and node.attr in _UNFOLLOWED_CALLS) or (
+                isinstance(node, ast.Name) and node.id in _UNFOLLOWED_CALLS
+            ):
+                return None
+            if self._environ_changed(node):
+                return None  # `os.environ["HTTPS_PROXY"] = …` sends every request elsewhere
             if not isinstance(node, ast.Call):
                 continue
             name = _call_name(node.func)
@@ -663,7 +775,7 @@ class _Reader:
                 continue
             url = _url_arg(node)
             if url is None:
-                if name == "get" and not node.keywords:
+                if name == "get" and not node.args and not node.keywords:
                     continue  # `queue.get()`: no argument, no request
                 return None
             found = self._request_hosts(url, frozenset())
@@ -674,6 +786,22 @@ class _Reader:
             hosts |= found
             seen = True
         return frozenset(hosts) if seen else None
+
+    def _environ_changed(self, node: ast.AST) -> bool:
+        """`node` is the environment, used other than to read one value (`os.environ.get(k)`,
+        `os.environ[k]`)."""
+        if not (
+            (isinstance(node, ast.Attribute) and node.attr == "environ")
+            or (isinstance(node, ast.Name) and node.id == "environ")
+        ):
+            return False
+        parent = self.parents.get(node)
+        if isinstance(parent, ast.Subscript) and parent.value is node:
+            return not isinstance(parent.ctx, ast.Load)
+        if isinstance(parent, ast.Attribute) and parent.value is node and parent.attr == "get":
+            call = self.parents.get(parent)
+            return not (isinstance(call, ast.Call) and call.func is parent)
+        return True
 
     def _plain_key(self, expr: ast.expr) -> bool:
         """`expr` is only ever plain strings that are no URL (a dict or environment key)."""
@@ -772,6 +900,193 @@ class _Reader:
         return None
 
 
+# ------------------------------------------------------------------ names read before they are bound
+
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    """Names an assignment target binds (`a, b = …`), not those read in it (`globals()["k"] = …`)."""
+    return {
+        n.id
+        for n in ast.walk(target)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
+    }
+
+
+def _stmt_binds(stmt: ast.stmt) -> set[str]:
+    """Names a simple statement binds once it has run."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        return {(a.asname or a.name).split(".")[0] for a in stmt.names if a.name != "*"}
+    if isinstance(stmt, ast.Assign):
+        return set().union(*(_target_names(t) for t in stmt.targets))
+    if isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+        return _target_names(stmt.target) if getattr(stmt, "value", None) is not None else set()
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {stmt.name}
+    return set()
+
+
+def _local_names(scope: ast.AST) -> set[str]:
+    """Names a function binds in its own scope (Python makes each one local for the whole body), less
+    those it declares `global` or `nonlocal`."""
+    names: set[str] = set()
+    declared: set[str] = set()
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        a = scope.args
+        for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg]:
+            if arg is not None:
+                names.add(arg.arg)
+    body = scope.body if isinstance(scope.body, list) else [scope.body]
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            declared.update(node.names)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names |= _stmt_binds(node)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            names.add(node.name)
+        if isinstance(node, _SCOPES):
+            if not isinstance(node, ast.Lambda):
+                names.add(node.name)
+            # a nested scope's defaults, decorators and bases run here; its body does not
+            stack.extend(getattr(node, "decorator_list", []))
+            if isinstance(node, ast.ClassDef):
+                stack.extend(node.bases)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return names - declared
+
+
+class _Flow:
+    """Every global name the program reads is bound by the program before the read (or is a builtin it
+    never rebinds). A code tool may keep one interpreter for a whole conversation, so a name read first
+    and bound later (`terminal(cmd)` before `def terminal`) is whatever an earlier call left there."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.stored = {
+            n.id
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
+        } | {name for n in ast.walk(tree) if isinstance(n, ast.stmt) for name in _stmt_binds(n)}
+        self.deferred: list[tuple[ast.AST, frozenset[str]]] = []
+        self.module_bound: set[str] = set()
+        #: Checking a function body, which runs only when called, after the module has run.
+        self.in_function = False
+
+    def run(self, tree: ast.Module) -> None:
+        self.module_bound = self.block(tree.body, set(), frozenset())
+        self.in_function = True
+        while self.deferred:
+            scope, enclosing = self.deferred.pop()
+            local = enclosing | _local_names(scope)
+            body = scope.body if isinstance(scope.body, list) else [scope.body]
+            for node in body:
+                if isinstance(node, ast.stmt):
+                    self.block([node], set(local), frozenset(local))
+                else:
+                    self.expr(node, set(local), frozenset(local))
+
+    def ok(self, name: str, bound: set[str], enclosing: frozenset[str]) -> bool:
+        if name in bound or name in enclosing:
+            return True
+        if self.in_function and name in self.module_bound:
+            return True  # read in a function, which runs after the module binds it
+        return (name in _BUILTINS or name in _SAFE_DUNDER_NAMES) and name not in self.stored
+
+    def expr(self, node: ast.AST, bound: set[str], enclosing: frozenset[str]) -> None:
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+                if not self.ok(n.id, bound, enclosing):
+                    raise _Unfollowed
+            elif isinstance(n, ast.Lambda):
+                stack.extend([*n.args.defaults, *(d for d in n.args.kw_defaults if d)])
+                self.deferred.append((n, enclosing | frozenset(bound)))
+                continue
+            elif isinstance(n, _COMPREHENSIONS):
+                inner = set(bound)
+                for gen in n.generators:
+                    self.expr(gen.iter, inner, enclosing)
+                    inner |= _target_names(gen.target)
+                    for cond in gen.ifs:
+                        self.expr(cond, inner, enclosing)
+                parts = [n.key, n.value] if isinstance(n, ast.DictComp) else [n.elt]
+                for part in parts:
+                    self.expr(part, inner, enclosing)
+                continue
+            elif isinstance(n, ast.NamedExpr):
+                stack.append(n.value)
+                bound.add(n.target.id)
+                continue
+            stack.extend(ast.iter_child_nodes(n))
+
+    def block(self, stmts: list[ast.stmt], bound: set[str], enclosing: frozenset[str]) -> set[str]:
+        """Check `stmts` in order; return the names definitely bound after them."""
+        for stmt in stmts:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = stmt.args
+                for d in [*stmt.decorator_list, *a.defaults, *(d for d in a.kw_defaults if d)]:
+                    self.expr(d, bound, enclosing)
+                bound.add(stmt.name)  # bound before the body can run, so it may call itself
+                self.deferred.append((stmt, enclosing | frozenset(bound)))
+            elif isinstance(stmt, ast.ClassDef):
+                for d in [*stmt.decorator_list, *stmt.bases, *(k.value for k in stmt.keywords)]:
+                    self.expr(d, bound, enclosing)
+                self.block(stmt.body, set(bound), enclosing)
+                bound.add(stmt.name)
+            elif isinstance(stmt, ast.If):
+                self.expr(stmt.test, bound, enclosing)
+                then = self.block(stmt.body, set(bound), enclosing)
+                other = self.block(stmt.orelse, set(bound), enclosing)
+                bound |= then & other
+            elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+                self.expr(stmt.iter, bound, enclosing)
+                self.block(stmt.body, bound | _target_names(stmt.target), enclosing)
+                self.block(stmt.orelse, set(bound), enclosing)
+            elif isinstance(stmt, ast.While):
+                self.expr(stmt.test, bound, enclosing)
+                self.block(stmt.body, set(bound), enclosing)
+                self.block(stmt.orelse, set(bound), enclosing)
+            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                for item in stmt.items:
+                    self.expr(item.context_expr, bound, enclosing)
+                    if item.optional_vars is not None:
+                        bound |= _target_names(item.optional_vars)
+                bound |= self.block(stmt.body, set(bound), enclosing)
+            elif isinstance(stmt, ast.Try) or type(stmt).__name__ == "TryStar":
+                done = self.block(stmt.body + stmt.orelse, set(bound), enclosing)
+                for h in stmt.handlers:
+                    if h.type is not None:
+                        self.expr(h.type, bound, enclosing)
+                    names = {h.name} if h.name else set()
+                    done &= self.block(h.body, bound | names, enclosing)
+                bound |= done
+                bound |= self.block(stmt.finalbody, set(bound), enclosing)
+            elif isinstance(stmt, ast.Match):
+                self.expr(stmt.subject, bound, enclosing)
+                for case in stmt.cases:
+                    names = {
+                        n.name
+                        for n in ast.walk(case.pattern)
+                        if isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name
+                    }
+                    if case.guard is not None:
+                        self.expr(case.guard, bound | names, enclosing)
+                    self.block(case.body, bound | names, enclosing)
+            else:
+                self.expr(stmt, bound, enclosing)
+                bound |= _stmt_binds(stmt)
+        return bound
+
+
 @lru_cache(maxsize=256)
 def python_reach(source: str) -> CodeReach | None:
     """What `source` (Python) can reach; None when it does not parse, so callers keep reading it as text."""
@@ -781,6 +1096,7 @@ def python_reach(source: str) -> CodeReach | None:
         return None
     reader = _Reader(tree)
     try:
+        _Flow(tree).run(tree)
         reader.scan()
         if not reader.http:
             return _LOCAL
