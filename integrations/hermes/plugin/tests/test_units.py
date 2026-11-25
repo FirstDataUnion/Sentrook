@@ -1,9 +1,14 @@
 import json
 import re
+import sys
 import time
 from pathlib import Path
 
 import pytest
+
+# The scanner's timing check (tests are not published with the plugin).
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "sentrook" / "tests"))
+from linear_time import assert_fast_or_linear  # noqa: E402
 
 from plugin.config import parse_endpoint, resolve_config
 from plugin.decision import (
@@ -587,37 +592,52 @@ def test_camel_case_credential_keys_in_objects_are_replaced_whole():
         assert re.fullmatch(r"⟦secret:credential:[0-9a-f]{4}⟧", v), v
 
 
+#: (head, repeated unit, count, tail): the unit repeats count times, or count / d for the growth check.
+LONG_INPUTS = [
+    ("mysql " * 30 + '-p"', "a", 1_000_000, ""),
+    ("", "sshpass -e ", 100_000, ""),
+    ("", "--password ", 100_000, ""),
+    ("", "--token-x ", 100_000, ""),
+    ("token=" + "a" * 8, ".", 1_000_000, ""),
+    ('token="', "-token=", 140_000, ""),
+    ("SECRET_X=" + "a" * 12, ")", 1_000_000, ""),
+    ("", "the password changed, it's now ", 30_000, ""),
+    ("", "the token was rotated and", 40_000, ""),
+    ("token = ", "get.", 250_000, ""),
+    ("token = ", "getSecret", 100_000, "x"),
+    ("token = ", "a_", 400_000, "."),
+    ("token: ", "x()", 300_000, ""),
+    ("token = ", "a(b.", 200_000, ""),
+    ("token = self.", "a.", 300_000, "x"),
+    ("token = ", "b64decode.", 100_000, "-"),
+    ("token = x(", "a.", 300_000, "x"),
+    ("token = ", "a[1]", 200_000, "x"),
+    ("token = ", "aaa1", 200_000, "("),
+    ("token: config.", "a", 1_000_000, ""),
+    ("token = ", "a(b", 300_000, ""),
+]
+
+
+def _long_input(case: tuple[str, str, int, str], divisor: int = 1) -> str:
+    head, unit, count, tail = case
+    return head + unit * (count // divisor) + tail
+
+
 @pytest.mark.parametrize(
-    "text",
-    [
-        "mysql " * 30 + '-p"' + "a" * 1_000_000,
-        "sshpass -e " * 100_000,
-        "--password " * 100_000,
-        "--token-x " * 100_000,
-        "token=" + "a" * 8 + "." * 1_000_000,
-        'token="' + "-token=" * 140_000,
-        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
-        "the password changed, it's now " * 30_000,
-        "the token was rotated and" * 40_000,
-        "token = " + "get." * 250_000,
-        "token = " + "getSecret" * 100_000 + "x",
-        "token = " + "a_" * 400_000 + ".",
-        "token: " + "x()" * 300_000,
-        "token = " + "a(b." * 200_000,
-        "token = self." + "a." * 300_000 + "x",
-        "token = " + "b64decode." * 100_000 + "-",
-        "token = x(" + "a." * 300_000 + "x",
-        "token = " + "a[1]" * 200_000 + "x",
-        "token = " + "aaa1" * 200_000 + "(",
-        "token: config." + "a" * 1_000_000,
-        "token = " + "a(b" * 300_000,
-    ],
-    ids=lambda text: f"{text[:12]!r}x{len(text)}",
+    "case", LONG_INPUTS, ids=lambda case: f"{(case[0] + case[1])[:12]!r}x{len(_long_input(case))}"
 )
-def test_password_flags_take_linear_time(text):
+def test_password_flags_take_linear_time(case):
+    """2 s per input, or on a slower runner, time that grows linearly with the input (up to 6 s)."""
+    text = _long_input(case)
     t0 = time.perf_counter()
     Redactor("standard", "s").string(text)
-    assert time.perf_counter() - t0 < 2.0
+    spent = time.perf_counter() - t0
+    assert_fast_or_linear(
+        spent,
+        2.0,
+        lambda d: Redactor("standard", "s").string(_long_input(case, d)),
+        repr(text[:40]),
+    )
 
 
 def test_caps():

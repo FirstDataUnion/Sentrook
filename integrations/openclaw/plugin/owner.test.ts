@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { OWNER_SCOPES, type OwnerContext, ownerCommand, ownerGate } from "./owner.ts";
+import { OWNER_SCOPES, type OwnerContext, ownerCommand, ownerGate, refusal } from "./owner.ts";
 import { TrafficLog } from "./traffic.ts";
 
 const SALT = "test-salt";
@@ -252,4 +252,12 @@ test("ownerGate on its own reports the basis without running anything", () => {
   assert.equal(gate.owner, true);
   assert.deepEqual(gate.basis, ["operator.admin"]);
   assert.equal(audited[0].outcome, "allowed");
+});
+
+test("the refusal names every route an owner command runs from: the owner's own DM, the Control UI, the machine", () => {
+  const text = refusal("setup");
+  assert.match(text, /^Only the owner can run \/sentrook setup: send \/sentrook-setup from the owner's own direct message/);
+  assert.match(text, /a sender in commands\.ownerAllowFrom, which the first pairing approval fills/);
+  assert.match(text, /from the Control UI/);
+  assert.match(text, /openclaw sentrook <command> on the machine/);
 });

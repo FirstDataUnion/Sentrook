@@ -55,7 +55,8 @@ def post_scan(
         return ScanFailure(
             ok=False,
             kind="config",
-            detail="no scan credentials (set SENTROOK_SCAN_CLIENT_ID and SENTROOK_SCAN_CLIENT_SECRET in Hermes)",
+            detail="not signed in (run hermes sentrook login)",
+            setup="not_signed_in",
         )
     try:
         token = get_scan_access_token(oidc)

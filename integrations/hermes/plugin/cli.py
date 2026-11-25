@@ -1,4 +1,5 @@
-"""`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works.
+"""`hermes sentrook login`: sign in and store the scan credentials (`login`). `hermes sentrook verify`: endpoints
+valid, credentials present, scanner healthy, token mint works.
 
 The `/sentrook` subcommands (`commands.COMMANDS`, except help) are `hermes sentrook` subcommands too,
 with the same output. Owner-only ones go through the same owner check, where the local terminal counts
@@ -8,11 +9,13 @@ as the owner.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from . import hold, skill_review
+from . import hold, login, owner_settings, passes, skill_review
 from .auth import (
     clear_scan_token_cache,
     get_scan_access_token,
@@ -39,7 +42,7 @@ def run_verify(
     oidc = resolve_oidc_credentials(settings, env, ep.issuer.url) if ep.issuer.ok else None
     missing = missing_credentials()
     if missing:
-        creds = f"{' and '.join(missing)} not set in Hermes (hermes config set <NAME> <value>, then restart Hermes)"
+        creds = f"not signed in: {' and '.join(missing)} not set (run hermes sentrook login, then restart Hermes)"
     elif oidc:
         creds = f"client {oidc.client_id}, audience {oidc.audience}"
     else:
@@ -64,7 +67,10 @@ def run_verify(
             get_scan_access_token(oidc, timeout=timeout)
             checks.append(("token mint", True, f"issued by {oidc.issuer}"))
         except Exception as exc:  # noqa: BLE001
-            checks.append(("token mint", False, str(exc)[:200]))
+            detail = str(exc)[:200]
+            if "invalid_client" in detail:
+                detail = "the identity service refused these credentials (revoked or wrong); run hermes sentrook login"
+            checks.append(("token mint", False, detail))
     checks.append(
         (
             "policy",
@@ -94,21 +100,34 @@ def run_verify(
         )
     )
     # Reported, not failed: without a notice target a held call still waits; the owner is just not told.
-    target, why = hold.owner_target(cfg.owner_channel)
+    notify = owner_settings.notify_of(cfg)
+    failed = owner_settings.failed_line(cfg)
+    checks.append(
+        (
+            "notice target",
+            True,
+            " ".join(x for x in (owner_settings.notify_line(notify), failed) if x),
+        )
+    )
+    checks.append(("approval prompts", True, owner_settings.attended_line(cfg)))
+    target, why = hold.owner_target(notify)
     checks.append(
         (
             "held-call notices",
             True,
-            f"to the {target} home channel" if target else f"not sent: {why}",
+            f"to the {hold.target_text(target)}" if target else f"not sent: {why}",
         )
     )
+    # Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
+    state = passes.counts(cfg.state_dir, datetime.now(UTC))
+    checks.append(("held-call passes", state != "passes file unreadable", state))
     # Reported, not failed: Hermes's background saves never ask, so without a notice target the owner learns of
     # one that was let through, held or blocked only from history.
     checks.append(
         (
             "background-save notices",
             True,
-            skill_review.notice_line(cfg.owner_channel),
+            skill_review.notice_line(notify),
         )
     )
     return checks
@@ -116,6 +135,21 @@ def run_verify(
 
 def format_report(checks: list[tuple[str, bool, str]]) -> str:
     return "\n".join(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}" for name, ok, detail in checks)
+
+
+#: Command-line-only subcommands: no slash form.
+LOCAL_COMMANDS = ("login", "verify")
+
+
+def _login(settings: dict[str, Any], name: str | None) -> int:
+    """`hermes sentrook login`, then the same checks as `verify` (Hermes's writer updates this process's
+    environment, so the new credentials are checked here before the gateway restarts)."""
+
+    def verify() -> tuple[str, bool]:
+        checks = run_verify(settings)
+        return format_report(checks), all(ok for _, ok, _ in checks)
+
+    return login.run_login(settings, name=name, deps=login.LoginDeps(verify=verify))
 
 
 #: argparse gives the CLI its own help.
@@ -137,6 +171,8 @@ def _rest(cmd: str, args: argparse.Namespace) -> str:
         words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
     if cmd == "snooze" and args.all:
         words.append("--all")
+    if cmd == "attended" and args.confirm:
+        words.append("--confirm")
     if cmd == "report":
         words += [f"--{f}" for f in REPORT_FLAGS if getattr(args, f)]
     return " ".join(words)
@@ -146,6 +182,14 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
     def setup(parser: argparse.ArgumentParser) -> None:
         sub = parser.add_subparsers(dest="sentrook_cmd")
         sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
+        login_parser = sub.add_parser(
+            "login",
+            help="Sign in with your FIDU account in a browser and store Sentrook's credentials",
+        )
+        login_parser.add_argument(
+            "--name",
+            help="How this machine is listed in your account (default: Hermes on <hostname>)",
+        )
         for name in CLI_COMMANDS:
             p = sub.add_parser(name, help=COMMANDS[name].summary)
             if name == "grant":
@@ -160,6 +204,15 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
             elif name == "snooze":
                 p.add_argument("sentrook_arg", nargs="*", metavar="duration|off|status")
                 p.add_argument("--all", action="store_true", help="every session")
+            elif name == "attended":
+                p.add_argument("sentrook_arg", nargs="*", metavar="add|remove|list [platform]")
+                p.add_argument(
+                    "--confirm",
+                    action="store_true",
+                    help="add a platform Sentrook treats as unattended",
+                )
+            elif name == "notify":
+                p.add_argument("sentrook_arg", nargs="*", metavar="<platform>|off|status")
             elif COMMANDS[name].cli_rest:
                 p.add_argument(
                     "sentrook_arg", nargs=argparse.REMAINDER, metavar=COMMANDS[name].args
@@ -170,10 +223,13 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
     def handler(args: argparse.Namespace) -> None:
         cmd = getattr(args, "sentrook_cmd", None)
         if cmd in CLI_COMMANDS:
-            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate))
+            send = functools.partial(hold.deliver, ctx)
+            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate, send=send))
             return
+        if cmd == "login":
+            raise SystemExit(_login(settings(), getattr(args, "name", None)))
         if cmd != "verify":
-            print(f"usage: hermes sentrook {{{','.join(('verify', *CLI_COMMANDS))}}}")
+            print(f"usage: hermes sentrook {{{','.join(LOCAL_COMMANDS + CLI_COMMANDS)}}}")
             return
         checks = run_verify(settings())
         print(format_report(checks))
@@ -182,7 +238,7 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
 
     ctx.register_cli_command(
         name="sentrook",
-        help=f"Sentrook plugin helpers ({', '.join(('verify', *CLI_COMMANDS))})",
+        help=f"Sentrook plugin helpers ({', '.join(LOCAL_COMMANDS + CLI_COMMANDS)})",
         description="Sentrook plugin helpers",
         setup_fn=setup,
         handler_fn=handler,

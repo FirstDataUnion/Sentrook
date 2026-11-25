@@ -131,9 +131,21 @@ export interface SnoozeFile {
   [key: string]: unknown;
 }
 
+export interface ProposalsFile {
+  version: number;
+  proposals: unknown[];
+  [k: string]: unknown;
+}
+
 export interface HoldsFile {
   version?: number;
   holds: unknown[];
+  [key: string]: unknown;
+}
+
+export interface PassesFile {
+  version?: number;
+  passes: unknown[];
   [key: string]: unknown;
 }
 
@@ -189,9 +201,15 @@ export const SELF_EDIT_KEEP_RUNS = 100;
 
 const fileKey = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
 
+/**
+ * One queue per session in this process, shared by every `Store` of the same directory: a scan holds it for the whole
+ * scan, and an answer to a held call takes it to set the held call's history (hold.ts), so neither overwrites the
+ * other's copy of the session.
+ */
+const SESSION_LOCKS = new Map<string, Promise<unknown>>();
+
 export class Store {
   readonly dir: string;
-  private locks = new Map<string, Promise<unknown>>();
   private saltCache: string | null = null;
 
   constructor(dir: string) {
@@ -287,17 +305,18 @@ export class Store {
 
   /** Run `fn` with exclusive access to the session (per process); the callback saves explicitly. */
   async withSession<T>(sid: string, fn: () => Promise<T> | T): Promise<T> {
-    const prev = this.locks.get(sid) ?? Promise.resolve();
+    const key = `${this.dir}\u0000${sid}`;
+    const prev = SESSION_LOCKS.get(key) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const chained = prev.then(() => gate);
-    this.locks.set(sid, chained);
+    SESSION_LOCKS.set(key, chained);
     await prev.catch(() => undefined);
     try {
       return await fn();
     } finally {
       release();
-      if (this.locks.get(sid) === chained) this.locks.delete(sid);
+      if (SESSION_LOCKS.get(key) === chained) SESSION_LOCKS.delete(key);
     }
   }
 
@@ -373,6 +392,46 @@ export class Store {
     this.writeJson(path.join(this.dir, "holds.json"), value);
   }
 
+  /** `passes.json` (passes.ts), empty when absent; null when it exists but cannot be read. */
+  loadPasses(): PassesFile | null {
+    const file = path.join(this.dir, "passes.json");
+    if (!existsSync(file)) return { version: 1, passes: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const p = data as Record<string, unknown>;
+    if (!Object.hasOwn(p, "passes")) p.passes = [];
+    return Array.isArray(p.passes) ? (p as PassesFile) : null;
+  }
+
+  savePasses(value: PassesFile): void {
+    this.writeJson(path.join(this.dir, "passes.json"), value);
+  }
+
+  /** `proposals.json` (the agent's setup proposals), empty when absent; null when it cannot be read. */
+  loadProposals(): ProposalsFile | null {
+    const file = path.join(this.dir, "proposals.json");
+    if (!existsSync(file)) return { version: 1, proposals: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const p = data as Record<string, unknown>;
+    if (!Object.hasOwn(p, "proposals")) p.proposals = [];
+    return Array.isArray(p.proposals) ? (p as ProposalsFile) : null;
+  }
+
+  saveProposals(value: ProposalsFile): void {
+    this.writeJson(path.join(this.dir, "proposals.json"), value);
+  }
+
+  /** `setup.json`: the setup screen last shown, its code and items; empty when absent or unreadable. */
+  loadSetup(): Record<string, any> {
+    const data = this.readJson<unknown>(path.join(this.dir, "setup.json"), null);
+    return data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, any>) : {};
+  }
+
+  saveSetup(value: unknown): void {
+    this.writeJson(path.join(this.dir, "setup.json"), value);
+  }
+
   /** When each job or session last had a scan-failure notice (`scan-failure-notices.json`); empty when unreadable. */
   loadScanFailureNotices(): Record<string, unknown> {
     const data = this.readJson<any>(path.join(this.dir, "scan-failure-notices.json"), null);
@@ -393,6 +452,24 @@ export class Store {
 
   saveNotify(target: NotifyTarget | null): void {
     this.writeJson(path.join(this.dir, "notify.json"), { version: 1, target });
+  }
+
+  /**
+   * The plugin's own agent tools another plugin's tool of the same name ran in place of, and when
+   * (`foreign-tools.json`, by tool name). A `report-tool.json` from an earlier beta still counts for the setup report.
+   */
+  loadForeignTools(): Record<string, string> {
+    const data = this.readJson<any>(path.join(this.dir, "foreign-tools.json"), null);
+    const tools = data && typeof data === "object" && data.tools && typeof data.tools === "object" ? data.tools : {};
+    const out = Object.fromEntries(Object.entries(tools).filter((e): e is [string, string] => typeof e[1] === "string"));
+    const old = this.readJson<any>(path.join(this.dir, "report-tool.json"), null);
+    if (old && typeof old === "object" && typeof old.foreign_at === "string") out.sentrook_setup_report ??= old.foreign_at;
+    return out;
+  }
+
+  saveForeignTool(tool: string, at: Date): void {
+    const tools = { ...this.loadForeignTools(), [tool]: at.toISOString() };
+    this.writeJson(path.join(this.dir, "foreign-tools.json"), { version: 1, tools });
   }
 
   private selfEditFile(runId: string) {

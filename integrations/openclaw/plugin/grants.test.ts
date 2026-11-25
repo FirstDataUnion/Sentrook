@@ -508,12 +508,16 @@ test("the CLI forms match the chat forms and are audited as the local terminal",
   fixtureFile();
   const r = await registered(fixtureConfig());
   assert.deepEqual(r.unknownOptions.sort(), [
+    "sentrook allow [args...]",
     "sentrook approve [args...]",
     "sentrook bind [args...]",
+    "sentrook deny [args...]",
     "sentrook grant [args...]",
     "sentrook notify [args...]",
+    "sentrook passes [args...]",
     "sentrook report [args...]",
     "sentrook revoke [args...]",
+    "sentrook setup [args...]",
     "sentrook snooze [args...]",
   ]);
   assert.equal(await cli(r, "sentrook grants"), await run(r, "sentrook-grants", "", { sessionId: undefined, sessionKey: undefined }));
@@ -632,8 +636,12 @@ test("listing, status and verify flag config grants never sent", async () => {
 });
 
 test("startup warns about config grants never sent", async () => {
-  const [warning, ...more] = (await registered({ grants: UNSENT_CONFIG })).warnings;
+  const warnings = (await registered({ grants: UNSENT_CONFIG })).warnings;
+  // The misspelt scope is also a setting not read as written; the entry without a pattern is one too.
+  const [settings, warning, ...more] = warnings;
   assert.deepEqual(more, []);
+  assert.ok(settings.includes('grants[2].scope: "persistant" is not session or persistent'), settings);
+  assert.ok(settings.includes("grants[0]: needs kind and pattern; ignored"), settings);
   assert.ok(warning.includes(UNSENT_SUMMARY) && warning.includes("/sentrook-grants"), warning);
   assert.deepEqual((await registered({ grants: UNSENT_CONFIG.slice(3) })).warnings, []);
 });

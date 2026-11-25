@@ -16,6 +16,11 @@ import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from 
 
 /** History decisions sent as `review_timed_out`. */
 const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
+/**
+ * History decisions the owner's pass or denial for a job settled (passes.ts), and the word PlanIR has for each: the
+ * call ran, or the owner refused it.
+ */
+const BY_OWNER: Record<string, string> = { allowed_by_pass: "allowed", denied_by_owner: "denied_by_user" };
 
 export const PLUGIN_VERSION = "2.0.0-beta.13";
 
@@ -152,18 +157,26 @@ export function providerFor(config: any, name: string): Provider {
   const server = name.split("__")[0]!;
   const cfg = config?.mcp?.servers?.[server];
   if (!cfg) return { kind: "mcp", name: server, identity: null, transport: null };
+  return { kind: "mcp", name: server, ...serverIdentity(cfg) };
+}
+
+/**
+ * An MCP server's identity and transport from its config entry, as a scan names its provider: a remote one by host,
+ * a package an installer runs by its package, anything else as a local command (hashed).
+ */
+export function serverIdentity(cfg: any): { identity: string | null; transport: string | null } {
   let identity: string | null = null;
-  const transport = normaliseTransport(cfg.transport) ?? (cfg.url ? "http" : cfg.command ? "stdio" : null);
-  if (typeof cfg.url === "string") {
+  const transport = normaliseTransport(cfg?.transport) ?? (cfg?.url ? "http" : cfg?.command ? "stdio" : null);
+  if (typeof cfg?.url === "string") {
     identity = remoteIdentity(cfg.url);
-  } else if (typeof cfg.command === "string") {
+  } else if (typeof cfg?.command === "string") {
     const args: string[] = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
     const pkg = args.find((a) => !a.startsWith("-"));
     if (["npx", "pnpm", "bunx"].includes(cfg.command) && pkg) identity = `npm:${pkg}`;
     else if (["uvx", "pipx"].includes(cfg.command) && pkg) identity = `pypi:${pkg}`;
     else identity = `local:${hash12([cfg.command, ...args].join(" "))}`;
   }
-  return { kind: "mcp", name: server, identity, transport };
+  return { identity, transport };
 }
 
 /**
@@ -262,7 +275,8 @@ export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
 const CHANNELS = new Set(["discord", "telegram", "slack", "email", "webhook"]);
 /** OpenClaw's own chat surfaces: the Control UI, webchat and the terminal, which only the operator reaches. */
 const CHAT_SURFACES = new Set(["webchat", "chat", "cli", "control-ui"]);
-function channelOf(v: unknown): string | null {
+/** A turn's channel as the chat-kind check reads it: a known chat channel, `chat` for OpenClaw's own surfaces, else `other`. */
+export function channelOf(v: unknown): string | null {
   if (typeof v !== "string" || !v) return null;
   const c = v.toLowerCase();
   if (CHANNELS.has(c)) return c;
@@ -664,7 +678,11 @@ export function buildPlanir(b: BuildInput): Built {
   // owner (kept there or not): PlanIR has no word for these, so they go as `review_timed_out` (what was asked for did
   // not run, and a retry of it is a retry after a review).
   const history = window.map(({ _host_call_id: _drop, _patch_skill: _dropSkill, ...h }) =>
-    (DRAFT_OR_HELD.has(h.decision) ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id" | "_patch_skill">,
+    (DRAFT_OR_HELD.has(h.decision)
+      ? { ...h, decision: "review_timed_out" }
+      : Object.hasOwn(BY_OWNER, h.decision)
+        ? { ...h, decision: BY_OWNER[h.decision]! }
+        : h) as Omit<HistoryEntry, "_host_call_id" | "_patch_skill">,
   );
 
   const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);

@@ -196,18 +196,22 @@ test("history, why and report are owner commands that require the admin scope", 
   const { commands } = await registered();
   assert.deepEqual(Object.keys(commands).sort(), [
     "sentrook",
+    "sentrook-allow",
     "sentrook-approve",
     "sentrook-bind",
+    "sentrook-deny",
     "sentrook-grant",
     "sentrook-grants",
     "sentrook-history",
     "sentrook-notify",
+    "sentrook-passes",
     "sentrook-report",
     "sentrook-revoke",
+    "sentrook-setup",
     "sentrook-snooze",
     "sentrook-why",
   ]);
-  for (const name of ["sentrook-history", "sentrook-why", "sentrook-report"]) {
+  for (const name of ["sentrook-history", "sentrook-why", "sentrook-report", "sentrook-setup"]) {
     assert.deepEqual(commands[name].requiredScopes, ["operator.admin"]);
     assert.equal(commands[name].acceptsArgs, true);
     assert.equal(commands[name].agentPromptGuidance, undefined);
@@ -257,7 +261,7 @@ test("/sentrook history and why point to the owner commands and show nothing", a
   const help = helpText();
   assert.match(help, /^ {2}\/sentrook-history \[n\] /m);
   assert.match(help, /^ {2}\/sentrook-why \[request_id\|last\] /m);
-  assert.match(help, /^Owner only \(gateway scope operator\.admin\):$/m);
+  assert.match(help, /^Owner only, from the owner's own direct message to the agent .*, from the Control UI, or as openclaw sentrook <command> on the machine:$/m);
 });
 
 test("the CLI forms match the chat forms and are audited as the local terminal", async () => {

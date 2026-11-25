@@ -321,7 +321,7 @@ def catalog_entry(info: dict, plugin_dir: Path = PLUGIN_DIR) -> dict:
         known.append(f"Pre-release: {m['version']}.")
     entry["known_issues"] = known
     entry["capabilities"] = {
-        "provides_tools": template["capabilities"].get("provides_tools", []),
+        "provides_tools": list(m.get("provides_tools", [])),
         "provides_hooks": list(m.get("provides_hooks", [])),
         "provides_middleware": template["capabilities"].get("provides_middleware", []),
         "requires_env": [e["name"] for e in m.get("requires_env", [])],

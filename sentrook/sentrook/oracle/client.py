@@ -7,7 +7,8 @@ the library snapshot the answers came from. `match` says whether a library entry
 not, and when none did, whether the value is a near miss of a `known_good` entry (`near_miss`, with the
 entry in `near_miss`; see `near_miss.py`) or not (`none`). A `known_good` host the library lists as the home of
 the credentials its service issues also carries their environment names (`credential_names`, read by
-`prepare.credential_home`). Reputation depends on role: a host can be a fine code source
+`prepare.credential_home`), and one that names its service lists the names owners call it by (`service_names`, read by
+`prepare.service_names`). Reputation depends on role: a host can be a fine code source
 and a bad data destination, so the role travels with the query.
 
 Three implementations:
@@ -70,6 +71,8 @@ class Verdict:
     #: The environment names of the credentials this host's service issues (a `PREFIX*` is a pattern), from an
     #: exact `known_good` library answer only.
     credential_names: tuple[str, ...] = ()
+    #: The names owners call this host's service by (`Notion`), from an exact `known_good` library answer only.
+    service_names: tuple[str, ...] = ()
 
 
 @dataclass
@@ -128,6 +131,14 @@ def _credential_names(raw: Any, kind: str, verdict: VerdictKind) -> tuple[str, .
     return tuple(sorted({str(n).strip() for n in raw if isinstance(n, str) and n.strip()}))
 
 
+def _service_names(raw: Any, kind: str, verdict: VerdictKind) -> tuple[str, ...]:
+    """Service names count only on a `known_good` host, as the library allows them."""
+    if kind != "host" or verdict is not VerdictKind.KNOWN_GOOD or not isinstance(raw, list | tuple):
+        return ()
+    names = {" ".join(n.split()) for n in raw if isinstance(n, str)}
+    return tuple(sorted(n for n in names if 3 <= len(n) <= 64))
+
+
 class SeedOracle:
     """Verdicts from a TestNest `oracle_seed`. Hosts also match a seeded parent domain. An `unknown`
     seed entry without a distrust says no more than leaving the entity out, so it is not an exact match
@@ -155,10 +166,20 @@ class SeedOracle:
                 observations={
                     k: v
                     for k, v in e.items()
-                    if k not in ("kind", "value", "verdict", "distrust", "tier", "credential_names")
+                    if k
+                    not in (
+                        "kind",
+                        "value",
+                        "verdict",
+                        "distrust",
+                        "tier",
+                        "credential_names",
+                        "service_names",
+                    )
                 },
                 source="seed",
                 credential_names=_credential_names(e.get("credential_names"), kind, verdict),
+                service_names=_service_names(e.get("service_names"), kind, verdict),
             )
         self._known_good: dict[str, dict[str, Verdict]] = {}
         for (kind, norm), v in self._by_key.items():
@@ -237,7 +258,7 @@ class NullOracle:
 class HttpOracle:
     """Rookery's oracle over HTTP. Wire shapes: request `{"entities": [{kind, value, roles}]}`, response
     `{"verdicts": [{kind, value, verdict, distrust?, tier?, observations?, match?, near_miss?,
-    credential_names?}],
+    credential_names?, service_names?}],
     "library_snapshot": "..."}`."""
 
     name = "rookery"
@@ -278,6 +299,11 @@ class HttpOracle:
                 near_miss=dict(near) if near_ok else None,
                 credential_names=(
                     _credential_names(v.get("credential_names"), v["kind"], verdict)
+                    if match is Match.EXACT
+                    else ()
+                ),
+                service_names=(
+                    _service_names(v.get("service_names"), v["kind"], verdict)
                     if match is Match.EXACT
                     else ()
                 ),

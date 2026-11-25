@@ -113,6 +113,11 @@ def harness(tmp_path, monkeypatch):
         def register_hook(self, name, fn):
             self.hooks[name] = fn
 
+        def register_tool(self, name, toolset, schema, handler, **kw):
+            self.tools = getattr(self, "tools", {})
+            self.tools[name] = {"toolset": toolset, "schema": schema, "handler": handler, **kw}
+            return object()
+
         def dispatch_tool(self, name, args, **_kw):
             """Hermes's own answer where a tool is not registered; tests that send notices replace it."""
             return json.dumps({"error": f"Unknown tool: {name}"})
@@ -135,6 +140,26 @@ def harness(tmp_path, monkeypatch):
         json.loads(x) for x in (tmp_path / "sentrook" / "traffic.jsonl").read_text().splitlines()
     ]
     return fake
+
+
+@pytest.fixture
+def own_registry(harness, monkeypatch):
+    """Hermes's tool registry (`tools.registry`), naming the handler each tool was registered with in the harness, so
+    the plugin can tell its own tools from another plugin's tool of the same name."""
+    import types
+
+    def get_entry(name):
+        tool = getattr(harness.ctx, "tools", {}).get(name)
+        return types.SimpleNamespace(handler=tool["handler"]) if tool else None
+
+    mod = types.ModuleType("tools.registry")
+    mod.registry = types.SimpleNamespace(get_entry=get_entry)
+    if "tools" not in sys.modules:
+        pkg = types.ModuleType("tools")
+        pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "tools", pkg)
+    monkeypatch.setitem(sys.modules, "tools.registry", mod)
+    return mod
 
 
 @pytest.fixture

@@ -1,6 +1,7 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v10): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v11): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
-objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
+objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
+named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
 
 Secret-shaped values are built at runtime from obviously fake, low-entropy parts, so no literal in this
@@ -11,10 +12,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
-import time
 from pathlib import Path
 
 import pytest
+from linear_time import assert_linear
 
 from sentrook.prepare.redact import PLACEHOLDER, REDACTION_VERSION, redact_text, second_pass
 
@@ -101,7 +102,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v10"
+    assert REDACTION_VERSION == "redact-v11"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -109,50 +110,68 @@ def test_two_shapes_on_one_value_count_once():
     assert n == 1 and out == f"OPENAI_API_KEY={P}"
 
 
+# Each input is head + unit * count + tail, so it can be built at 1/4 size: the check is how the time
+# grows with the input (see linear_time.py), not a wall-clock bound that a slow runner misses.
+ADVERSARIAL = [
+    ("", "eyJ", 300_000, "!"),
+    ("", "sk-", 300_000, ""),
+    ("", "token=", 150_000, ""),
+    ("", "authorization: bearer ", 40_000, ""),
+    ("", "-----BEGIN PRIVATE KEY-----", 30_000, ""),
+    ("", "a", 1_000_000, ""),
+    ("", "-----BEGIN " + " ".join(["OPENSSH", "PRIVATE", "KEY"]) + "-----\\n", 25_000, ""),
+    ("", "a_", 500_000, ""),
+    ("", "the database password is now set to ", 25_000, ""),
+    ("", "token ", 160_000, ""),
+    ("", '\\"password\\": \\"', 70_000, ""),
+    ("postgres://" + "u" * 300, ":", 100_000, ""),
+    ("", "SECRET_", 140_000, ""),
+    ("mysql " * 30 + '-p"', "a", 1_000_000, ""),
+    ("", 'mysql -p\\"' + "a" * 100, 10_000, ""),
+    ("", "sshpass -e ", 100_000, ""),
+    ("", "--password ", 100_000, ""),
+    ("token=" + "a" * 8, ".", 1_000_000, ""),
+    ('token="', "-token=", 140_000, ""),
+    ("SECRET_X=" + "a" * 12, ")", 1_000_000, ""),
+    ("", "the password changed, it's now ", 30_000, ""),
+    ("", "the token was rotated and", 40_000, ""),
+    ("token = ", "get.", 250_000, ""),
+    ("token = ", "getSecret", 100_000, "x"),
+    ("token = ", "a_", 400_000, "."),
+    ("token: ", "x()", 300_000, ""),
+    ("token = ", "a(b.", 200_000, ""),
+    ("token = self.", "a.", 300_000, "x"),
+    ("token = ", "b64decode.", 100_000, "-"),
+    ("token = x(", "a.", 300_000, "x"),
+    ("token = ", "a[1]", 200_000, "x"),
+    ("token = ", "aaa1", 200_000, "("),
+    ("token: config.", "a", 1_000_000, ""),
+    ("token = ", "a(b", 300_000, ""),
+]
+
+
+def _build(case: tuple[str, str, int, str], divisor: int = 1) -> str:
+    head, unit, count, tail = case
+    return head + unit * (count // divisor) + tail
+
+
 @pytest.mark.parametrize(
-    "text",
-    [
-        "eyJ" * 300_000 + "!",
-        "sk-" * 300_000,
-        "token=" * 150_000,
-        "authorization: bearer " * 40_000,
-        "-----BEGIN PRIVATE KEY-----" * 30_000,
-        "a" * 1_000_000,
-        ("-----BEGIN " + " ".join(["OPENSSH", "PRIVATE", "KEY"]) + "-----\\n") * 25_000,
-        "a_" * 500_000,
-        "the database password is now set to " * 25_000,
-        "token " * 160_000,
-        '\\"password\\": \\"' * 70_000,
-        "postgres://" + "u" * 300 + ":" * 100_000,
-        "SECRET_" * 140_000,
-        "mysql " * 30 + '-p"' + "a" * 1_000_000,
-        ('mysql -p\\"' + "a" * 100) * 10_000,
-        "sshpass -e " * 100_000,
-        "--password " * 100_000,
-        "token=" + "a" * 8 + "." * 1_000_000,
-        'token="' + "-token=" * 140_000,
-        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
-        "the password changed, it's now " * 30_000,
-        "the token was rotated and" * 40_000,
-        "token = " + "get." * 250_000,
-        "token = " + "getSecret" * 100_000 + "x",
-        "token = " + "a_" * 400_000 + ".",
-        "token: " + "x()" * 300_000,
-        "token = " + "a(b." * 200_000,
-        "token = self." + "a." * 300_000 + "x",
-        "token = " + "b64decode." * 100_000 + "-",
-        "token = x(" + "a." * 300_000 + "x",
-        "token = " + "a[1]" * 200_000 + "x",
-        "token = " + "aaa1" * 200_000 + "(",
-        "token: config." + "a" * 1_000_000,
-        "token = " + "a(b" * 300_000,
-    ],
-    ids=lambda text: f"{text[:12]!r}x{len(text)}",
+    "case", ADVERSARIAL, ids=lambda case: f"{(case[0] + case[1])[:12]!r}x{len(_build(case))}"
 )
-def test_linear_time_on_adversarial_input(text):
-    t0 = time.perf_counter()
-    redact_text(text)
-    assert time.perf_counter() - t0 < 2.0
+def test_linear_time_on_adversarial_input(case):
+    assert_linear(lambda d: redact_text(_build(case, d)), what=repr(_build(case)[:40]))
+
+
+def test_linear_time_check_passes_on_a_slower_runner():
+    """A runner 3x slower (every call made three times over) grows the same way, so it still passes,
+    where it would miss the old 2-second bound."""
+    case = ("", "token ", 160_000, "")
+
+    def slow(d: int) -> None:
+        for _ in range(3):
+            redact_text(_build(case, d))
+
+    assert_linear(slow, what="3x slower")
 
 
 # Secret-looking values for the forms below, built at run time.
@@ -521,6 +540,99 @@ def test_rules_are_the_plugins_rules():
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
     assert redact._CODE_READERS == plugin._CODE_READERS
+    # The cue and key rules: access codes, PINs, identifiers and random values.
+    assert [(k, rx.pattern) for k, rx, _ in redact._CUES] == [
+        (k, rx.pattern) for k, rx, _ in plugin._CUES
+    ]
+    for name in (
+        "_CODE_KEY",
+        "_RANDOM_KEY",
+        "_RANDOM_VALUE",
+        "_NOT_SECRET_KEY",
+        "_NOT_SECRET_CAMEL_KEY",
+        "_PREFIXED_OBJECT_ID",
+    ):
+        assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
+    assert redact._ORDINARY_CODE_PREFIX == plugin._ORDINARY_CODE_PREFIX
+    assert redact.PLACEHOLDER_KIND == plugin.PLACEHOLDER_KIND
+
+
+# Access codes, PINs and identifiers named by a cue word, and random values under a key or header (redact-v11).
+# Values are built at run time.
+_R20 = "Xk2" + "9fQv" + "7Lm2" + "Pq8a" + "Zt5w" + "B"
+CUE_MUST_REPLACE = [
+    ("the yard gate code is " + "86" + "1206", "861206"),
+    ("Alarm code: " + "72" + "7677", "727677"),
+    ("Left a sign-in code for the yard app: " + "02" + "1145" + ".", "021145"),
+    ("The collection PIN for order 441 is " + "68" + "15" + ".", "6815"),
+    ("Send Sam the side gate code, it is " + "86" + "1206", "861206"),
+    ("The passport number on the booking is " + "DI9J" + "0R9W4" + ".", "DI9J0R9W4"),
+    ("Name: Ivo Marsh. Passport " + "PPCD" + "HFZC6" + ".", "PPCDHFZC6"),
+    ("yard_code=" + "09" + "0373", "090373"),
+    ("client_pin=" + "70" + "21", "7021"),
+    ("curl https://x.example -d 'pin=" + "32" + "53" + "'", "3253"),
+    ("curl https://x.example -d 'code=" + "00" + "6960" + "'", "006960"),
+    ("curl https://x.example -d 'passport=" + "PPCD" + "HFZC6" + "'", "PPCDHFZC6"),
+    ("value: " + _R20, _R20),
+    ("curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644"),
+    ('curl -H "X-Desk: ' + _R20 + '" https://desk.example', _R20),
+]
+CUE_MUST_STAY = [
+    "zip_code=94107",
+    "status_code: 404",
+    "exit code 1",
+    "order 441",
+    "PIN the post to the channel",
+    "country_code=44",
+    "commit 9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a",
+    "X-Request-Id: 3F2504E0-4F89-11D3-9A0C-0305E82C3301",
+    "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "sha256: " + "ab12" * 16,
+    "Content-Type: application/json",
+    "version: 2.0.0a1",
+    "className: PrimaryButton2",
+    # A word before a colon in a sentence is prose, not a key.
+    "Decode this for me and tell me what it says: " + "SGVsbG8sIGxpdHRsZSB3b3JsZCE=",
+    "The note says: " + _R20,
+    "host: " + _R20 + ".ngrok.app",
+    "bucket: " + _R20,
+    "error code=447100",
+    "hsn_code: 847130",
+]
+
+
+@pytest.mark.parametrize(("text", "secret"), CUE_MUST_REPLACE)
+def test_cue_and_key_values_are_replaced(text, secret):
+    for form in (text, _as_result(text), json.dumps({"r": _as_result(text)})):
+        out, n = redact_text(form)
+        assert secret not in out and n >= 1, form
+    out, n = second_pass({"arguments": {"command": text}})
+    assert secret not in json.dumps(out) and n >= 1
+
+
+@pytest.mark.parametrize("text", CUE_MUST_STAY)
+def test_cue_look_alikes_stay(text):
+    for form in (text, _as_result(text)):
+        assert redact_text(form) == (form, 0)
+
+
+def test_cue_values_in_objects_are_replaced_whole():
+    obj = {
+        "headers": {"X-Desk": _R20, "Content-Type": "application/json"},
+        "pin": 3253,
+        "passport_no": "X12345678",
+    }
+    out, n = second_pass(obj)
+    assert out == {
+        "headers": {"X-Desk": P, "Content-Type": "application/json"},
+        "pin": P,
+        "passport_no": P,
+    }
+    assert n == 3
+    assert second_pass({"code": "006960", "zip_code": "94107"}) == (
+        {"code": "006960", "zip_code": "94107"},
+        0,
+    )
 
 
 def test_parity_with_the_hermes_plugin():
@@ -528,6 +640,7 @@ def test_parity_with_the_hermes_plugin():
     both catch: the plugin's own vendor list is not part of this pass."""
     plugin = _plugin_module().Redactor("standard", "parity")
     texts = [t for t, _ in MUST_REPLACE] + MUST_STAY
+    texts += [t for t, _ in CUE_MUST_REPLACE] + CUE_MUST_STAY
     texts += [
         f'curl -H "Authorization: Bearer {TOK}" https://api.example.test',
         f"DB_PASSWORD={PW}\nGITHUB_TOKEN=x",
@@ -611,6 +724,10 @@ def test_object_parity_with_the_hermes_plugin():
     plugin's output would rewrite it.)"""
     plugin = _plugin_module().Redactor("standard", "parity")
     objects = [o for o, _ in OBJECT_MUST_REPLACE] + OBJECT_MUST_STAY
+    objects += [
+        {"headers": {"X-Desk": _R20, "Content-Type": "application/json"}},
+        {"pin": 3253, "client_pin": "7021", "passport": "PPCD" + "HFZC6", "code": "006960"},
+    ]
     objects.append(
         {
             "arguments": {

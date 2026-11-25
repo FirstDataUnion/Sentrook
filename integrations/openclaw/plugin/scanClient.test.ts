@@ -86,3 +86,13 @@ test("a token endpoint off the issuer's origin is refused", async () => {
   assert.equal(r.ok, false);
   assert.ok(!f.calls.some((c) => c.includes("elsewhere.test")));
 });
+
+test("no credentials: the failure says the fix is to sign in", async () => {
+  const { postScan: post } = await import("./scanClient.ts");
+  const failure = await post({ scanUrl: "http://scan.test", oidc: null, body: "{}", timeoutMs: 1000 });
+  assert.equal(failure.ok, false);
+  if (failure.ok) return;
+  assert.equal(failure.kind, "config");
+  assert.equal(failure.setup, "not_signed_in");
+  assert.match(failure.detail, /openclaw sentrook login/);
+});

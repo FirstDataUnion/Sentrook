@@ -150,7 +150,15 @@ def test_the_catalog_entry_pins_a_full_sha_and_the_manifest_version(tmp_path, mi
     assert entry["requires_hermes"] == manifest["requires_hermes"]
     assert entry["repo"] == "https://github.com/FirstDataUnion/Sentrook-hermes"
     assert entry["capabilities"]["provides_hooks"] == manifest["provides_hooks"]
-    assert entry["capabilities"]["requires_env"] == [e["name"] for e in manifest["requires_env"]]
+    assert (
+        entry["capabilities"]["provides_tools"]
+        == manifest["provides_tools"]
+        == ["sentrook_setup_report", "sentrook_propose_setup"]
+    )
+    # No install prompt for the credentials (`hermes sentrook login` stores them), so none are listed.
+    assert entry["capabilities"]["requires_env"] == [
+        e["name"] for e in manifest.get("requires_env", [])
+    ]
     # Quoted, as the catalog asks: a bare 2.0 would read as a number.
     text = (out / "plugin-catalog/sentrook.yaml").read_text()
     assert f'version: "{manifest["version"]}"' in text
@@ -261,6 +269,13 @@ def test_after_promote_the_mirror_readme_is_the_monorepo_readme(tmp_path, mirror
     assert (tip / ".github/pull_request_template.md").exists()
     assert not (tip / "stale_module.py").exists()
     assert not (tip / "tests").exists() and (tip / "plugin.yaml").exists()
+    # The agent skills and rules ship with the plugin, as committed.
+    for rel in (
+        "skills/sentrook-guide/SKILL.md",
+        "skills/sentrook-setup/SKILL.md",
+        "agent-rules.txt",
+    ):
+        assert (tip / rel).read_bytes() == (release.PLUGIN_DIR / rel).read_bytes(), rel
     assert f"upstream_sha={UPSTREAM}" in (tip / ".release-mirror").read_text()
 
     tag = f"refs/tags/hermes-plugin-v{release.manifest()['version']}"

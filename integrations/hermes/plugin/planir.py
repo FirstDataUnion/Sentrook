@@ -143,6 +143,13 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
     cfg = (host_cfg.get("mcp_servers") or {}).get(server or "")
     if not server or not isinstance(cfg, dict):
         return {"kind": "mcp", "name": server, "identity": None, "transport": None}
+    identity, transport = server_identity(cfg)
+    return {"kind": "mcp", "name": server, "identity": identity, "transport": transport}
+
+
+def server_identity(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
+    """An MCP server's identity and transport from its config entry, as a scan names its provider: a remote one
+    by host, a package an installer runs by its package, anything else as a local command (hashed)."""
     identity, transport = None, None
     if cfg.get("url"):
         identity, transport = remote_identity(str(cfg["url"])), "http"
@@ -157,7 +164,7 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
             identity = f"pypi:{pkg}"
         else:
             identity = f"local:{_h(' '.join([cmd, *args]))}"
-    return {"kind": "mcp", "name": server, "identity": identity, "transport": transport}
+    return identity, transport
 
 
 def _pieces(pattern: str) -> list[str]:
@@ -334,8 +341,12 @@ def _text(v: Any) -> str:
 #: History decisions the plugin keeps that PlanIR has no word for, and the word it sends instead. A held
 #: call is a review nobody has answered yet: it did not run, and a retry of it is a retry after a review. So is a
 #: background save staged for the owner in Hermes's pending store (by the plugin, or by Hermes's own gate before
-#: the plugin hears what it did): it is not saved until the owner approves it.
+#: the plugin hears what it did): it is not saved until the owner approves it. A call the owner's pass for the job let
+#: through ran (`allowed`); one their denial refused is a denial by the owner (`denied_by_user`).
 _SENT_DECISION = {
+    # the owner's pass for this job let it through; their denial refused it
+    "allowed_by_pass": "allowed",
+    "denied_by_owner": "denied_by_user",
     "held": "review_timed_out",
     "staged": "review_timed_out",
     "host_staging": "review_timed_out",

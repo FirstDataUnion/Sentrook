@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import grants, report, snooze
+from . import grants, passes, report, snooze
 from .config import PluginConfig
 from .history import (
     HISTORY_DEFAULT,
@@ -66,6 +66,8 @@ _LIMIT = re.compile(r"[0-9]{1,4}")
 _ENTITY_NUM = re.compile(r"[0-9]+")
 
 CMD = "/sentrook {}".format
+#: The answers a held call can offer, as the page shows them.
+_ANSWERS = (passes.ALLOW, passes.ALLOW_ALWAYS, passes.DENY)
 
 
 def _number(v: Any) -> float | None:
@@ -128,7 +130,7 @@ def bucket_of(scan: dict[str, Any], action: str) -> str:
     """Which total a scan counts towards."""
     if _response(scan) is None:
         return "scan_error"
-    if action.startswith("blocked"):
+    if action.startswith(("blocked", "declined")):
         return "blocked"
     if action.startswith(("review", "held", "staged", "sent to Hermes to stage")):
         return "review"
@@ -592,6 +594,13 @@ def pending_of(
                     else None,
                     "grant": grants.describe_grant(grant) if grant else None,
                     "scan": None,
+                    # the answers a hold offers (`passes.offers`); None for a hold from before they were kept
+                    "offers": [o for o in h["offers"] if o in _ANSWERS]
+                    if h.get("v") == 2 and isinstance(h.get("offers"), list)
+                    else None,
+                    "count": h["count"]
+                    if isinstance(h.get("count"), int) and h["count"] > 0
+                    else 1,
                 }
             )
         holds.reverse()
@@ -694,6 +703,10 @@ def build_model(
     except Exception:  # noqa: BLE001 - the page still shows the scans
         grants_text = "Grants could not be read."
     try:
+        passes_text = passes.format_passes(cfg.state_dir, now, CMD)
+    except Exception:  # noqa: BLE001 - the page still shows the scans
+        passes_text = "Passes could not be read."
+    try:
         snooze_text = snooze.status_line(snooze.load(cfg.state_dir), now)
     except Exception:  # noqa: BLE001 - the page still shows the scans
         snooze_text = "Snooze state could not be read."
@@ -705,7 +718,7 @@ def build_model(
         "host": "hermes",
         "lines": {"review_at": cfg.review_at, "block_at": cfg.block_at},
         "mode": cfg.mode,
-        "state": {"grants": grants_text, "snooze": snooze_text},
+        "state": {"grants": grants_text, "passes": passes_text, "snooze": snooze_text},
         "pending": pending_of(
             cfg.traffic_log_path,
             enabled,

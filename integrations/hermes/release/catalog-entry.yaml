@@ -12,7 +12,9 @@ description: >-
   tool call, with its recent inputs and session history, redacted of recognised secrets, to the hosted
   Sentrook scan service (sentrook.firstdataunion.org) and mints a short-lived token from
   identity.firstdataunion.org with the scan credentials Hermes stores (SENTROOK_SCAN_CLIENT_ID /
-  SENTROOK_SCAN_CLIENT_SECRET, read only through get_secret). With skill_review: allow (default) the
+  SENTROOK_SCAN_CLIENT_SECRET, read only through get_secret). hermes sentrook login, run by the user, signs
+  in through identity.firstdataunion.org in a browser and has Hermes store those two values with its own
+  writer; it keeps a random id for the machine in HERMES_HOME/sentrook/device-id. With skill_review: allow (default) the
   redacted recent conversation goes with Hermes's own background skill and memory saves and is kept
   redacted on disk for that. Writes only its own folder (HERMES_HOME/sentrook: traffic log, grants, snooze
   state, held calls, conversation logs); runs no shell commands, and the only process it starts is
@@ -27,8 +29,7 @@ docs_url: https://github.com/FirstDataUnion/Sentrook-hermes#readme
 readme: true
 platforms: []
 known_issues:
-  - "Needs a free FIDU account and scan credentials (identity.firstdataunion.org); without them, enforce mode stops every tool call until they are set."
+  - "Needs a free FIDU account: run hermes sentrook login after install. Until then, enforce mode stops every tool call."
   - "YOLO switched on for a session (/yolo, hermes chat --yolo) also auto-approves Sentrook's review prompts; Sentrook's blocks still apply."
 capabilities:
-  provides_tools: []
   provides_middleware: []

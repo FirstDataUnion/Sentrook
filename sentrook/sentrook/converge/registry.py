@@ -523,6 +523,7 @@ REASONS: dict[str, ReasonText | None] = {
     "relief.provider_grant": None,
     "relief.repo_grant": None,
     "relief.request_named_destination": None,
+    "relief.request_named_service": None,
     "relief.tool_grant": None,
     "remote.account_change": ReasonText(
         "it changes an account or payment setting on {subject}",

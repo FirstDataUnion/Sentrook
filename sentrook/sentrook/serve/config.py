@@ -129,19 +129,19 @@ class ServeConfig:
     jev_api_key: str | None = None
     jev_model: str = DEFAULT_MODEL
     jev_timeout_s: float = 20.0
-    # Shipped defaults: the call-v9 / exposure-v2 question sets and conv-v8 (conv-v5 plus the credential-home relief,
-    # with the provider host relieved too). The frozen v1 sets, the earlier call sets, conv-v1 to conv-v5, conv-v7 and conv-v6 (the attended-owner ceiling, off by
-    # default) stay selectable
+    # Shipped defaults: the call-v11 / exposure-v2 question sets and conv-v9 (conv-v5 plus the credential-home relief,
+    # with the provider host relieved too, and the service-name relief). The frozen v1 sets, the earlier call sets,
+    # conv-v1 to conv-v5, conv-v7, conv-v8 and conv-v6 (the attended-owner ceiling, off by default) stay selectable
     # (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
     jev_exposure_question_set: str = "exposure-v2"
-    jev_call_question_set: str = "call-v9"
+    jev_call_question_set: str = "call-v11"
     #: Declared self-edits (the host's own background saves to memory or skills); "" sends them to the call set.
     jev_selfedit_question_set: str = "selfedit-v3"
     oracle_url: str | None = None
     oracle_api_key: str | None = None
     probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
     packs_default: tuple[str, ...] = ("tier1",)
-    convergence: str = "conv-v8"
+    convergence: str = "conv-v9"
     lists_dir: str | None = None
 
     # test mode
@@ -216,7 +216,7 @@ class ServeConfig:
             ),
             jev_selfedit_question_set=_selfedit_set(env),
             jev_call_question_set=_question_set(
-                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v9", "call"
+                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v11", "call"
             ),
             oracle_url=(env.get("SENTROOK_ORACLE_URL") or "").strip() or None,
             oracle_api_key=_secret(env, "SENTROOK_ORACLE_API_KEY") or None,
@@ -224,7 +224,7 @@ class ServeConfig:
             if probes_raw
             else (),
             packs_default=tuple(p.strip() for p in packs_raw.split(",") if p.strip()) or ("tier1",),
-            convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v8").strip(),
+            convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v9").strip(),
             lists_dir=(env.get("SENTROOK_LISTS_DIR") or "").strip() or None,
             test_mode=test_mode,
         )

@@ -30,6 +30,7 @@ dev = [
     "pytest>=8.3.0",
     "ruff==0.17.5",
     "jsonschema>=4.23.0",
+    "pytest-xdist>=3.6",
 ]
 
 [project.scripts]

@@ -104,6 +104,7 @@ DESTINATION_RELIEF = frozenset(
     {
         "relief.destination_grant",
         "relief.request_named_destination",
+        "relief.request_named_service",
         "relief.owner_config_destination",
         "relief.known_good_destination",
         "relief.repo_grant",

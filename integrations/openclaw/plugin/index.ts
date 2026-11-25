@@ -6,18 +6,35 @@
  * blocks. Every request and response is redacted on the host and appended to a local traffic log.
  */
 
-import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
+import { createHash } from "node:crypto";
+
+import { agentRules, reportedTool, shadowingSkills, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
+import {
+  CLIENT_ID_VAR,
+  CLIENT_SECRET_VAR,
+  envWithOpenclawDotenv,
+  resolveOidcCredentials,
+  resolveSecretString,
+} from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
-import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { type GrantConfig, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
+import { CMD, OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
+import {
+  configProblemsNotice,
+  configProblemsSummary,
+  type GrantConfig,
+  openclawDir,
+  type PluginConfig,
+  resolveConfig,
+} from "./config.ts";
 import * as cronDelivery from "./cronDelivery.ts";
 import * as dashboard from "./dashboard.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
+import * as passes from "./passes.ts";
 import { reviewCard } from "./card.ts";
-import { blockReason, decide, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
+import { blockReason, decide, describe as describeCall, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind, triggerKind } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
@@ -25,6 +42,9 @@ import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
+import * as setup from "./setup.ts";
+import * as proposals from "./proposals.ts";
+import * as setupReport from "./setupReport.ts";
 import * as snooze from "./snooze.ts";
 import { type HistoryEntry, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
@@ -57,9 +77,13 @@ interface OpenClawPluginApi {
     description: string;
     acceptsArgs?: boolean;
     requiredScopes?: string[];
+    /** Lines OpenClaw puts in the agent's system prompt while the command is registered. */
+    agentPromptGuidance?: string[];
     handler: (ctx: any) => Promise<{ text?: string }>;
   }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
+  /** A tool, or a factory OpenClaw runs whenever a run assembles its tools; null from the factory offers none. */
+  registerTool?: (tool: ((ctx: any) => Json | null) | Json, opts?: { name?: string; optional?: boolean }) => void;
   registerHttpRoute?: (route: {
     path: string;
     auth: "gateway" | "plugin";
@@ -183,12 +207,16 @@ const plugin = {
       if (mode === "cli-metadata") return;
     }
 
-    // `/sentrook <subcommand>` in chat; the host answers it without a model request.
+    // `/sentrook <subcommand>` in chat; the host answers it without a model request. Its prompt guidance carries the
+    // agent rules, so the agent has them whether or not it opens one of the plugin's skills.
     try {
+      const rules = agentRules();
+      if (!rules.length) api.logger.warn(`${LOG} agent rules missing from the plugin folder; the agent is not given them`);
       api.registerCommand?.({
         name: "sentrook",
         description: "Sentrook plugin status and help",
         acceptsArgs: true,
+        ...(rules.length ? { agentPromptGuidance: rules } : {}),
         handler: async (ctx) => ({
           text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
         }),
@@ -202,6 +230,17 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    if (mode === "full") {
+      const { cfg: bootCfg, env: bootEnv } = loadConfig();
+      const issuer = bootCfg.endpoints.issuer;
+      if (issuer.ok && !resolveOidcCredentials(api.pluginConfig ?? {}, bootEnv, issuer.url)) {
+        api.logger.warn(
+          `${LOG} not signed in; every tool call is stopped until you run openclaw sentrook login on this machine`,
+        );
+      }
+    }
+    /** The plugin's own skill texts as it loaded them: a read is the plugin's skill read only if it returned these. */
+    const skillTexts = shippedSkillTexts();
     /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
     const ocDir = openclawDir(process.env);
     const hostVersion = runtimeVersion();
@@ -251,6 +290,8 @@ const plugin = {
                       record: (record) => traffic.write(record),
                     },
                     session: commandSessionOf(ctx),
+                    hostConfig: hostConfig(),
+                    openclawDir: ocDir,
                     chat: {
                       channel: ctx.channel,
                       senderId: ctx.senderId,
@@ -273,6 +314,186 @@ const plugin = {
         api.logger.warn(`${LOG} /${sub.command} command unavailable: ${String(err)}`);
       }
     }
+    // ---- the plugin's own agent tools, for the owner's own direct chat: the read-only setup report (setupReport.ts)
+    // and the setup proposal (proposals.ts). Neither sets anything Sentrook allows. ---------------------------------
+    /**
+     * The calls `before_tool_call` allowed, one set of markers per tool, by session and call id, for that tool's own
+     * `execute` to take: a marker for one tool never answers a call of the other.
+     */
+    const ownMarkers = new Map<string, setupReport.Markers>([
+      [setupReport.TOOL, new setupReport.Markers()],
+      [proposals.TOOL, new setupReport.Markers()],
+    ]);
+    /**
+     * For each allowed call (`ownKey`): the inputs its tool reads, as the gate saw them, which `execute` must find the
+     * same (a plugin that changed the arguments after this one's hook leaves the call refused); and whether the session
+     * held content no scan had seen yet.
+     */
+    const ownInputs = new Map<string, { inputs: string; unchecked: boolean }>();
+    const ownKey = (tool: string, sid: string, callId: unknown) => `${tool}\n${sid}\n${String(callId)}`;
+    /** Sessions the factories offered the tools in (OpenClaw said the sender is the owner), most recent last. */
+    const ownOffered = new Map<string, number>();
+    /** The own tools OpenClaw took a registration for. */
+    const ownRegistered = new Set<string>();
+    /** Own tools another plugin's tool of the same name ran in place of, in this process: their calls are scanned. */
+    const ownForeign = new Set<string>();
+    const OWN_RECORD = new Map<string, string>([
+      [setupReport.TOOL, "setup_report"],
+      [proposals.TOOL, "setup_proposal"],
+    ]);
+    const ownRecord = (tool: string, sid: string, outcome: string, extra: Json) =>
+      traffic.write({ kind: OWN_RECORD.get(tool)!, session_ref: sessionRef(sid), outcome, ...extra });
+    const itemsAsked = (params: unknown): Json => {
+      const items = params && typeof params === "object" ? (params as any).items : undefined;
+      return { items: Array.isArray(items) ? items.length : 0 };
+    };
+    const reportText = (days: number, now: Date): string => {
+      const { cfg, env } = loadConfig();
+      const target = store.loadNotify();
+      let shadowed: string[] = [];
+      try {
+        shadowed = shadowingSkills(hostConfig(), process.env).map((s) => s.split(" at ")[0]!);
+      } catch {
+        shadowed = [];
+      }
+      const pc = api.pluginConfig ?? {};
+      const state: setupReport.ReportState = {
+        plugin_version: PLUGIN_VERSION,
+        mode: cfg.mode,
+        review_at: cfg.reviewAt,
+        block_at: cfg.blockAt,
+        scan_ok: cfg.endpoints.scan.ok && cfg.endpoints.issuer.ok,
+        credentials_missing: [
+          resolveSecretString(pc.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
+          resolveSecretString(pc.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
+        ].filter((v): v is string => v !== null),
+        notice: target
+          ? { target: hold.targetText(target), source: "/sentrook-notify here" }
+          : { target: null, why: hold.NOTIFY_UNSET },
+        attended_platforms: null,
+        unsent_grants: Object.keys(cfg.unsentGrants ?? {}).length,
+        shadowed_skills: [...new Set(shadowed)],
+        traffic_log: cfg.trafficLog.enabled,
+      };
+      const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);
+      const log = cfg.trafficLog.enabled ? cfg.trafficLog.path : null;
+      const ev = setup.readEvidence(log, cfg.reviewAt, now, days * 86_400_000);
+      return setupReport.render(state, force, ev, now, days, log !== null && setupReport.logCapped(log));
+    };
+    /** Each own tool: what `execute` answers for a call its marker allowed, and what the traffic log records of it. */
+    const OWN_TOOLS: Array<{
+      name: string;
+      label: string;
+      description: string;
+      parameters: unknown;
+      /** What the tool reads from its arguments; a marker holds it as the gate saw it. */
+      inputs: (params: unknown) => unknown;
+      answer: (sid: string, params: unknown, unchecked: boolean) => { text: string; logged: Json };
+    }> = [
+      {
+        name: setupReport.TOOL,
+        label: "Sentrook setup report",
+        description: setupReport.DESCRIPTION,
+        parameters: setupReport.PARAMETERS,
+        inputs: setupReport.daysOf,
+        answer: (_sid, params) => {
+          const days = setupReport.daysOf(params);
+          return { text: reportText(days, new Date()), logged: { outcome: "answered", days } };
+        },
+      },
+      {
+        name: proposals.TOOL,
+        label: "Sentrook setup proposal",
+        description: proposals.description(CMD),
+        parameters: proposals.PARAMETERS,
+        inputs: proposals.check,
+        answer: (sid, params, unchecked) => {
+          const { cfg } = loadConfig();
+          return proposals.propose(cfg.stateDir, proposals.check(params), sessionRef(sid), new Date(), CMD, proposals.newId, unchecked);
+        },
+      },
+    ];
+    const ownTool = (spec: (typeof OWN_TOOLS)[number], toolCtx: any): Json => ({
+      name: spec.name,
+      label: spec.label,
+      description: spec.description,
+      parameters: spec.parameters,
+      async execute(toolCallId: string, params: unknown) {
+        const sid = sessionIdOf(toolCtx);
+        const extra = spec.name === proposals.TOOL ? itemsAsked(params) : {};
+        let text: string = setupReport.REFUSAL;
+        try {
+          const seen = ownInputs.get(ownKey(spec.name, sid, toolCallId));
+          ownInputs.delete(ownKey(spec.name, sid, toolCallId));
+          if (!ownMarkers.get(spec.name)!.take(sid, toolCallId)) {
+            ownRecord(spec.name, sid, "refused", { reason: "no_marker", ...extra });
+          } else if (!seen || seen.inputs !== JSON.stringify(spec.inputs(params))) {
+            ownRecord(spec.name, sid, "refused", { reason: "changed", ...extra });
+          } else {
+            const got = spec.answer(sid, params, seen.unchecked);
+            text = got.text;
+            ownRecord(spec.name, sid, got.logged.outcome as string, Object.fromEntries(Object.entries(got.logged).filter(([k]) => k !== "outcome")));
+          }
+        } catch (err) {
+          api.logger.warn(`${LOG} ${spec.name} failed: ${String(err)}`);
+          text = setupReport.REFUSAL;
+          safely(`${spec.name} record`, () => ownRecord(spec.name, sid, "refused", { reason: "error", ...extra }));
+        }
+        return { content: [{ type: "text", text }], details: {} };
+      },
+    });
+    for (const spec of OWN_TOOLS) {
+      try {
+        if (typeof api.registerTool !== "function") break;
+        api.registerTool(
+          (toolCtx: any) => {
+            // Detached cron runs never carry the owner's identity; anyone else is not offered the tool at all.
+            if (toolCtx?.senderIsOwner !== true) return null;
+            for (const key of [toolCtx.sessionKey, toolCtx.sessionId]) {
+              if (typeof key !== "string" || !key) continue;
+              ownOffered.delete(key);
+              ownOffered.set(key, Date.now());
+            }
+            while (ownOffered.size > 500) ownOffered.delete(ownOffered.keys().next().value!);
+            return ownTool(spec, toolCtx);
+          },
+          { name: spec.name },
+        );
+        ownRegistered.add(spec.name);
+      } catch (err) {
+        api.logger.warn(`${LOG} ${spec.name} tool unavailable: ${String(err)}`);
+      }
+    }
+    /**
+     * The own tool a call is of, when it is one: a tool the plugin registered, offered in this session, and not found
+     * answered by another plugin's tool (`foreignOwnTool`). Such a call is not scanned (`ownToolGate`).
+     */
+    const ownToolCall = (event: any, ctx: any): string | null =>
+      typeof event?.toolName === "string" &&
+      ownRegistered.has(event.toolName) &&
+      !ownForeign.has(event.toolName) &&
+      [ctx?.sessionKey, ctx?.sessionId].some((k) => typeof k === "string" && ownOffered.has(k))
+        ? event.toolName
+        : null;
+    /**
+     * After a call of an own tool `before_tool_call` allowed: OpenClaw runs the factory before it drops a tool whose
+     * name another plugin already took, so a call can be allowed and then reach the other plugin's tool. A mark still
+     * there on a call that ran without error means this plugin's `execute` never ran: the call is recorded as
+     * `foreign_tool` (`FOREIGN_TEXT`, in status and verify) and every later call of that name is scanned like any other.
+     */
+    const foreignOwnTool = (event: any, ctx: any): void => {
+      const tool = event?.toolName;
+      const callId = event?.toolCallId ?? ctx?.toolCallId;
+      if (typeof tool !== "string" || !OWN_RECORD.has(tool) || !callId) return;
+      const sid = sessionIdOf(ctx);
+      ownInputs.delete(ownKey(tool, sid, callId));
+      if (!ownMarkers.get(tool)!.drop(sid, callId) || event?.error) return;
+      ownForeign.add(tool);
+      api.logger.warn(`${LOG} ${tool}: ${setupReport.FOREIGN_TEXT}`);
+      safely(`${tool} record`, () => ownRecord(tool, sid, "foreign_tool", {}));
+      safely(`${tool} flag`, () => store.saveForeignTool(tool, new Date()));
+    };
+
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
     /**
@@ -422,6 +643,7 @@ const plugin = {
 
     // ---- tool results --------------------------------------------------------------------------
     api.on("after_tool_call", async (event: any, ctx: any) => {
+      safely("own tool check", () => foreignOwnTool(event, ctx));
       try {
         const hostId: string | undefined = event?.toolCallId ?? ctx?.toolCallId;
         if (!hostId || UNSCANNED_TOOLS.has(event?.toolName)) return;
@@ -462,6 +684,14 @@ const plugin = {
           const sizeBytes = Buffer.byteLength(text, "utf8");
           const ran = !(NOT_RUN.has(entry.decision) && event?.error);
           entry.result = { status: event?.error || !ran ? "error" : "ok", size_bytes: ran ? sizeBytes : 0 };
+          // A read of one of the plugin's own skill files that succeeded goes to the scanner as a read of the agent's
+          // own skills (`agentSkills.ts`).
+          if (entry.tool === "read" || entry.tool === SKILL_READ_TOOL) {
+            const ok = ran && !event?.error;
+            entry.tool = reportedTool(entry.tool, ok ? (event?.params ?? entry.arguments) : null, ok ? text : "", {
+              texts: skillTexts,
+            });
+          }
           if (ran) {
             const redactor = createRedactor("standard", store.salt());
             const redacted = redactor.string(text);
@@ -504,8 +734,11 @@ const plugin = {
       "before_tool_call",
       async (event: any, ctx: any): Promise<BeforeToolCallResult | undefined> => {
         if (UNSCANNED_TOOLS.has(event?.toolName)) return undefined;
+        const own = ownToolCall(event, ctx);
+        if (own) return ownToolGate(event, ctx, own);
         try {
           const { cfg, env } = loadConfig();
+          if (cfg.configProblems.length) settingsNotice(cfg);
           const sid = sessionIdOf(ctx);
           return await store.withSession(sid, () => scanOne(cfg, env, sid, event, ctx));
         } catch (err) {
@@ -516,6 +749,77 @@ const plugin = {
       },
       { priority: 10 },
     );
+
+    /**
+     * `before_tool_call` for the plugin's own agent tools: not scanned, and allowed only on the owner's own message in
+     * a direct chat (`setupReport.reportAllowed`, from the run's trigger as the plugin recorded it). An allowed call
+     * gets its marker (session and call id) and a step in the session's history, so its result goes to the next scan
+     * like any tool result. Anything else, a failure included, gets `setupReport.REFUSAL` and nothing more.
+     */
+    async function ownToolGate(event: any, ctx: any, tool: string): Promise<BeforeToolCallResult | undefined> {
+      const sid = sessionIdOf(ctx);
+      const refuse = (reason: string): BeforeToolCallResult => {
+        const extra = tool === proposals.TOOL ? itemsAsked(event?.params) : {};
+        safely(`${tool} record`, () => ownRecord(tool, sid, "refused", { reason, ...extra }));
+        return { block: true, blockReason: setupReport.REFUSAL };
+      };
+      try {
+        const { cfg } = loadConfig();
+        return await store.withSession(sid, () => {
+          const runId = event?.runId ?? ctx?.runId;
+          const run = store.loadRun(runId);
+          const callId = event?.toolCallId ?? ctx?.toolCallId;
+          if (!runId || typeof callId !== "string" || !callId || !setupReport.reportAllowed(run, ctx, cfg, hostConfig())) {
+            return refuse("not_owner_turn");
+          }
+          const sess = store.loadSession(sid);
+          const built = buildPlanir({
+            hostConfig: hostConfig(),
+            cfg,
+            redactor: createRedactor("standard", store.salt()),
+            event,
+            ctx,
+            sid,
+            sess,
+            run,
+            assistant: store.loadAssistant(ctx?.sessionKey),
+            parents: store.parents(),
+            grants: [],
+            hostVersion,
+            hostProcess: false,
+            selfEdit: null,
+          });
+          sess.history.push({
+            step: built.step,
+            turn: built.turn,
+            call_id: built.callId,
+            tool: event.toolName,
+            tool_kind: built.toolKind,
+            provider: built.provider,
+            arguments: built.historyArgs,
+            result: null,
+            action_fingerprint: null,
+            risk: null,
+            tiers: null,
+            request_id: built.planir.request_id,
+            decision: "allowed",
+            ...(built.hostCallId ? { _host_call_id: built.hostCallId } : {}),
+          });
+          store.saveSession(sid, sess, cfg.historyLimit * 2);
+          ownMarkers.get(tool)!.put(sid, callId);
+          // Content the chat read since the last scan reaches the scanner only with the next scanned call: what it
+          // was cannot be checked now, so the owner is told. The plugin's own tools' results are its own text.
+          const unchecked = (built.planir.new_inputs as any[]).some((i) => !OWN_RECORD.has(i?.tool));
+          const spec = OWN_TOOLS.find((t) => t.name === tool)!;
+          ownInputs.set(ownKey(tool, sid, callId), { inputs: JSON.stringify(spec.inputs(event?.params)), unchecked });
+          while (ownInputs.size > 500) ownInputs.delete(ownInputs.keys().next().value!);
+          return undefined;
+        });
+      } catch (err) {
+        api.logger.warn(`${LOG} ${tool} check failed: ${String(err)}`);
+        return refuse("error");
+      }
+    }
 
     /** On a cron run, the grant for its job's own delivery target (`cronDelivery.ts`); a failed read gives none. */
     function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, params: unknown): GrantConfig[] {
@@ -653,6 +957,8 @@ const plugin = {
         return params ? { params } : null;
       };
       let held: Json | null = null;
+      /** The owner's pass or denial that settled an unattended review (passes.ts). */
+      let byPass: Json | null = null;
       /** The suggested grant "allow always" sets, when the prompt offers it. */
       let remember: grants.Entry | null = null;
       if (result.ok) {
@@ -753,10 +1059,28 @@ const plugin = {
           hook = { block: true, blockReason: bg.HELD_CALL_TEXT };
           held = { id: null, background: true, run: runKind, notice: heldCallNotice(cfg, built, resp, event.toolName, triggerKind, run, runKind) };
         } else if (unattended) {
-          // Nobody can answer a review here: the call waits for the owner (hold.ts).
-          entry.decision = "held";
-          hook = { block: true, blockReason: hold.HELD_TEXT };
-          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
+          // Nobody can answer a review here: the owner's denial or pass for this job and action settles it
+          // (passes.ts); otherwise the call waits for the owner (hold.ts).
+          const jobId = hold.cronJobId(ctx, run);
+          const match = passes.matchOf(event.toolName, resp, event?.params ?? {}, store.salt(), jobId === null);
+          let settled: Json | null = null;
+          try {
+            settled = passes.check(cfg.stateDir, passes.jobRef(jobId), match, resp, new Date());
+          } catch (err) {
+            api.logger.warn(`${LOG} could not read the passes: ${String(err)}`);
+          }
+          if (settled?.kind === "deny") {
+            entry.decision = "denied_by_owner";
+            hook = { block: true, blockReason: passes.DECLINED_TEXT };
+            byPass = { id: settled.id, kind: "deny" };
+          } else if (settled) {
+            entry.decision = "allowed_by_pass";
+            byPass = { id: settled.id, kind: "allow", uses: settled.uses, use_count: settled.use_count };
+          } else {
+            entry.decision = "held";
+            hook = { block: true, blockReason: hold.HELD_TEXT };
+            held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, { sid, jobId, match });
+          }
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -819,6 +1143,7 @@ const plugin = {
         ...(relaxed ? { relaxed: true } : {}),
         ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
+        ...(byPass ? { pass: byPass } : {}),
         ...(notice ? { notice } : {}),
         ...(scannedSelfEdit ? { skill_review: true, self_edit: { kind: hostKind, store: declaredStore } } : {}),
         ...(hostKind && !scannedSelfEdit ? { host_process: hostKind } : {}),
@@ -833,7 +1158,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : byPass ? ` (${byPass.kind === "deny" ? "refused by" : "let through by"} ${byPass.id})` : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );
@@ -901,6 +1226,7 @@ const plugin = {
       triggerKind: string,
       run: any,
       kind: selfEdit.SelfEditKind | null = null,
+      boundJob?: string | null,
     ): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
@@ -908,7 +1234,11 @@ const plugin = {
         hook: "webhook or event run",
         subagent: "subagent run",
       };
-      const job = triggerKind === "scheduled" || kind === "curator" ? hold.cronJobOf(run?.prompt) : null;
+      // The job OpenClaw's run metadata names comes first; the prompt's tag only names a run the metadata does not.
+      const tagged = triggerKind === "scheduled" || kind === "curator" ? hold.cronJobOf(run?.prompt) : null;
+      // A hold names the job its answers are bound to (`boundJob`, from the run metadata), never the tag alone.
+      const hostJob = boundJob !== undefined ? boundJob : hold.cronJobId(null, run);
+      const job = hostJob ? { id: hostJob, name: tagged?.id === hostJob ? tagged.name : null } : boundJob !== undefined ? null : tagged;
       const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
       return { where: hold.whereText(name, sref, job?.id, job?.name), jobId: job?.id ?? null };
     }
@@ -918,6 +1248,27 @@ const plugin = {
         return api.runtime?.channel?.outbound;
       } catch {
         return undefined; // the runtime throws outside full registration
+      }
+    }
+
+    /** When this process last sent or found quiet each settings notice. */
+    const settingsNoticeAt = new Map<string, number>();
+
+    /**
+     * Tells the owner about settings Sentrook cannot read, at a scanned call: once per set of problems, then not
+     * again for the quiet period while they stand. The call's outcome never depends on it.
+     */
+    function settingsNotice(cfg: PluginConfig): void {
+      try {
+        const key = `settings:${createHash("sha256").update(cfg.configProblems.join("\n")).digest("hex").slice(0, 16)}`;
+        // Checked here first, so a call in the quiet period does not wait on the notice file's lock.
+        const last = settingsNoticeAt.get(key);
+        if (last !== undefined && Date.now() - last < scanFailure.QUIET_MS) return;
+        // Unsent (no notify target) is not logged per call: the start-up warning, verify and status already say it.
+        const out = quietNotice(cfg, key, () => configProblemsNotice(cfg.configProblems, scanFailure.QUIET_MS / 3600_000), "settings");
+        if (out.status === "queued" || out.status === "quiet") settingsNoticeAt.set(key, Date.now());
+      } catch (err) {
+        api.logger.warn(`${LOG} settings notice failed: ${String(err)}`);
       }
     }
 
@@ -1054,7 +1405,8 @@ const plugin = {
 
     /**
      * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
-     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     * whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of a waiting hold of the
+     * same job and action is counted on it, and no notice is sent.
      */
     function holdCall(
       cfg: PluginConfig,
@@ -1063,10 +1415,11 @@ const plugin = {
       tool: string,
       triggerKind: string,
       run: any,
+      bound: { sid: string; jobId: string | null; match: passes.Match },
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const { where } = unattendedRun(sref, triggerKind, run);
+      const { where } = unattendedRun(sref, triggerKind, run, null, bound.jobId);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
@@ -1077,18 +1430,47 @@ const plugin = {
       }
       const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
       const record = (r: Record<string, unknown>) => traffic.write(r);
-      let id: string | null = null;
+      const level = passes.offeredLevel(resp);
+      const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt);
+      let description = "";
       try {
-        id = hold.create(cfg.stateDir, { requestId: built.planir.request_id, sessionRef: sref, tool, where, hint, notice }, now, record);
+        description = hold.inert(describeCall(resp, tool), 160);
+      } catch {
+        // a malformed response: no description
+      }
+      let id: string | null = null;
+      let repeat = false;
+      try {
+        ({ id, repeat } = hold.create(
+          cfg.stateDir,
+          {
+            requestId: built.planir.request_id,
+            sessionRef: sref,
+            tool,
+            where,
+            hint,
+            notice,
+            sid: bound.sid,
+            jobId: bound.jobId,
+            match: bound.match,
+            level,
+            offers,
+            description,
+          },
+          now,
+          record,
+        ));
         if (id === null) notice = { status: "unsent", target: null, reason: "holds file unreadable" };
       } catch (err) {
         const locked = err instanceof hold.LockTimeoutError;
         if (!locked) api.logger.warn(`${LOG} could not store a hold: ${String(err)}`);
         notice = { status: "unsent", target: null, reason: locked ? "holds file locked" : "holds file not written" };
       }
-      if (id !== null && target && notice.status === "queued") {
+      if (repeat) {
+        notice = { status: "not_sent", target: null, reason: "repeat of a waiting hold" };
+      } else if (id !== null && target && notice.status === "queued") {
         try {
-          const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
+          const text = hold.noticeText(resp, tool, where, id, offers, (v) => `/sentrook-${v}`, bound.jobId !== null);
           const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
             if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
           });
@@ -1103,8 +1485,10 @@ const plugin = {
       }
       return {
         id,
-        expires_at: id ? `${new Date(now.getTime() + hold.HOLD_TTL_MS).toISOString().slice(0, 19)}Z` : null,
+        expires_at: id && !repeat ? `${new Date(now.getTime() + hold.HOLD_TTL_MS).toISOString().slice(0, 19)}Z` : null,
         hint: hint !== null,
+        offers: id ? offers : [],
+        ...(repeat ? { repeat: true } : {}),
         notice,
       };
     }
@@ -1117,7 +1501,15 @@ const plugin = {
         `onScanError=${boot.onScanError} skillReview=${boot.skillReview} ` +
         `traffic=${boot.trafficLog.enabled ? boot.trafficLog.path : "off"}`,
     );
-    if (boot.skillReviewUnknown !== null) {
+    if (boot.configProblems.length) {
+      api.logger.warn(
+        `${LOG} settings not read as written (${boot.configProblems.length}): ${configProblemsSummary(boot.configProblems)}. ` +
+          "Scanning is on, with each of them ignored or replaced as shown; fix plugins.entries.sentrook.config in " +
+          "openclaw.json, then run openclaw sentrook verify",
+      );
+    }
+    // From the environment (a config value is in the list above).
+    if (boot.skillReviewUnknown !== null && api.pluginConfig?.skillReview == null) {
       api.logger.warn(`${LOG} skillReview ${JSON.stringify(boot.skillReviewUnknown)} is not allow or review; reading it as allow`);
     }
     if (!ep.scan.ok || !ep.issuer.ok) {

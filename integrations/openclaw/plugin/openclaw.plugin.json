@@ -2,67 +2,106 @@
   "id": "sentrook",
   "name": "Sentrook",
   "description": "Scans agent tool calls with Sentrook and allows, asks for approval, or blocks them.",
-  "categories": ["security"],
-  "activation": { "onCapabilities": ["hook"] },
-  "contracts": { "agentToolResultMiddleware": ["openclaw"] },
+  "categories": [
+    "security"
+  ],
+  "activation": {
+    "onCapabilities": [
+      "hook"
+    ]
+  },
+  "skills": [
+    "skills"
+  ],
+  "contracts": {
+    "agentToolResultMiddleware": [
+      "openclaw"
+    ],
+    "tools": [
+      "sentrook_setup_report",
+      "sentrook_propose_setup"
+    ]
+  },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
+    "description": "Sentrook reads and checks these settings itself and reports any it cannot read (gateway log, openclaw sentrook verify, /sentrook status, an owner notice), so a typo never makes OpenClaw disable the plugin. Nothing here is enforced by this schema.",
     "properties": {
-      "scanUrl": { "type": "string", "description": "Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1." },
-      "rookeryUrl": { "type": "string", "description": "Rookery base URL (same host rule as scanUrl)." },
-      "oidcIssuer": { "type": "string", "description": "Identity service issuer URL (same host rule as scanUrl)." },
-      "clientId": { "description": "Scan client id. Recommended: an env SecretRef to SENTROOK_SCAN_CLIENT_ID, with the value in the state-dir .env. Without it the plugin reads SENTROOK_SCAN_CLIENT_ID from the environment, then from the state-dir .env." },
-      "clientSecret": { "description": "Scan client secret: an env SecretRef to SENTROOK_SCAN_CLIENT_SECRET, with the value in the state-dir .env, never the value itself. Without it the plugin reads SENTROOK_SCAN_CLIENT_SECRET from the environment, then from the state-dir .env." },
-      "oidcAudience": { "type": "string" },
-      "oidcScope": { "type": "string" },
-      "mode": { "type": "string", "enum": ["enforce", "observe"], "description": "observe scores and logs every call but never blocks or asks." },
-      "reviewAt": { "type": "number", "minimum": 0, "maximum": 100, "description": "Ask the user at or above this risk (default 45)." },
-      "blockAt": { "type": "number", "minimum": 0, "maximum": 101, "description": "Block at or above this risk (default 80)." },
-      "onScanError": { "type": "string", "enum": ["allow", "deny", "review"] },
-      "timeoutMs": { "type": "number", "minimum": 1000 },
+      "scanUrl": {
+        "description": "Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1."
+      },
+      "rookeryUrl": {
+        "description": "Rookery base URL (same host rule as scanUrl)."
+      },
+      "oidcIssuer": {
+        "description": "Identity service issuer URL (same host rule as scanUrl)."
+      },
+      "clientId": {
+        "description": "Scan client id. Recommended: an env SecretRef to SENTROOK_SCAN_CLIENT_ID, with the value in the state-dir .env. Without it the plugin reads SENTROOK_SCAN_CLIENT_ID from the environment, then from the state-dir .env."
+      },
+      "clientSecret": {
+        "description": "Scan client secret: an env SecretRef to SENTROOK_SCAN_CLIENT_SECRET, with the value in the state-dir .env, never the value itself. Without it the plugin reads SENTROOK_SCAN_CLIENT_SECRET from the environment, then from the state-dir .env."
+      },
+      "oidcAudience": {
+        "description": "Token audience (default sentrook). Text, or an env SecretRef."
+      },
+      "oidcScope": {
+        "description": "Token scope (default sentrook.scan). Text, or an env SecretRef."
+      },
+      "mode": {
+        "description": "enforce (default) or observe. observe scores and logs every call but never blocks or asks."
+      },
+      "reviewAt": {
+        "description": "Ask the user at or above this risk: a number from 0 to 100 (default 45)."
+      },
+      "blockAt": {
+        "description": "Block at or above this risk: a number from 0 to 101 (default 80); never below reviewAt."
+      },
+      "onScanError": {
+        "description": "What happens to a call when the scan fails: allow, deny or review (default review)."
+      },
+      "timeoutMs": {
+        "description": "Scan timeout in milliseconds, at least 1000 (default 30000)."
+      },
       "approval": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "interactiveTimeoutMs": { "type": "number", "minimum": 1 },
-          "scheduledIntentKinds": { "type": "array", "items": { "type": "string", "enum": ["user", "cron", "subagent", "system"] } }
-        }
+        "description": "{ interactiveTimeoutMs: how long an approval waits, above 0 (default 300000); scheduledIntentKinds: a list of user, cron, subagent, system }."
       },
-      "stateDir": { "type": "string" },
+      "stateDir": {
+        "description": "Where the plugin keeps its files (default ~/.openclaw/sentrook)."
+      },
       "trafficLog": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "enabled": { "type": "boolean" },
-          "path": { "type": "string" },
-          "maxBytes": { "type": "number", "minimum": 1024 }
-        }
+        "description": "{ enabled: true or false (default true); path; maxBytes: at least 1024 }."
       },
-      "historyLimit": { "type": "number", "minimum": 1, "maximum": 200 },
-      "inputCapBytes": { "type": "number", "minimum": 1024 },
-      "historyArgsCapBytes": { "type": "number", "minimum": 256 },
-      "dashboardShowCalls": { "type": "boolean" },
-      "packs": { "type": "array", "items": { "type": "string" } },
-      "trustedSenders": { "type": "array", "items": { "type": "string" } },
-      "trustedRoles": { "type": "array", "items": { "type": "string" } },
+      "historyLimit": {
+        "description": "How many earlier steps a scan sends: 1 to 200 (default 20)."
+      },
+      "inputCapBytes": {
+        "description": "Largest tool input sent in full, at least 1024 bytes."
+      },
+      "historyArgsCapBytes": {
+        "description": "Largest earlier-step arguments sent in full, at least 256 bytes."
+      },
+      "dashboardShowCalls": {
+        "description": "true or false (default false): each dashboard scan shows its call, with redacted arguments."
+      },
+      "packs": {
+        "description": "Scan packs sent with each scan: a list of names (default tier1)."
+      },
+      "trustedSenders": {
+        "description": "Sender ids whose messages are sent as from a trusted sender (not the owner): a list."
+      },
+      "trustedRoles": {
+        "description": "Chat role ids whose members' messages are sent as from a trusted sender: a list."
+      },
       "grants": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "pattern"],
-          "properties": {
-            "kind": { "type": "string", "description": "destination | file | provider" },
-            "pattern": { "type": "string" },
-            "allows": { "type": "array", "items": { "type": "string" } },
-            "scope": { "type": "string", "enum": ["session", "persistent"], "description": "persistent when absent. A config grant has no session, so scope session is never sent; /sentrook-grant adds session grants without editing config." },
-            "granted_at": { "type": "string" }
-          }
-        }
+        "description": "Standing grants: a list of { kind, pattern, allows?, scope?, granted_at? }; kind is destination, file, provider, repo or credential. scope is persistent when absent; a config grant has no session, so scope session is never sent (/sentrook-grant adds session grants without editing config)."
       },
-      "channelBindings": { "type": "array", "items": { "type": "string" }, "description": "Channels this deployment normally delivers to; sent as destination grants. /sentrook-bind adds more without editing config." },
-      "skillReview": { "type": "string", "description": "allow (default): OpenClaw's own background saves (the Skill Workshop review, the memory flush, the skill collection review) are sent as the host's, not the owner's, and their saves as self-edits judged against the conversation they came from. review: sent like any other call, as before. Any other value reads as allow. Either way their saves are never asked about: nobody can answer a prompt in those runs." }
+      "channelBindings": {
+        "description": "Channels this deployment normally delivers to; sent as destination grants. /sentrook-bind adds more without editing config."
+      },
+      "skillReview": {
+        "description": "allow (default): OpenClaw's own background saves (the Skill Workshop review, the memory flush, the skill collection review) are sent as the host's, not the owner's, and their saves as self-edits judged against the conversation they came from. review: sent like any other call, as before. Any other value reads as allow. Either way their saves are never asked about: nobody can answer a prompt in those runs."
+      }
     }
   }
 }

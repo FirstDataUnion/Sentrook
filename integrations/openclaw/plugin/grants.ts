@@ -48,7 +48,7 @@ export const CREDENTIAL_PATTERN = new RegExp(
  * Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard there,
  * or on part of a numeric address, covers strangers, and Sentrook refuses it.
  */
-const SHARED_SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
+export const SHARED_SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
 
 /** `NAME@host` as Sentrook reads it (the host already lower-cased). */
 export function credentialPatternOk(pattern: string): boolean {
@@ -59,11 +59,18 @@ export function credentialPatternOk(pattern: string): boolean {
   if (labels.every((l) => /^\d+$/.test(l))) return false;
   return !(labels.length === 2 && SHARED_SECOND_LEVEL.has(labels[0]!) && labels[1]!.length === 2);
 }
+/**
+ * `pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared country
+ * second level (`*.co.uk`) or part of a numeric address. The rule is `credentialPatternOk`'s, for the host alone.
+ */
+export function wildcardDomainOk(pattern: string): boolean {
+  return pattern.startsWith("*.") && credentialPatternOk(`NAME@${pattern.toLowerCase().replace(/\.+$/, "")}`);
+}
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
-const SESSION_REF = /^s_[0-9a-f]{12}$/;
+export const SESSION_REF = /^s_[0-9a-f]{12}$/;
 export const MAX_PATTERN = 256;
-const MAX_EXPIRY_MS = 365 * 24 * 3600_000;
+export const MAX_EXPIRY_MS = 365 * 24 * 3600_000;
 const UNIT_MS: Record<string, number> = { m: 60_000, h: 3600_000, d: 24 * 3600_000 };
 
 /** (subcommand) -> the command as the owner types it, e.g. "/sentrook-bind". */
@@ -93,7 +100,7 @@ const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC
 
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|[^\P{Zs} ]/u;
 
-function printable(s: string): boolean {
+export function printable(s: string): boolean {
   return !NOT_PRINTABLE.test(s);
 }
 
@@ -111,7 +118,7 @@ export function expired(entry: Entry, now: Date): boolean {
 }
 
 /** [stored entry, PlanIR grant] for each usable entry, expired ones included. */
-function fileGrants(data: GrantsFile | null): Array<[Entry, GrantConfig]> {
+export function fileGrants(data: GrantsFile | null): Array<[Entry, GrantConfig]> {
   const out: Array<[Entry, GrantConfig]> = [];
   for (const raw of data?.grants ?? []) {
     const [parsed] = parseGrants([raw]);
@@ -120,7 +127,7 @@ function fileGrants(data: GrantsFile | null): Array<[Entry, GrantConfig]> {
   return out;
 }
 
-function fileBindings(data: GrantsFile | null): Entry[] {
+export function fileBindings(data: GrantsFile | null): Entry[] {
   return (data?.bindings ?? []).filter(
     (b): b is Entry => !!b && typeof b === "object" && typeof (b as Entry).pattern === "string" && !!(b as Entry).pattern.trim(),
   );

@@ -204,7 +204,9 @@ export function runPackCheck(): void {
   const declared = [...(pkg.openclaw?.extensions ?? []), ...(pkg.openclaw?.runtimeExtensions ?? [])].map((e) =>
     e.replace(/^\.\//, ""),
   );
-  const required = ["dist/index.js", "openclaw.plugin.json", "package.json", "README.md", "assets/icon.png", ...declared];
+  // The agent skills the manifest lists, and the rules the plugin gives the agent's system prompt.
+  const skills = ["skills/sentrook-guide/SKILL.md", "skills/sentrook-setup/SKILL.md", "agent-rules.txt"];
+  const required = ["dist/index.js", "openclaw.plugin.json", "package.json", "README.md", "assets/icon.png", ...skills, ...declared];
   for (const path of required) {
     assert.ok(packedPaths.has(path), `npm pack is missing ${path}`);
   }

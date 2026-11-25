@@ -65,6 +65,13 @@ def credential_pattern_ok(pattern: str) -> bool:
     return not (len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2)
 
 
+def wildcard_domain_ok(pattern: str) -> bool:
+    """`pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared
+    country second level (`*.co.uk`) or part of a numeric address. The rule is `credential_pattern_ok`'s, for the
+    host alone."""
+    return pattern.startswith("*.") and credential_pattern_ok("NAME@" + pattern.lower().rstrip("."))
+
+
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
@@ -558,10 +565,14 @@ def add_suggested(
     span: timedelta,
     hold_id: str,
     source: str = "from_hold",
+    session_ref: str | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Adds `grant` (from `hint_grant`) as a persistent grant ending `span` from now, for an approved
     hold (`source` `from_hold`, `hold_id` its id) or a review approved always (`from_review`, the scan's
-    request id). The reply names the new grant's id; None for the record when the file could not be read."""
+    request id); with `session_ref` (a review approved for the session), as a grant bound to that session, ending
+    `span` from now at the latest. The reply names the new grant's id; None for the record when the file could not
+    be read."""
+    scope = "session" if session_ref else "persistent"
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         # Once per hold or review: an approval retried after a failed save finds its grant.
@@ -569,7 +580,7 @@ def add_suggested(
             if isinstance(g, dict) and g.get(source) == hold_id and not expired(g, now):
                 at = read_time(g.get("expires_at"))
                 return (
-                    f"Granted {g.get('id')}: {describe_grant(g)} (persistent, expires "
+                    f"Granted {g.get('id')}: {describe_grant(g)} ({g.get('scope', scope)}, expires "
                     f"{_show(at) if at else '?'}).",
                     {"op": "grant", "entry": g, "existing": True},
                 )
@@ -580,7 +591,8 @@ def add_suggested(
         entry = {
             "id": gid,
             **grant,
-            "scope": "persistent",
+            "scope": scope,
+            **({"session_ref": session_ref} if session_ref else {}),
             "granted_at": _iso(now),
             "expires_at": _iso(now + span),
             "set_by": by,
@@ -588,7 +600,7 @@ def add_suggested(
         }
         data["grants"].append(entry)
         return (
-            f"Granted {gid}: {describe_grant(entry)} (persistent, expires {_show(now + span)}).",
+            f"Granted {gid}: {describe_grant(entry)} ({scope}, expires {_show(now + span)}).",
             {"op": "grant", "entry": entry},
         )
 

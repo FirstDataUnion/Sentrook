@@ -57,4 +57,15 @@ expect_fail token-mint verify "token mint" "$root/integrations/openclaw/plugin" 
 expect_fail missing-field seams "api.runtime.compatNoSuchField is missing" "$root/integrations/openclaw/plugin" \
   COMPAT_PROBE_EXTRA=runtime.compatNoSuchField
 
+# A manifest schema that rejects a setting: OpenClaw's doctor --fix then disables the plugin.
+copy_plugin "$work/strict-schema"
+python3 - "$work/strict-schema/openclaw.plugin.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["configSchema"]["additionalProperties"] = False
+json.dump(m, open(p, "w"), indent=2)
+PY
+expect_fail strict-schema settings-doctor "disabled the plugin" "$work/strict-schema"
+
 exit "$failures"

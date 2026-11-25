@@ -4,8 +4,9 @@ A skill is instructions by design and a memory note is the agent's own standing 
 ("does this input carry instructions or authority?") answers yes for every read of them, and the session is tainted.
 The host loads the same content into the prompt with no tool call, and the probe never sees it then. Reads of the
 agent's own store are therefore not sent to the exposure probe: Hermes `skill_view`/`skills_list`, OpenClaw
-`skill_workshop` `view`/`read`, and OpenClaw reads of `MEMORY.md` or `memory/...` inside the workspace (a plain
-`read` or `memory_get`). Everything else about an untrusted input is unchanged.
+`skill_workshop` `view`/`read`, OpenClaw reads of `MEMORY.md` or `memory/...` inside the workspace (a plain
+`read` or `memory_get`), and the Sentrook plugins' own shipped skills (Hermes `skill_view`, OpenClaw
+`plugin_skill:read`). Everything else about an untrusted input is unchanged.
 
 The scenario is invented: an agent looks up one of its skills or memory notes, then runs a harmless listing.
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 import copy
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from test_jev_probes import FakeDecider
@@ -48,6 +50,18 @@ CLEAN = {
     "untrusted_entities": [],
     "max_input_seq": 0,
 }
+REPO = Path(__file__).resolve().parents[2]
+#: The setup skill each Sentrook plugin ships, as the agent reads it.
+SETUP_SKILL = {
+    host: (REPO / f"integrations/{host}/plugin/skills/sentrook-setup/SKILL.md").read_text()
+    for host in ("hermes", "openclaw")
+}
+HERMES_SETUP_VIEW = json.dumps(
+    {"success": True, "name": "sentrook:sentrook-setup", "content": SETUP_SKILL["hermes"]}
+)
+#: Where OpenClaw links a plugin's skills for the agent to read.
+OPENCLAW_SETUP_PATH = "/home/node/.openclaw/plugin-skills/sentrook-setup/SKILL.md"
+FILE_READS = ("read", "read_file", "plugin_skill:read")
 HIGH = {
     "exposure_instructions": {"type": "noul", "noul": 0.94},
     "exposure_authority": {"type": "noul", "noul": 0.6},
@@ -66,7 +80,7 @@ def planir(
                 "turn": 1,
                 "call_id": f"c{n}",
                 "tool": tool,
-                "tool_kind": "file_read" if tool in ("read", "read_file") else "other",
+                "tool_kind": "file_read" if tool in FILE_READS else "other",
                 "provider": provider,
                 "arguments": args,
                 "result": {"status": status, "size_bytes": len(content)},
@@ -79,7 +93,7 @@ def planir(
                 "kind": "tool_result",
                 "call_id": f"c{n}",
                 "tool": tool,
-                "tool_kind": "file_read" if tool in ("read", "read_file") else "other",
+                "tool_kind": "file_read" if tool in FILE_READS else "other",
                 "provider": provider,
                 "status": status,
                 "content_type": "text",
@@ -171,6 +185,14 @@ OWN = {
         [("read", {"path": "/home/node/.openclaw/workspace/memory/2026-11-12.md"}, NOTE)],
     ),
     "openclaw memory_get": ("openclaw", [("memory_get", {"path": "memory/2026-11-12.md"}, NOTE)]),
+    "hermes skill_view of the plugin's own setup skill": (
+        "hermes",
+        [("skill_view", {"name": "sentrook:sentrook-setup"}, HERMES_SETUP_VIEW)],
+    ),
+    "openclaw read of the plugin's own shipped setup skill": (
+        "openclaw",
+        [("plugin_skill:read", {"path": OPENCLAW_SETUP_PATH}, SETUP_SKILL["openclaw"])],
+    ),
 }
 
 NOT_OWN = {
@@ -202,6 +224,24 @@ NOT_OWN = {
         [("memory_get", {"path": "memory/2026-11-12.md", "corpus": "all"}, INJECTED)],
     ),
     "hermes skill_view on openclaw": ("openclaw", [("skill_view", {"name": "x"}, INJECTED)]),
+    "openclaw read of a copy of the plugin's skill in the workspace": (
+        "openclaw",
+        [
+            (
+                "read",
+                {"path": "/home/node/.openclaw/workspace/skills/sentrook-setup/SKILL.md"},
+                SETUP_SKILL["openclaw"] + INJECTED,
+            )
+        ],
+    ),
+    "openclaw read of the plugin's skill path, not reported as the plugin's own": (
+        "openclaw",
+        [("read", {"path": OPENCLAW_SETUP_PATH}, INJECTED)],
+    ),
+    "the openclaw plugin's skill read on hermes": (
+        "hermes",
+        [("plugin_skill:read", {"path": OPENCLAW_SETUP_PATH}, INJECTED)],
+    ),
     "openclaw read MEMORY.md on hermes": ("hermes", [("read", {"path": "MEMORY.md"}, INJECTED)]),
 }
 
@@ -218,6 +258,28 @@ def test_an_own_store_read_is_not_sent_and_does_not_taint(name):
     assert SessionFlag.TAINTED not in env.flags_set and env.contributions == []
     # the exposure views carry only what the probe may send
     assert not p.views["exposure-v2"].get("new_inputs")
+
+
+@pytest.mark.parametrize(
+    "platform, read",
+    [
+        ("hermes", ("skill_view", {"name": "sentrook:sentrook-setup"}, HERMES_SETUP_VIEW)),
+        ("openclaw", ("plugin_skill:read", {"path": OPENCLAW_SETUP_PATH}, SETUP_SKILL["openclaw"])),
+    ],
+    ids=["hermes", "openclaw"],
+)
+def test_reading_the_setup_skill_then_sending_to_an_owner_named_host_is_not_exposed(platform, read):
+    """The agent opens the plugin's own setup skill, then sends to the host the owner named: the skill's text is not
+    content steering the agent."""
+    raw = planir(platform, [read])
+    raw["request"]["text"] = "Set up Sentrook, then post the summary to api.example.com."
+    raw["pending_call"]["arguments"] = {
+        "command": "curl -d @summary.txt https://api.example.com/summary"
+    }
+    p, env, sent = run_exposure(raw)
+    assert p.own_store_inputs == {1}
+    assert env.status is ProbeStatus.SKIPPED and sent == []
+    assert SessionFlag.TAINTED not in env.flags_set and env.contributions == []
 
 
 def test_a_mixed_turn_keeps_exposure_on_the_other_input():
@@ -290,6 +352,11 @@ def test_the_rule_needs_a_workspace_for_memory_files():
         == "skill"
     )
     assert own_store_read("hermes", "skill_view", {}, home="/h", workspace_root="/w") == "skill"
+    assert (
+        own_store_read("openclaw", "plugin_skill:read", {}, home="/h", workspace_root=None)
+        == "skill"
+    )
+    assert own_store_read("hermes", "plugin_skill:read", {}, home="/h", workspace_root="/w") is None
     assert own_store_read(None, "skill_view", {}, home="/h", workspace_root="/w") is None
 
 
@@ -337,8 +404,16 @@ def test_a_tainted_memory_file_is_caught_under_any_spelling(spelling):
     [{"provider": MCP}, {"result": {"status": "error", "size_bytes": 0}}],
     ids=["history step from an MCP server", "history step failed"],
 )
-def test_the_history_step_must_agree(change):
-    raw = planir("hermes", [("skill_view", {"name": "pg-backup"}, SKILL)])
+@pytest.mark.parametrize(
+    "platform, read",
+    [
+        ("hermes", ("skill_view", {"name": "pg-backup"}, SKILL)),
+        ("openclaw", ("plugin_skill:read", {"path": OPENCLAW_SETUP_PATH}, SETUP_SKILL["openclaw"])),
+    ],
+    ids=["hermes skill_view", "openclaw plugin skill read"],
+)
+def test_the_history_step_must_agree(change, platform, read):
+    raw = planir(platform, [read])
     raw["history"][0].update(change)
     assert prep(raw).own_store_inputs == frozenset()
 

@@ -491,7 +491,10 @@ def test_status_reports_missing_credentials_and_a_disabled_traffic_log(harness, 
     monkeypatch.delenv("SENTROOK_SCAN_CLIENT_SECRET")
     harness.ctx.settings["traffic_log"] = {"enabled": False}
     out = slash(harness, "status").splitlines()
-    assert "credentials: missing SENTROOK_SCAN_CLIENT_SECRET (set in Hermes)" in out
+    assert (
+        "credentials: missing SENTROOK_SCAN_CLIENT_SECRET (run hermes sentrook login on the Hermes machine)"
+        in out
+    )
     assert "traffic log: off" in out
 
 

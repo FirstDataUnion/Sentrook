@@ -70,6 +70,12 @@ class ConvergenceParams:
     credential_home_model_sensitivity_cap: float = 2 / 3
     #: With the relief, also relieve the provider host's distrust and untrusted origin (off by default).
     credential_home_relieve_host: bool = False
+    #: Service-name relief (`prepare.service_names`): a host the entity library lists as a service's own, whose service
+    #: the owner's request names, is relieved as a request-named destination when the call judge reads the request as
+    #: meaning that service (its `names_service` answer at or above `service_name_min_yes`, well clear of an undecided
+    #: 0.5). Off by default.
+    service_name_relief: bool = False
+    service_name_min_yes: float = 0.7
     reason_min_value: float = 0.2
     #: Grant hints (`converge.hints`): offered on a call at or above this risk (0-1; the plugins' default review
     #: line) when a single grant would bring it below the line; at most `grant_hints_max` per call (0: none).
@@ -101,6 +107,7 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     ocr = raw.get("owner_config_relief") or {}
     aoc = raw.get("attended_owner_cap") or {}
     chr_ = raw.get("credential_home") or {}
+    snr = raw.get("service_name_relief") or {}
     hints = raw.get("grant_hints") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
     context_section = dict(raw.get("context") or {})
@@ -148,6 +155,8 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         credential_home=bool(chr_.get("enabled", False)),
         credential_home_model_sensitivity_cap=float(chr_.get("model_sensitivity_cap", 2 / 3)),
         credential_home_relieve_host=bool(chr_.get("relieve_host", False)),
+        service_name_relief=bool(snr.get("enabled", False)),
+        service_name_min_yes=float(snr.get("min_yes", 0.7)),
         reason_min_value=float(raw.get("reason_min_value", 0.2)),
         grant_hints_review_line=float(hints.get("review_line", 0.45)),
         grant_hints_max=int(hints.get("max", 3)),

@@ -15,11 +15,12 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from . import (
+    agent_skills,
     card,
     cli,
     commands,
@@ -29,13 +30,21 @@ from . import (
     hold,
     host_turns,
     owner,
+    owner_settings,
+    passes,
+    proposals,
     scan_failure_notice,
+    session_allow,
+    setup,
+    setup_report,
     skill_review,
     skill_turn,
     snooze,
     staging,
 )
-from .auth import resolve_oidc_credentials
+from .auth import CREDENTIAL_VARS, resolve_oidc_credentials
+from .auth import missing_credentials as auth_missing_credentials
+from .commands import OWNER_CHAT
 from .config import PluginConfig, hermes_home, resolve_config
 from .decision import (
     BLOCK_CATEGORIES,
@@ -57,7 +66,7 @@ from .intent import (
 from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
-from .scan_error_policy import ScanFailure, is_auth_failure, scan_error_to_directive
+from .scan_error_policy import ScanFailure, failure_cause, scan_error_to_directive
 from .store import LockTimeout, Store
 from .traffic import TrafficLog
 
@@ -97,6 +106,20 @@ SETTINGS_KEYS = (
 _ctx: Any = None
 _store: Store | None = None
 _traffic: TrafficLog | None = None
+#: The plugin's own agent tools that `ctx.register_tool` took (the setup report and the setup proposal), by name,
+#: with the handler each was registered with.
+_own_tools: dict[str, Callable[..., str]] = {}
+#: The calls of each own tool that `pre_tool_call` allowed, for its handler to take, by session and the inputs the
+#: handler reads (the report's days, the proposal's checked items).
+_tool_markers = {
+    setup_report.TOOL: setup_report.Markers(setup_report.days_of),
+    proposals.TOOL: setup_report.Markers(proposals.check),
+}
+#: Proposals `pre_tool_call` allowed while the session held content no scan had seen yet, by session and checked
+#: items (`_unchecked_key`), for the handler to store with the proposal.
+_proposal_unchecked: dict[str, bool] = {}
+#: The traffic log record each own tool's calls are logged as.
+_TOOL_RECORD = {setup_report.TOOL: "setup_report", proposals.TOOL: "setup_proposal"}
 
 
 def _settings() -> dict[str, Any]:
@@ -241,7 +264,8 @@ def owner_command(
 
     Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
     through this. Any failure while checking the sender refuses the command. `fn` gets the raw
-    arguments and who ran it: `{"basis", "platform", "sender_ref"}`.
+    arguments and who ran it: `{"basis", "platform", "sender_ref"}`, plus the chat the check judged under
+    `OWNER_CHAT` (its chat id and type, never recorded).
     """
 
     def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
@@ -252,11 +276,12 @@ def owner_command(
             logger.warning("owner check for %s failed: %s", verb, exc)
             return owner.refusal(verb)
         try:
+            facts = session_facts()
             check = owner.gate(
                 verb,
                 traffic,
                 store.salt(),
-                facts=session_facts(),
+                facts=facts,
                 env=env,
                 surface=session_surface() or platform,
                 local_cli=local_cli,
@@ -273,7 +298,11 @@ def owner_command(
             return owner.refusal(verb)
         if not check["owner"]:
             return owner.refusal(verb)
-        return fn(raw_args, {k: check[k] for k in ("basis", "platform", "sender_ref")})
+        who = {k: check[k] for k in ("basis", "platform", "sender_ref")}
+        # The chat the check judged, for a command that stores it (`notify here`); taken off `who` before `who`
+        # is recorded anywhere (`commands.dispatch`).
+        who[OWNER_CHAT] = {k: str(facts.get(k) or "") for k in ("chat_id", "chat_type")}
+        return fn(raw_args, who)
 
     return handler
 
@@ -482,6 +511,8 @@ def on_post_api_request(**kw: Any) -> None:
 
 
 def on_pre_tool_call(tool_name: str = "", args: Any = None, **kw: Any) -> dict[str, Any] | None:
+    if _own_tool(tool_name):
+        return _own_tool_gate({**kw, "tool_name": tool_name, "args": args})
     try:
         cfg, env = _load()
         store, traffic = _state(cfg)
@@ -544,7 +575,11 @@ def _scan_one(
     # Any other call of the unattended review or curator: nobody can answer it either (see `skill_review`).
     background_run = not loop_save and skill_review.in_unattended_review()
     built["background_run"] = background_run
-    attendance = {"subagent": built["subagent"], "attended_platforms": cfg.attended_platforms}
+    # The config's attended platforms and those the owner added with `/sentrook attended add`.
+    attendance = {
+        "subagent": built["subagent"],
+        "attended_platforms": owner_settings.attended_of(cfg),
+    }
     # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
     unattended = loop_save or background_run or is_unattended(built["platform"], env, **attendance)
 
@@ -584,7 +619,12 @@ def _scan_one(
     snoozed = False
     relaxed = False
     let_through = False
+    session_allowed: dict[str, Any] | None = None
+    allow_key: str | None = None
     held: dict[str, Any] | None = None
+    by_pass: dict[str, Any] | None = (
+        None  # the owner's pass or denial that settled an unattended review
+    )
     stage: dict[str, Any] | None = (
         None  # what became of a held background save (`_stage_background`)
     )
@@ -672,10 +712,35 @@ def _scan_one(
             directive = {"action": "block", "message": skill_review.HELD_CALL_TEXT}
             notice = _background_notice(cfg, built, resp, "held-call")
         elif unattended:
-            # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
-            entry["decision"] = "held"
-            directive = {"action": "block", "message": hold.HELD_TEXT}
-            held = _hold(cfg, traffic, built, resp)
+            # A review nobody can answer (or Hermes would auto-approve): the owner's denial or pass for this job and
+            # action settles it (`passes`); otherwise it waits for the owner (`hold`).
+            job_id = _run_of(built)[1]
+            match = passes.match_of(
+                str(built.get("tool") or ""), resp, kw.get("args"), store.salt(), job_id is None
+            )
+            try:
+                settled = passes.check(
+                    cfg.state_dir, passes.job_ref(job_id), match, resp, datetime.now(UTC)
+                )
+            except Exception as exc:  # noqa: BLE001 - nothing settled: held as before
+                logger.warning("sentrook could not read the passes: %s", exc)
+                settled = None
+            if settled is not None and settled["kind"] == "deny":
+                entry["decision"] = "denied_by_owner"
+                directive = {"action": "block", "message": passes.DECLINED_TEXT}
+                by_pass = {"id": settled["id"], "kind": "deny"}
+            elif settled is not None:
+                entry["decision"] = "allowed_by_pass"
+                by_pass = {
+                    "id": settled["id"],
+                    "kind": "allow",
+                    "uses": settled.get("uses"),
+                    "use_count": settled.get("use_count"),
+                }
+            else:
+                entry["decision"] = "held"
+                directive = {"action": "block", "message": hold.HELD_TEXT}
+                held = _hold(cfg, traffic, built, resp, sid=sid, job_id=job_id, match=match)
         elif (
             not relaxed
             and snooze.applies(resp, cfg.block_at)
@@ -686,6 +751,19 @@ def _scan_one(
             # The owner snoozed reviews for this session: scanned and logged, not asked.
             entry["decision"] = "allowed"
             snoozed = True
+        elif (
+            covered := session_allow.covering(
+                sess,
+                allow_key := _allow_key(cfg, resp, planir, built, relaxed, store),
+                resp,
+                datetime.now(UTC),
+            )
+        ) is not None:
+            # The owner answered Session for a call of this tool about the same parties, at this risk or higher, with
+            # every attack-type warning this one carries, in this chat (`session_allow`). History says allowed: the
+            # owner was not shown this call.
+            entry["decision"] = "allowed"
+            session_allowed = {"by": covered.get("request_id")}
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
             snoozes = (
@@ -707,6 +785,10 @@ def _scan_one(
             # the owner is the one answering (never for a block a snooze turned into a review).
             hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
             remember = hint is not None and not relaxed and grants.may_remember(planir)
+            # A Session answer that sets the suggested grant leaves later calls to the scanner, which scores them
+            # with it: no allowance besides (`session_allow`).
+            if remember:
+                allow_key = None
             directive = {
                 "action": "approve",
                 "message": card.hermes_message(
@@ -716,6 +798,7 @@ def _scan_one(
                     hint=hint,
                     remember=remember,
                     why_id=planir["request_id"] if cfg.traffic_log_enabled else None,
+                    session=None if relaxed else "parties" if allow_key is not None else "exact",
                 ),
                 "rule_key": key,
             }
@@ -726,14 +809,22 @@ def _scan_one(
                     "request_id": planir["request_id"],
                     "on_error": False,
                     # The same action can wait in several chats under one key (`Store.put_review` keeps one entry
-                    # per session): the answer sets the grant only from the chat it was asked in.
+                    # per session): the answer sets the grant, or the allowance, only from the chat it was asked in.
+                    **(
+                        {"session_key": _approval_session_key()}
+                        if remember or allow_key is not None
+                        else {}
+                    ),
+                    **({"hint": hint, "platform": built["platform"]} if remember else {}),
                     **(
                         {
-                            "hint": hint,
-                            "platform": built["platform"],
-                            "session_key": _approval_session_key(),
+                            "allow": {
+                                "key": allow_key,
+                                "risk": float(resp["risk"]),
+                                "warnings": session_allow.warnings(resp),
+                            }
                         }
-                        if remember
+                        if allow_key is not None and session_allow.risk_of(resp) is not None
                         else {}
                     ),
                 },
@@ -742,7 +833,7 @@ def _scan_one(
         logger.warning("scan failed (%s): %s", result.kind, result.detail)
         if cfg.mode != "observe":
             outage = sess.setdefault("error_epoch", planir["request_id"])
-            cause = card.error_cause(result.kind, is_auth_failure(result))
+            cause = failure_cause(result)
             key = _error_rule_key(planir["session"]["session_ref"], outage, cause)
             d = scan_error_to_directive(
                 result, on_scan_error=cfg.on_scan_error, unattended=unattended, rule_key=key
@@ -777,7 +868,9 @@ def _scan_one(
             **({"snoozed": True} if snoozed else {}),
             **({"lenient": True} if let_through else {}),
             **({"relaxed": True} if relaxed else {}),
+            **({"session_allowed": session_allowed} if session_allowed is not None else {}),
             **({"hold": held} if held is not None else {}),
+            **({"pass": by_pass} if by_pass is not None else {}),
             **({"notice": notice} if notice is not None else {}),
             **({"staging": stage} if stage is not None else {}),
             **({"skill_review": True} if loop_save else {}),
@@ -802,6 +895,10 @@ def _scan_one(
             entry["decision"],
             " (snoozed)"
             if snoozed
+            else " (covered by an earlier Session answer)"
+            if session_allowed is not None
+            else f" ({'refused by' if by_pass['kind'] == 'deny' else 'let through by'} {by_pass['id']})"
+            if by_pass is not None
             else " (block relaxed to review by snooze)"
             if relaxed
             else " (let through)"
@@ -811,6 +908,246 @@ def _scan_one(
             result.latency_ms,
         )
     return directive
+
+
+# ---- the plugin's own agent tools: the setup report and the setup proposal --------------------------------
+
+
+def _own_tool(tool_name: str) -> bool:
+    """`tool_name` is one of the agent tools this plugin registered: the name, a registration Hermes took, and the
+    handler Hermes's tool registry would run is this plugin's. Any other tool of that name, and any call where the
+    registry cannot be read, is scanned like every call."""
+    handler = _own_tools.get(tool_name)
+    if handler is None:
+        return False
+    try:
+        from tools.registry import registry
+    except Exception:  # noqa: BLE001 - the plugin host, where Hermes's registry is in the parent process: scanned,
+        return False  # and the handler refuses it without a marker
+    try:
+        entry = registry.get_entry(tool_name)
+    except Exception:  # noqa: BLE001 - unreadable: not known to be ours
+        return False
+    return getattr(entry, "handler", None) is handler
+
+
+def _unchecked_key(sid: str, args: Any) -> str:
+    return sid + "\n" + json.dumps(proposals.check(args), sort_keys=True, default=str)
+
+
+def _items_asked(args: Any) -> int:
+    items = args.get("items") if isinstance(args, dict) else None
+    return len(items) if isinstance(items, list) else 0
+
+
+def _tool_refused(
+    traffic: TrafficLog | None, tool: str, sid: str, reason: str, args: Any = None
+) -> dict[str, Any]:
+    if traffic is not None:
+        traffic.write(
+            {
+                "kind": _TOOL_RECORD[tool],
+                "session_ref": session_ref(sid),
+                "outcome": "refused",
+                "reason": reason,
+                **({"items": _items_asked(args)} if tool == proposals.TOOL else {}),
+            }
+        )
+    return {"action": "block", "message": setup_report.REFUSAL}
+
+
+def _own_tool_gate(kw: dict[str, Any]) -> dict[str, Any] | None:
+    """`pre_tool_call` for the plugin's own agent tools: not scanned, and allowed only on the owner's own turn
+    (`setup_report.allowed`), judged from the trigger a scan of this call would send. An allowed call gets its
+    marker and a step in the session's history, so its result goes to the next scan like any tool result. Anything
+    else, a failure included, gets `setup_report.REFUSAL` and nothing more."""
+    sid = _sid(kw)
+    tool = kw["tool_name"]
+    traffic: TrafficLog | None = None
+    try:
+        cfg, env = _load()
+        store, traffic = _state(cfg)
+        _capturing(cfg, store)
+        with store.session_lock(sid):
+            sess = store.load_session(sid)
+            turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
+            last_request = store.load_turn(request_turn_id(sess))
+            background = skill_review.in_background_review()
+            built = build_planir(
+                kw=kw,
+                cfg=cfg,
+                redactor=Redactor("standard", store.salt()),
+                sid=sid,
+                sess=sess,
+                turn=turn,
+                facts=session_facts(),
+                env=env,
+                host_cfg={},
+                grants=[],
+                request_turn=last_request if background else None,
+                last_request=last_request,
+            )
+            ok = setup_report.allowed(
+                built["planir"],
+                platform=built["platform"],
+                subagent=built["subagent"],
+                env=env,
+                attended_platforms=owner_settings.attended_of(cfg),
+                background=background or skill_review.in_unattended_review(),
+                isolated=skill_review.host_isolated(env),
+            )
+            if not ok:
+                return _tool_refused(traffic, tool, sid, "not_owner_turn", kw.get("args"))
+            sess["history"].append(
+                {
+                    "step": built["step"],
+                    "turn": built["planir"]["session"]["turn"],
+                    "call_id": built["call_id"],
+                    "tool": built["tool"],
+                    "tool_kind": built["tool_kind"],
+                    "provider": built["provider"],
+                    "arguments": built["history_args"],
+                    "result": None,
+                    "action_fingerprint": None,
+                    "risk": None,
+                    "tiers": None,
+                    "request_id": built["planir"]["request_id"],
+                    "decision": "allowed",
+                    "_host_call_id": built["host_call_id"],
+                }
+            )
+            store.save_session(sid, sess, cfg.history_limit * 2)
+            _tool_markers[tool].put(sid, kw.get("args"))
+            if tool == proposals.TOOL:
+                # Content the chat read since the last scan reaches the scanner only with the next scanned call: what
+                # it was cannot be checked now, so the owner is told.
+                pending = any(
+                    i.get("tool") not in _own_tools for i in built["planir"]["new_inputs"]
+                )
+                key = _unchecked_key(sid, kw.get("args"))
+                _proposal_unchecked[key] = _proposal_unchecked.get(key, False) or pending
+                while len(_proposal_unchecked) > 500:
+                    _proposal_unchecked.pop(next(iter(_proposal_unchecked)))
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook %s check failed: %s", tool, exc)
+        return _tool_refused(traffic, tool, sid, "error", kw.get("args"))
+
+
+def report_handler(
+    args: Any = None, task_id: Any = None, session_id: Any = None, **_kw: Any
+) -> str:
+    """The setup report tool's handler. Hermes passes it only the task and session ids, so it answers only for a
+    call `pre_tool_call` allowed (`_own_tool_gate`'s marker, the same session and days) and refuses anything
+    else."""
+    sid = str(session_id or task_id or "default")
+    traffic: TrafficLog | None = None
+    try:
+        cfg, env = _load()
+        traffic = _state(cfg)[1]
+        if not _tool_markers[setup_report.TOOL].take(sid, args):
+            _tool_refused(traffic, setup_report.TOOL, sid, "no_marker")
+            return setup_report.REFUSAL
+        days = setup_report.days_of(args)
+        text = _report_text(cfg, env, days, datetime.now(UTC))
+        traffic.write(
+            {
+                "kind": "setup_report",
+                "session_ref": session_ref(sid),
+                "outcome": "answered",
+                "days": days,
+            }
+        )
+        return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook setup report failed: %s", exc)
+        _tool_refused(traffic, setup_report.TOOL, sid, "error")
+        return setup_report.REFUSAL
+
+
+def propose_handler(
+    args: Any = None, task_id: Any = None, session_id: Any = None, **_kw: Any
+) -> str:
+    """The setup proposal tool's handler: stores the items the owner's setup screen will list (`proposals.propose`)
+    for a call `pre_tool_call` allowed (`_own_tool_gate`'s marker, the same session and checked items), and refuses
+    anything else. It writes the proposals file and nothing else: no grant, binding or setting."""
+    sid = str(session_id or task_id or "default")
+    traffic: TrafficLog | None = None
+    try:
+        cfg, _env = _load()
+        traffic = _state(cfg)[1]
+        if not _tool_markers[proposals.TOOL].take(sid, args):
+            _tool_refused(traffic, proposals.TOOL, sid, "no_marker", args)
+            return setup_report.REFUSAL
+        checked = proposals.check(args)
+        unchecked = _proposal_unchecked.pop(_unchecked_key(sid, args), True)
+        ref = session_ref(sid)
+        text, logged = proposals.propose(
+            cfg.state_dir, checked, ref, datetime.now(UTC), commands.CMD, unchecked=unchecked
+        )
+        traffic.write({"kind": "setup_proposal", "session_ref": ref, **logged})
+        return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook setup proposal failed: %s", exc)
+        _tool_refused(traffic, proposals.TOOL, sid, "error", args)
+        return setup_report.REFUSAL
+
+
+def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetime) -> str:
+    notify = owner_settings.notify_of(cfg)
+    target, why = _notice_target(cfg)
+    if not target:
+        where = None
+    elif notify.chat_id:
+        where = f"a {notify.platform} chat"
+    else:
+        where = f"the {target} home channel"
+    state = {
+        "plugin_version": PLUGIN_VERSION,
+        "mode": cfg.mode,
+        "review_at": cfg.review_at,
+        "block_at": cfg.block_at,
+        "scan_ok": cfg.endpoints.scan.ok and cfg.endpoints.issuer.ok,
+        "credentials_missing": auth_missing_credentials(),
+        "notice": {
+            "target": where,
+            "source": "the notify command"
+            if notify.source == "command"
+            else "the owner_channel setting",
+            "why": why,
+        },
+        "attended_platforms": sorted(owner_settings.attended_of(cfg)),
+        "unsent_grants": len(cfg.unsent_grants),
+        "shadowed_skills": None,
+        "traffic_log": cfg.traffic_log_enabled,
+    }
+    data = grants.load(cfg.state_dir)
+    force = setup.in_force(cfg, data, now)
+    log = cfg.traffic_log_path if cfg.traffic_log_enabled else None
+    ev = setup.read_evidence(log, cfg.review_at, now, timedelta(days=days))
+    return setup_report.render(
+        state, force, ev, now, days, capped=log is not None and setup_report.log_capped(log)
+    )
+
+
+def _allow_key(
+    cfg: PluginConfig,
+    resp: dict[str, Any],
+    planir: dict[str, Any],
+    built: dict[str, Any],
+    relaxed: bool,
+    store: Store,
+) -> str | None:
+    """The allowance key a Session answer to this review would keep, and a later review is matched by
+    (`session_allow`): only on the owner's own turn (whoever answers elsewhere is not known to be the owner), never
+    for a block a snooze turned into a review or a score at the block line (a block the scanner capped to a review),
+    and None when the review names no party."""
+    risk = session_allow.risk_of(resp)
+    if relaxed or not grants.may_remember(planir) or risk is None or risk >= cfg.block_at:
+        return None
+    return session_allow.key(
+        str(built.get("tool") or ""), session_allow.parties(resp), store.salt()
+    )
 
 
 def _where(built: dict[str, Any]) -> str:
@@ -874,9 +1211,27 @@ def _background_save_attended(
     return owner_attends(platform, env, **{**attendance, "subagent": subagent})
 
 
-def _notice_target(owner_channel: str) -> tuple[str | None, str]:
-    """(platform whose home channel gets the owner's notices, or None; why there is none)."""
-    return hold.owner_target(owner_channel, callable(getattr(_ctx, "dispatch_tool", None)))
+def _deliver(
+    cfg: PluginConfig, target: str, text: str, on_fail: Callable[[], None] | None = None
+) -> None:
+    """Sends one of the owner's notices (`hold.deliver`); one that gets through clears a failed test notice to the
+    same target (`owner_settings.notice_delivered`)."""
+    state_dir = cfg.state_dir
+    hold.deliver(
+        _ctx,
+        target,
+        text,
+        on_fail=on_fail,
+        on_ok=lambda: owner_settings.notice_delivered(state_dir, target),
+    )
+
+
+def _notice_target(cfg: PluginConfig) -> tuple[str | None, str]:
+    """(where the owner's notices go, as `hermes send --to` takes it, or None; why there is none): the chat or
+    platform set by `/sentrook notify`, else `owner_channel` (see `owner_settings`)."""
+    return hold.owner_target(
+        owner_settings.notify_of(cfg), callable(getattr(_ctx, "dispatch_tool", None))
+    )
 
 
 def _stage_background(
@@ -961,7 +1316,7 @@ def _send_background_notice(
 ) -> dict[str, Any]:
     """`_background_notice` from the notice's facts (`_background_info`); also used once Hermes says what it did
     with a change its own gate stages (outcomes staged, unstaged-saved, unstaged-unknown, held)."""
-    target, why = _notice_target(cfg.owner_channel)
+    target, why = _notice_target(cfg)
     if not target:
         what = (
             "held a background review call"
@@ -1026,8 +1381,8 @@ def _send_background_notice(
         release()
         return {"status": "unsent", "target": None, "reason": "notice could not be built"}
     # Not delivered: the next one of this kind in this session is announced instead.
-    hold.deliver(_ctx, target, text, on_fail=release)
-    return {"status": "queued", "target": target}
+    _deliver(cfg, target, text, on_fail=release)
+    return {"status": "queued", "target": hold.target_label(target)}
 
 
 def _scan_failure_notice(
@@ -1036,7 +1391,7 @@ def _scan_failure_notice(
     """Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session)
     per quiet period. Returns what the scan record says about the notice. Never raises: the call is
     blocked whatever happens here."""
-    target, why = _notice_target(cfg.owner_channel)
+    target, why = _notice_target(cfg)
     if not target:
         return {"status": "unsent", "target": None, "reason": why}
     where, job_id = _run_of(built)
@@ -1055,32 +1410,50 @@ def _scan_failure_notice(
         failure, built["tool"], where, job_id is not None, "hermes sentrook verify"
     )
     # Not delivered: the next failure in this job is announced instead.
-    hold.deliver(
-        _ctx,
+    _deliver(
+        cfg,
         target,
         text,
         on_fail=lambda: scan_failure_notice.release(cfg.state_dir, key, stamp),
     )
-    return {"status": "queued", "target": target}
+    return {"status": "queued", "target": hold.target_label(target)}
 
 
 def _hold(
-    cfg: PluginConfig, traffic: TrafficLog, built: dict[str, Any], resp: dict[str, Any]
+    cfg: PluginConfig,
+    traffic: TrafficLog,
+    built: dict[str, Any],
+    resp: dict[str, Any],
+    *,
+    sid: str = "",
+    job_id: str | None = None,
+    match: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
-    call is held whatever happens here: a hold that cannot be stored only cannot be approved."""
+    call is held whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of
+    a waiting hold of the same job and action is counted on it, and no notice is sent."""
     now = datetime.now(UTC)
     planir = built["planir"]
-    target, why = _notice_target(cfg.owner_channel)
+    target, why = _notice_target(cfg)
     notice: dict[str, Any] = (
-        {"status": "queued", "target": target}
+        {"status": "queued", "target": hold.target_label(target)}
         if target
         else {"status": "unsent", "target": None, "reason": why}
     )
     hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
     where = _where(built)
+    match = match or {}
+    level = passes.offered_level(resp)
+    offers = passes.offers(
+        job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at
+    )
+    repeat = False
     try:
-        hid = hold.create(
+        description = hold.inert(describe(resp, built["tool"]), 160)
+    except Exception:  # noqa: BLE001 - a malformed response: no description
+        description = ""
+    try:
+        hid, repeat = hold.create(
             cfg.state_dir,
             request_id=planir["request_id"],
             session_ref=planir["session"]["session_ref"],
@@ -1090,20 +1463,28 @@ def _hold(
             notice=notice,
             now=now,
             record=traffic.write,
+            sid=sid,
+            job_id=job_id,
+            match=match,
+            level=level,
+            offers=offers,
+            description=description,
         )
         if hid is None:
             notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
     except LockTimeout:
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file locked"}
-    except Exception as exc:  # noqa: BLE001 - still held, just not approvable
+    except Exception as exc:  # noqa: BLE001 - still held, just not answerable
         logger.warning("sentrook could not store a hold: %s", exc)
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
-    if hid is not None and target:
+    if repeat:
+        notice = {"status": "not_sent", "target": None, "reason": "repeat of a waiting hold"}
+    elif hid is not None and target:
         try:
             text = hold.notice_text(
-                resp, built["tool"], where, hid, commands.CMD("approve"), commands.CMD("why")
+                resp, built["tool"], where, hid, offers, commands.CMD, on_job=job_id is not None
             )
-            hold.deliver(_ctx, target, text)
+            _deliver(cfg, target, text)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
             logger.warning("sentrook held a call but could not build its notice: %s", exc)
             notice = {"status": "unsent", "target": None, "reason": "notice could not be built"}
@@ -1111,8 +1492,12 @@ def _hold(
         logger.warning("sentrook held a call but sent no notice: %s", notice.get("reason"))
     return {
         "id": hid,
-        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ") if hid else None,
+        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if hid and not repeat
+        else None,
         "hint": hint is not None,
+        "offers": offers if hid else [],
+        **({"repeat": True} if repeat else {}),
         "notice": notice,
     }
 
@@ -1131,6 +1516,8 @@ _APPROVED = {
 }
 #: Answers that approve for good: they also set a review's suggested grant.
 _ALWAYS = {"always", "allow-always", "allow_always"}
+#: Hermes's answer that approves for the rest of the session: it sets the suggested grant for this session.
+_SESSION = {"session"}
 
 
 def _approval_session_key() -> str:
@@ -1139,16 +1526,24 @@ def _approval_session_key() -> str:
 
 
 def _remember(
-    cfg: PluginConfig, traffic: TrafficLog, review: dict[str, Any], session_key: str
+    cfg: PluginConfig,
+    traffic: TrafficLog,
+    review: dict[str, Any],
+    session_key: str,
+    session: str | None = None,
 ) -> dict[str, Any] | None:
-    """Sets the suggested grant of a review approved always, as a persistent grant ending in 30 days, once per
-    review, when the answer came from the chat the review was asked in (`session_key`, as the approval hook
-    reports it). Returns the grants change, or None when there was nothing to set or it could not be written
-    (logged: the answer itself stands)."""
+    """Sets the suggested grant of a review approved always, as a persistent grant ending in 30 days, or approved
+    for the session, as a grant bound to that session (`session`, its `session_ref`), once per review, when the
+    answer came from the chat the review was asked in (`session_key`, as the approval hook reports it). Returns the
+    grants change, or None when there was nothing to set or it could not be written (logged: the answer itself
+    stands)."""
     grant = grants.hint_grant(review.get("hint"))
     if grant is None or review.get("session_key") != session_key:
         return None
-    by = {"basis": ["review_always"], "platform": str(review.get("platform") or "")}
+    by = {
+        "basis": ["review_session" if session else "review_always"],
+        "platform": str(review.get("platform") or ""),
+    }
     try:
         _reply, change = grants.add_suggested(
             cfg.state_dir,
@@ -1158,6 +1553,7 @@ def _remember(
             hold.GRANT_TTL,
             str(review["request_id"]),
             source="from_review",
+            session_ref=session,
         )
     except Exception as exc:  # noqa: BLE001 - the approval stands without the grant
         logger.warning("sentrook could not set the suggested grant: %s", exc)
@@ -1200,14 +1596,37 @@ def on_post_approval_response(**kw: Any) -> None:
                 if choice == "timeout"
                 else "blocked"
             )
+        answer_key = str(kw.get("session_key") or "default")
+        sid = review["sid"]
         remembered = (
-            _remember(cfg, traffic, review, str(kw.get("session_key") or "default"))
+            _remember(cfg, traffic, review, answer_key)
             if approved and choice in _ALWAYS and not review.get("on_error")
+            else _remember(cfg, traffic, review, answer_key, session=session_ref(sid))
+            if approved and choice in _SESSION and not review.get("on_error")
             else None
         )
-        sid = review["sid"]
+        # Session also lets the rest of this job through in the chat it was asked in (`session_allow`).
+        allow = review.get("allow") if isinstance(review.get("allow"), dict) else None
+        allowed_on = (
+            allow
+            if allow is not None
+            and approved
+            and choice in _SESSION
+            and not review.get("on_error")
+            and review.get("session_key") == answer_key
+            else None
+        )
         with store.session_lock(sid):
             s = store.load_session(sid)
+            if allowed_on is not None:
+                session_allow.add(
+                    s,
+                    str(allowed_on["key"]),
+                    float(allowed_on["risk"]),
+                    [str(w) for w in allowed_on.get("warnings") or []],
+                    str(review["request_id"]),
+                    datetime.now(UTC),
+                )
             for h in s["history"]:
                 if h.get("request_id") == review["request_id"]:
                     h["decision"] = final
@@ -1225,6 +1644,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 "decision": final,
                 **({"decided_by": history.REVIEW_LOOP} if auto else {}),
                 **({"grant_id": remembered["entry"]["id"]} if remembered else {}),
+                **({"session_allow": True} if allowed_on is not None else {}),
             }
         )
     except Exception as exc:  # noqa: BLE001
@@ -1363,6 +1783,20 @@ def _host_staging_done(cfg: PluginConfig, entry: dict[str, Any], status: str, re
         logger.warning("sentrook could not record what Hermes did with a background save: %s", exc)
 
 
+def _known_missing_credentials() -> bool:
+    """True only when Hermes says the credentials are unset. At startup a multiplexed gateway has no active
+    profile and refuses the read; that is not knowing, so no warning."""
+    try:
+        from agent.secret_scope import get_secret as hermes_get_secret
+    except ImportError:
+        return bool(auth_missing_credentials())
+    try:
+        values = [hermes_get_secret(name) for name in CREDENTIAL_VARS]
+    except Exception:  # noqa: BLE001 - an unscoped read on a multiplexed gateway
+        return False
+    return not all(isinstance(v, str) and v.strip() for v in values)
+
+
 def register(ctx: Any) -> None:
     global _ctx
     _ctx = ctx
@@ -1379,6 +1813,8 @@ def register(ctx: Any) -> None:
         commands.register_slash(ctx, _settings, owner_command)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin slash commands
         logger.info("/sentrook not registered: %s", exc)
+    agent_skills.register(ctx)
+    _register_tools(ctx)
     cfg, _ = _load()
     ep = cfg.endpoints
     try:
@@ -1406,6 +1842,13 @@ def register(ctx: Any) -> None:
         cfg.traffic_log_path if cfg.traffic_log_enabled else "off",
         route or "none",
     )
+    if _known_missing_credentials():
+        logger.warning(
+            "sentrook: not signed in; every tool call is stopped until you %s",
+            "set Sentrook's credentials in Hermes (see the install guide) and restart Hermes"
+            if skill_review.host_isolated()
+            else "run hermes sentrook login on this machine (then restart Hermes)",
+        )
     if not ep.scan.ok or not ep.issuer.ok:
         logger.error(
             "sentrook endpoint configuration is invalid; every tool call will fail closed until fixed"
@@ -1430,6 +1873,39 @@ def register(ctx: Any) -> None:
             "apply it in every session, or use /sentrook grant for one session; see /sentrook grants",
             unsent,
         )
+
+
+def _register_tools(ctx: Any) -> None:
+    """Registers the plugin's own agent tools (toolset `sentrook`): the read-only setup report and the setup proposal.
+    Hermes turns plugin toolsets on everywhere, so who may call them is decided in `pre_tool_call`
+    (`_own_tool_gate`). Neither sets anything Sentrook allows."""
+    _own_tools.clear()
+    register_tool = getattr(ctx, "register_tool", None)
+    if not callable(register_tool):
+        logger.info("sentrook agent tools not registered: this Hermes has no plugin tools")
+        return
+    tools = (
+        (setup_report.TOOL, setup_report.SCHEMA, report_handler, setup_report.DESCRIPTION),
+        (
+            proposals.TOOL,
+            proposals.schema(commands.CMD),
+            propose_handler,
+            proposals.description(commands.CMD),
+        ),
+    )
+    for name, schema, handler, description in tools:
+        try:
+            register_tool(
+                name=name,
+                toolset=setup_report.TOOLSET,
+                schema=schema,
+                handler=handler,
+                description=description,
+                emoji="🪶",
+            )
+            _own_tools[name] = handler
+        except Exception as exc:  # noqa: BLE001 - the plugin works without it
+            logger.warning("sentrook tool %s not registered: %s", name, exc)
 
 
 def settings_from_ctx(ctx: Any) -> dict[str, Any]:

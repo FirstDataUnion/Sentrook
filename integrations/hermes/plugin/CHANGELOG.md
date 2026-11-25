@@ -6,6 +6,136 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- **`hermes sentrook login`: sign in instead of copying credentials.** It prints a link and a code; open the link on
+  any device, sign in or create a free FIDU account, and approve. Hermes then stores this machine's scan credentials
+  with its own writer, and the command runs the same checks as `verify`. Restart Hermes afterwards. Signing in again
+  from the same machine replaces its credentials (a random id for the machine is kept in the state folder);
+  `--name` sets how the machine is listed in the account. If Hermes does not store the values (managed settings),
+  it says so instead of reporting success. Nothing the identity service writes is printed, and never the secret.
+- **Install no longer asks for the credentials** (`requires_env` is gone; the two values stay declared as secrets).
+  After install, Hermes shows the next step: `hermes sentrook login`.
+- **Not signed in, said plainly.** Sentrook still stops every tool call without credentials. The block the agent
+  reads, the approval card, `/sentrook status`, `verify` and a warning at startup now say the fix is
+  `hermes sentrook login`, or, under `plugins.isolation: host` (no `hermes sentrook` command line), to set the
+  credentials in Hermes by hand. Credentials the identity service refuses (`invalid_client`: revoked or wrong) say to
+  sign in again.
+
+- The agent gets a second tool, `sentrook_propose_setup` (toolset `sentrook`, declared in `provides_tools`), which
+  the setup skill now uses at hand-over instead of giving you commands to paste: it adds up to 20 grants and channel
+  bindings you told the agent about, each with a reason of at most 200 characters, to your `/sentrook setup` list as
+  "proposed by the agent, not seen yet". It sets nothing. Each item must be one `/sentrook grant ... --persistent` or
+  `/sentrook bind add` would accept, and the agent is told which were not added and why; settings, attended platforms
+  and session grants are refused, a destination's wildcard may only be `*.` and one registrable domain, and a key is
+  named, never its value (a key-shaped name is refused). When the chat had read content no scan had seen yet as the
+  agent proposed, the screen says Sentrook could not check what it read just before. The agent hears only how many items were added
+  and to ask you to open `/sentrook setup`. A proposal is kept in `proposals.json` for a day, at most three at once.
+  It answers only where the setup report does, with the same refusal elsewhere and nothing stored; the call itself is
+  not scanned, its result goes to the next scan, and each call is logged as a `setup_proposal` record. The setup
+  report and the proposal share one gate: a tool is recognised as the plugin's own only when Hermes's tool registry
+  names the plugin's handler, and the one-time marker is keyed by the inputs the handler acts on.
+- The agent gets a read-only tool, `sentrook_setup_report` (toolset `sentrook`, declared in `provides_tools`), which
+  the setup skill now uses at check-in: what is set (counts of grants and bindings by kind, never the grants), the
+  gaps in plain words, the grants Sentrook suggested on reviews you approved at least twice (marked covered when a
+  grant in force already covers one), approved reviews with nothing to suggest by tool, and API key names Sentrook saw
+  sent only to their own service, over the last 14 days (`days`, up to 30), saying how far back the log actually went.
+  It shows no call's arguments or request text, and every name from a tool call is neutralised. Only your own message
+  in a direct chat or on the local terminal gets it; everywhere else (group chats, cron, subagents, webhooks, the API
+  server, Hermes's background review, the plugin host) the whole answer is "Setup needs the owner in a direct chat."
+  `pre_tool_call` decides and leaves a one-time marker the tool needs; the call itself is not scanned, its result goes
+  to the next scan, and each call is logged as a `setup_report` record.
+- `/sentrook setup` (owner only; also `hermes sentrook setup`) lists what would stop Sentrook asking about routine
+  work, each item described by Sentrook in its own words with how long it lasts and what to check: a channel binding
+  for each cron job's delivery to a room that is not bound yet, a provider grant for each MCP server no grant covers,
+  the grant Sentrook suggested on at least two reviews you approved in the last 30 days (from your own message, in a
+  chat where the scanner flagged no steering content, and only for exactly that grant: a broader pattern never counts),
+  and items the agent proposed, with its reason shown last as a note. Every name and note is shown in a code span, so
+  links, mentions and emphasis in them do nothing, and a config entry that is not one plain word is left out and
+  counted. The screen ends with a four-digit code, new
+  each time and valid for 15 minutes: `/sentrook setup apply <code>` sets every item, `apply <code> 1,3` some of them.
+  Grants backed by reviews you approved last until revoked, the others 30 days, and channel bindings until removed;
+  `--expires 90d` or `--until-revoked` changes the grants' lifetime. Applied grants are persistent and say where they
+  came from; applying an item twice sets nothing new. `/sentrook setup discard <id>` drops an agent proposal. The
+  setup skill now sends the owner to this screen, and the agent's rules add `/sentrook setup apply` to the commands it
+  never runs.
+- The plugin gives the agent two skills, listed while the plugin is enabled: `sentrook:sentrook-guide` (how Sentrook
+  works, so the agent can explain an approval prompt, a block, a held call or a notice, and point the owner to
+  `/sentrook why` and `/sentrook report`) and `sentrook:sentrook-setup` (the agent asks the owner what is routine and
+  gives the grant and binding commands to type, one at a time). Hermes's system prompt also gets a short section of
+  rules: never run the commands that change Sentrook, never edit its settings or folder, never disable the plugin,
+  and never retry a blocked call reworded. A Hermes without plugin skills or prompt sections skips them. Viewing one
+  of these skills does not count as content steering the agent (the scanner already leaves the agent's installed
+  skills out of that check).
+  
+- **Held calls: every answer now does something.** Before, `/sentrook approve <id>` only set the grant Sentrook
+  suggested, and on scheduled runs it never suggests one, so approving set nothing and the job was held again the next
+  day. A hold on a cron job now offers, in its notice, only the answers that apply:
+  - `/sentrook allow <id>`: the job's next run may make the same call once (`allow <id> later` does the same).
+  - `/sentrook allow <id> always`: the job may make the same call for 30 days, with a use count. Offered only when
+    the scan's `owner_pass` says the call may be let through for good and the call names its parties. A scan with
+    no `owner_pass` (a scanner that predates it) offers no pass at all: only `deny`.
+  - `/sentrook deny <id>`: the job is refused the same call for 30 days. The agent gets a plain declined result
+    ("The owner declined this action for this job, so Sentrook did not run it. Continue without it.") and no
+    notice is sent.
+  - `/sentrook approve <id>` stays as `allow` for one release.
+
+  "The same call" is matched on the same terms as a Session answer: the same tool, the same parties, a score no
+  higher, no new warning, nothing enforced and no floor, and the scan's `owner_pass` at or above the pass's level.
+  The job is the one Hermes's run metadata names (`current_cron_execution().job_id`), never prompt text. A call
+  that names nothing is matched on its exact arguments and offered `allow` once only. A hold on a run that is not a
+  cron job offers only `allow`, bound to the exact arguments, for 7 days. Answering never sets the suggested grant:
+  `/sentrook why <id>` shows its command.
+- **Holds** can be answered for 7 days (was 24 hours). A repeat of a waiting hold (same job and call, no higher
+  risk, no new warning) updates it and sends no new notice; `status` and `why` say how many times it was held.
+  `holds.json` is version 2 and keeps no raw arguments; holds stored before stay answerable as before until they
+  expire.
+- **`/sentrook passes`** lists the passes and denials your answers set, with use counts and end dates, and
+  `/sentrook passes revoke <id>` removes one (`passes.json`, under the same cross-process lock as the holds and
+  grants). `status`, `verify` and the dashboard show them; the dashboard's held calls list the answers each offers.
+- After `allow`, the held call's history entry becomes `approved_by_user` (after `deny`, `denied_by_user`), so a
+  retry in the same session is not scored as a retry after a review nobody answered. The traffic log records calls
+  a pass let through as `allowed_by_pass` and calls a denial refused as `denied_by_owner`, with the pass's id.
+- **`/sentrook notify here`** sets where Sentrook's notices go (calls held on scheduled jobs and other runs nobody
+  watches, scan failures there, Hermes's background saves) without editing the config: the chat you send it in,
+  which gets a test notice straight away. When the test notice is not delivered, `notify status`, `status` and
+  `verify` say so until a later notice gets through or the target changes. On
+  the command line, which has no chat, `hermes sentrook notify <platform>` names a platform with a home channel. When
+  Hermes does not say which chat a command came from, `here` uses the platform's home channel and the reply names
+  it. A target set this way wins over `owner_channel`, which still works; `notify off` goes back to it, and
+  `notify status` says which is in force.
+- **`/sentrook attended add|remove|list <platform>`** adds platforms where a person answers Hermes's approval prompts
+  (such as an `api_server` behind a UI that shows them) without editing `attended_platforms`. It loosens Sentrook:
+  a review there shows an approval prompt instead of holding the call. Only front ends such as the API server,
+  webhooks, A2A peers and relays can be added, each with `--confirm` after a warning. Runs Hermes starts itself (cron,
+  subagents, batch runs, the curator, kanban workers and the like), Raft and the local terminal can never be added;
+  unknown names are refused with the known list.
+- Both commands are owner-only and recorded in the traffic log and the Hermes log by platform, never a chat id; kept in
+  `settings.json` in the plugin's folder, and blocked when the agent runs them as `hermes sentrook …`. `status`,
+  `verify`, `help` and the commands themselves explain where notices go and which platforms are attended in the
+  same plain words.
+- **Session** on a review now covers the rest of the same job in that chat. Hermes remembers a Session answer under a
+  key made of every file and address the call touches, so a job whose steps each wrote a different output file asked
+  at every step, and Session did no more than Once. When the owner asked for the work in their own chat, a Session
+  answer now also lets a later review in the same chat through without asking, for 12 hours, when it is a call of
+  the same tool about the same parties (the entities the review's reasons and its description of the call name),
+  scoring no higher, with no warning the answered review lacked, nothing the scanner enforced and no floor. Every
+  reason code is a warning except the scanner's scoring and wording notes (the judge's own reasons, relief, a plain
+  send to a party new to the library) and the background of what the session has been reading, so a code the
+  scanner adds later asks; each answer is matched on its own. Another party, a higher score, another
+  tool, another chat, a block, a block the scanner capped to a review, or an answer from another chat asks as before;
+  so does any review that names no party. History records such a call as allowed (the owner was not shown it) and the
+  scan record says `session_allowed`. **Always** is unchanged.
+- **Session** also sets the review's suggested grant for that session only (bound to its `session_ref`), as
+  **Always** sets it for 30 days, so the scanner scores later calls with it; with that grant set, Session skips no
+  further questions. The prompt says what Session covers: "also covers the same parties at no higher risk", "covers
+  only this exact action", or, with a suggested grant, one line for Session and Always.
+- Access codes, PINs, passport numbers and random values under a key or header no longer leave the host raw. A short
+  number is redacted after a cue word ("the gate code is …", "Alarm code: …", "collection PIN for order 441 is …",
+  "… is your verification code") or under a code or PIN key (`yard_code=`, `client_pin=`, `pin=`, a form's `code=`);
+  with no cue it stays, and so do postal, country, status, error and other ordinary codes. A passport number becomes
+  `⟦secret:identifier:…⟧`. A random value of 12 or more letters and digits is redacted under any key or header
+  (`value: …`, `-H "X-Desk: …"`, a `headers` object), never in prose, and never under a key that names an id, a
+  hash, a version, a trace or data; hex values, UUIDs and camelCase words stay. Traffic logs written by earlier
+  versions may hold these values.
 - The plugin's manifest declares its licence as MIT, as the code always was. It said Apache-2.0, which Hermes showed
   as the plugin's licence.
 - A call Hermes's own background review or curator makes that is not a skill or memory save, such as a file read or a
