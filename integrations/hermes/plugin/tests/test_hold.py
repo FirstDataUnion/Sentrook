@@ -513,7 +513,12 @@ def test_notice_text(case):
     match = hold.passes.match_of(case["tool"], case["response"], {}, "salt", exact=job is None)
     level = hold.passes.offered_level(case["response"])
     offers = hold.passes.offers(
-        job, level, match["named"], case["response"].get("risk"), FIXTURES["block_at"]
+        job,
+        level,
+        match["named"],
+        case["response"].get("risk"),
+        FIXTURES["block_at"],
+        case.get("acted", False),
     )
     assert offers == case["offers"]
     assert (

@@ -33,6 +33,7 @@ from . import (
     owner_settings,
     passes,
     proposals,
+    run_now,
     scan_failure_notice,
     session_allow,
     setup,
@@ -655,6 +656,9 @@ def _scan_one(
         entry["action_fingerprint"] = resp.get("action_fingerprint")
         entry["risk"] = resp.get("risk")
         entry["tiers"] = tiers_of(resp)
+        # Whether the call sends or writes something, for a hold later in the run (`run_now`); not sent to the scanner.
+        if passes.acts(entry["tool_kind"], resp):
+            entry["_acts"] = True
         if cfg.mode == "observe" or verdict == "allow":
             entry["decision"] = "allowed"
         elif verdict == "block":
@@ -718,9 +722,16 @@ def _scan_one(
             match = passes.match_of(
                 str(built.get("tool") or ""), resp, kw.get("args"), store.salt(), job_id is None
             )
+            # A run the plugin started for an owner's `allow` (`run_now`): its pass serves this run only.
+            rerun = _rerun(cfg, job_id) if job_id else None
             try:
                 settled = passes.check(
-                    cfg.state_dir, passes.job_ref(job_id), match, resp, datetime.now(UTC)
+                    cfg.state_dir,
+                    passes.job_ref(job_id),
+                    match,
+                    resp,
+                    datetime.now(UTC),
+                    in_run=rerun["id"] if rerun else None,
                 )
             except Exception as exc:  # noqa: BLE001 - nothing settled: held as before
                 logger.warning("sentrook could not read the passes: %s", exc)
@@ -737,10 +748,23 @@ def _scan_one(
                     "uses": settled.get("uses"),
                     "use_count": settled.get("use_count"),
                 }
+                if rerun is not None and settled["id"] == rerun["id"]:
+                    _note_rerun(cfg, rerun["id"], passed=True)
             else:
                 entry["decision"] = "held"
                 directive = {"action": "block", "message": hold.HELD_TEXT}
-                held = _hold(cfg, traffic, built, resp, sid=sid, job_id=job_id, match=match)
+                held = _hold(
+                    cfg,
+                    traffic,
+                    built,
+                    resp,
+                    sid=sid,
+                    job_id=job_id,
+                    match=match,
+                    acted=_acted(sess),
+                )
+                if rerun is not None and held.get("id"):
+                    _note_rerun(cfg, rerun["id"], held=str(held["id"]))
         elif (
             not relaxed
             and snooze.applies(resp, cfg.block_at)
@@ -1150,6 +1174,108 @@ def _allow_key(
     )
 
 
+def _cron_run() -> tuple[str | None, str | None, datetime | None]:
+    """(the cron job Hermes says the current code runs for, the run as a key, when it started); Nones outside a cron
+    run. The key is a hash of Hermes's execution id."""
+    try:
+        read = getattr(_ctx, "current_cron_execution", None)
+        run = read() if callable(read) else None
+    except Exception:  # noqa: BLE001 - no cron identity
+        return None, None, None
+    job_id = getattr(run, "job_id", None)
+    if not isinstance(job_id, str) or not job_id.strip():
+        return None, None, None
+    execution = getattr(run, "execution_id", None)
+    key = (
+        "r_" + hashlib.sha256(execution.encode()).hexdigest()[:12]
+        if isinstance(execution, str) and execution
+        else None
+    )
+    started = getattr(run, "started_at", None)
+    at: datetime | None = None
+    if isinstance(started, str) and started:
+        try:
+            at = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            at = at if at.tzinfo is not None else None
+        except ValueError:
+            at = None
+    return job_id.strip(), key, at
+
+
+def _acted(sess: dict[str, Any]) -> bool:
+    """Whether this run had already sent or written something (`passes.acts`) that ran, before the call being held.
+    A cron run is a session of its own on Hermes."""
+    for e in sess.get("history") or []:
+        if not isinstance(e, dict) or not e.get("_acts") or e.get("decision") in NOT_RUN:
+            continue
+        result = e.get("result")
+        if result is None or (isinstance(result, dict) and result.get("status") == "ok"):
+            return True
+    return False
+
+
+def _rerun(cfg: PluginConfig, job_id: str) -> dict[str, Any] | None:
+    """The record of a run the plugin started for an answer, when the current run is it (`passes.run_of`); earlier
+    such runs of the job that ended unseen get their outcome line now."""
+    _job, key, started = _cron_run()
+    try:
+        mine, gone = passes.run_of(
+            cfg.state_dir, passes.job_ref(job_id), key, started, datetime.now(UTC)
+        )
+    except Exception as exc:  # noqa: BLE001 - not known as a started run
+        logger.warning("sentrook could not read the started runs: %s", exc)
+        return None
+    for rec in gone:
+        _outcome_notice(cfg, rec)
+    return mine
+
+
+def _note_rerun(cfg: PluginConfig, pid: str, **what: Any) -> None:
+    try:
+        passes.note(cfg.state_dir, pid, **what)
+    except Exception as exc:  # noqa: BLE001 - the outcome line may say less
+        logger.warning("sentrook could not note the started run: %s", exc)
+
+
+def _outcome_notice(cfg: PluginConfig, rec: dict[str, Any]) -> None:
+    """Tells the owner how a run started for their answer went (`passes.outcome_text`), and logs it."""
+    text = passes.outcome_text(rec, hold.OUTCOMES)
+    target, why = _notice_target(cfg)
+    if target:
+        _deliver(cfg, target, text)
+    else:
+        logger.warning("sentrook started run ended but sent no notice: %s", why)
+    _state(cfg)[1].write(
+        {
+            "kind": "run_now",
+            "op": "ended",
+            "pass_id": rec.get("id"),
+            "hold_id": rec.get("hold_id"),
+            "job_ref": rec.get("job_ref"),
+            "passed": bool(rec.get("passed")),
+            "held": list(rec.get("held") or []),
+            "notice": {"status": "queued", "target": hold.target_label(target)}
+            if target
+            else {"status": "unsent", "target": None, "reason": why},
+        }
+    )
+
+
+def on_session_end(**kw: Any) -> None:
+    """The end of a turn: when it is the end of a cron run the plugin started for an owner's answer, the owner gets
+    one line on how it went."""
+    try:
+        job_id, key, started = _cron_run()
+        if job_id is None:
+            return
+        cfg, _ = _load()
+        rec = passes.run_end(cfg.state_dir, passes.job_ref(job_id), key, started, datetime.now(UTC))
+        if rec is not None:
+            _outcome_notice(cfg, rec)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("on_session_end failed: %s", exc)
+
+
 def _where(built: dict[str, Any]) -> str:
     """The job or session a held call belongs to, for the owner's notice."""
     return _run_of(built)[0]
@@ -1428,10 +1554,12 @@ def _hold(
     sid: str = "",
     job_id: str | None = None,
     match: dict[str, Any] | None = None,
+    acted: bool = False,
 ) -> dict[str, Any]:
     """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
     call is held whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of
-    a waiting hold of the same job and action is counted on it, and no notice is sent."""
+    a waiting hold of the same job and action is counted on it, and no notice is sent. `acted`: the run had
+    already sent or written something (then `allow` waits for the next run, and `allow now` is offered)."""
     now = datetime.now(UTC)
     planir = built["planir"]
     target, why = _notice_target(cfg)
@@ -1445,8 +1573,14 @@ def _hold(
     match = match or {}
     level = passes.offered_level(resp)
     offers = passes.offers(
-        job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at
+        job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at, acted
     )
+    job_digest = None
+    if job_id:
+        try:
+            job_digest = run_now.job_digest(run_now.home(dict(os.environ)), job_id)
+        except Exception as exc:  # noqa: BLE001 - not known: allow will not start the job
+            logger.warning("sentrook could not read the held call's job: %s", exc)
     repeat = False
     try:
         description = hold.inert(describe(resp, built["tool"]), 160)
@@ -1469,6 +1603,9 @@ def _hold(
             level=level,
             offers=offers,
             description=description,
+            job_digest=job_digest,
+            acted=acted,
+            run_key=_cron_run()[1] if job_id else None,
         )
         if hid is None:
             notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
@@ -1805,6 +1942,10 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_approval_response", on_post_approval_response)
+    try:
+        ctx.register_hook("on_session_end", on_session_end)
+    except Exception as exc:  # noqa: BLE001 - an older Hermes: the job's next scan tells the owner instead
+        logger.info("sentrook on_session_end not registered: %s", exc)
     try:
         cli.register_cli(ctx, _settings, functools.partial(owner_command, local_cli=True))
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin CLI commands

@@ -33,6 +33,7 @@ import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import * as passes from "./passes.ts";
+import * as runNow from "./runNow.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, describe as describeCall, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind, triggerKind } from "./planir.ts";
@@ -1063,9 +1064,12 @@ const plugin = {
           // (passes.ts); otherwise the call waits for the owner (hold.ts).
           const jobId = hold.cronJobId(ctx, run);
           const match = passes.matchOf(event.toolName, resp, event?.params ?? {}, store.salt(), jobId === null);
+          // A run the plugin started for an owner's allow (runNow.ts): its pass serves this run only.
+          const rerun = jobId ? startedRun(cfg, jobId, runId) : null;
+          const rerunId = typeof rerun?.id === "string" ? rerun.id : null;
           let settled: Json | null = null;
           try {
-            settled = passes.check(cfg.stateDir, passes.jobRef(jobId), match, resp, new Date());
+            settled = passes.check(cfg.stateDir, passes.jobRef(jobId), match, resp, new Date(), rerunId);
           } catch (err) {
             api.logger.warn(`${LOG} could not read the passes: ${String(err)}`);
           }
@@ -1076,10 +1080,18 @@ const plugin = {
           } else if (settled) {
             entry.decision = "allowed_by_pass";
             byPass = { id: settled.id, kind: "allow", uses: settled.uses, use_count: settled.use_count };
+            if (rerunId && settled.id === rerunId) noteRun(cfg, rerunId, { passed: true });
           } else {
             entry.decision = "held";
             hook = { block: true, blockReason: hold.HELD_TEXT };
-            held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, { sid, jobId, match });
+            held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, {
+              sid,
+              jobId,
+              match,
+              acted: !!run.acted,
+              runKey: jobId ? runKeyOf(jobId, runId).runKey : null,
+            });
+            if (rerunId && typeof held?.id === "string") noteRun(cfg, rerunId, { held: held.id });
           }
         } else {
           // Provisional until the user answers.
@@ -1129,6 +1141,10 @@ const plugin = {
 
       sess.history.push(entry);
       store.saveSession(sid, sess, cfg.historyLimit * 2);
+      // A call that runs and sends or writes something: a later hold in this run says so (runNow.ts).
+      if (result.ok && !NOT_RUN.has(entry.decision) && entry.decision !== "drafted" && passes.acts(entry.tool_kind, result.response)) {
+        if (runId && !run.acted) safely("acted", () => store.mergeRun(runId, { acted: true }));
+      }
 
       traffic.write({
         kind: "scan",
@@ -1242,6 +1258,79 @@ const plugin = {
       const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
       return { where: hold.whereText(name, sref, job?.id, job?.name), jobId: job?.id ?? null };
     }
+
+    /**
+     * The run of cron job `jobId` as a key: the run id on its running receipt (what `openclaw cron run` returned for a
+     * run the plugin started), else the agent run's own id; and when it started, when the receipt says.
+     */
+    function runKeyOf(jobId: string, runId: string | undefined): { runKey: string | null; startedAt: Date | null } {
+      const found = runNow.activeRun(ocDir, jobId);
+      if (found) return found;
+      return { runKey: runId ? `agent:${runId}` : null, startedAt: null };
+    }
+
+    /**
+     * The record of a run the plugin started for an answer, when this run of `jobId` is it (passes.runOf); earlier such
+     * runs of the job that ended unseen get their outcome line now.
+     */
+    function startedRun(cfg: PluginConfig, jobId: string, runId: string | undefined): Json | null {
+      try {
+        const { runKey, startedAt } = runKeyOf(jobId, runId);
+        const { mine, gone } = passes.runOf(cfg.stateDir, passes.jobRef(jobId), runKey, startedAt, new Date());
+        for (const rec of gone) outcomeNotice(cfg, rec);
+        return mine;
+      } catch (err) {
+        api.logger.warn(`${LOG} could not read the started runs: ${String(err)}`);
+        return null;
+      }
+    }
+
+    function noteRun(cfg: PluginConfig, id: string, what: { passed?: boolean; held?: string }): void {
+      safely("started run note", () => passes.note(cfg.stateDir, id, what));
+    }
+
+    /** Tells the owner how a run started for their answer went (passes.outcomeText), and logs it. Never throws. */
+    function outcomeNotice(cfg: PluginConfig, rec: Json): void {
+      safely("started run outcome", () => {
+        const text = passes.outcomeText(rec, hold.OUTCOMES);
+        const target = store.loadNotify();
+        const outbound = outboundOf();
+        let notice: Json = { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+        if (target && outbound?.loadAdapter) {
+          notice = { status: "queued", target: target.channel };
+          hold.track(
+            hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+              if (why) api.logger.warn(`${LOG} started-run notice not delivered: ${why}`);
+            }),
+          );
+        } else if (target) {
+          notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+        }
+        traffic.write({
+          kind: "run_now",
+          op: "ended",
+          pass_id: rec.id ?? null,
+          hold_id: rec.hold_id ?? null,
+          job_ref: rec.job_ref ?? null,
+          passed: !!rec.passed,
+          held: Array.isArray(rec.held) ? rec.held : [],
+          notice,
+        });
+      });
+    }
+
+    // The end of a cron run the plugin started for an owner's allow: the owner gets one line on how it went.
+    api.on("agent_end", (event: any, ctx: any) =>
+      safely("agent_end", () => {
+        const runId = event?.runId ?? ctx?.runId;
+        const jobId = hold.cronJobId(ctx, store.loadRun(runId));
+        if (!jobId) return;
+        const cfg = loadConfig().cfg;
+        const { runKey, startedAt } = runKeyOf(jobId, runId);
+        const rec = passes.runEnd(cfg.stateDir, passes.jobRef(jobId), runKey, startedAt, new Date());
+        if (rec) outcomeNotice(cfg, rec);
+      }),
+    );
 
     function outboundOf(): hold.Outbound | undefined {
       try {
@@ -1415,7 +1504,7 @@ const plugin = {
       tool: string,
       triggerKind: string,
       run: any,
-      bound: { sid: string; jobId: string | null; match: passes.Match },
+      bound: { sid: string; jobId: string | null; match: passes.Match; acted?: boolean; runKey?: string | null },
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
@@ -1431,7 +1520,15 @@ const plugin = {
       const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
       const record = (r: Record<string, unknown>) => traffic.write(r);
       const level = passes.offeredLevel(resp);
-      const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt);
+      const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt, !!bound.acted);
+      let jobDigest: string | null = null;
+      if (bound.jobId) {
+        try {
+          jobDigest = runNow.jobDigest(ocDir, bound.jobId);
+        } catch (err) {
+          api.logger.warn(`${LOG} could not read the held call's job: ${String(err)}`);
+        }
+      }
       let description = "";
       try {
         description = hold.inert(describeCall(resp, tool), 160);
@@ -1456,6 +1553,9 @@ const plugin = {
             level,
             offers,
             description,
+            jobDigest,
+            acted: !!bound.acted,
+            runKey: bound.runKey ?? null,
           },
           now,
           record,
