@@ -47,7 +47,7 @@ still blocked whatever is granted.
 
 ## The owner's commands
 
-`/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. Group rooms are refused. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
+`/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. OpenClaw also accepts them from the owner in a group room, except `/sentrook-setup`, which refuses there. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
 owner type it.
 
 - `/sentrook status`: plugin version, mode and thresholds, scan host, whether credentials are set, how many grants and bindings, snooze, held calls and where notices go. Anyone may run it.
@@ -65,6 +65,7 @@ owner type it.
 - `/sentrook-approve <id>`: the same as allow (kept for one release).
 - `/sentrook-passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
 - `/sentrook-notify here|off|status`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat; `off` stops them.
+- `/sentrook-setup [apply <code> [1,3] | discard <id>]`: lists what would stop Sentrook asking about routine work (channels the cron jobs deliver to, MCP servers, grants Sentrook suggested on reviews the owner approved), each described by Sentrook; the owner sets them with `apply` and the code the list ends with.
 - `openclaw sentrook verify` (on the machine): checks the endpoints, the credentials, the scan service and the token.
 
 ## A scan that looks wrong
@@ -76,7 +77,7 @@ filled in, and `--save` writes the full record to a private file to email (the c
 
 ## What you never do
 
-- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, or their `openclaw sentrook` forms. Only the owner runs them.
+- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and

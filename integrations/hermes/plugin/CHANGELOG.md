@@ -20,6 +20,43 @@ since the version the catalog pins.
   credentials in Hermes by hand. Credentials the identity service refuses (`invalid_client`: revoked or wrong) say to
   sign in again.
 
+- The agent gets a second tool, `sentrook_propose_setup` (toolset `sentrook`, declared in `provides_tools`), which
+  the setup skill now uses at hand-over instead of giving you commands to paste: it adds up to 20 grants and channel
+  bindings you told the agent about, each with a reason of at most 200 characters, to your `/sentrook setup` list as
+  "proposed by the agent, not seen yet". It sets nothing. Each item must be one `/sentrook grant ... --persistent` or
+  `/sentrook bind add` would accept, and the agent is told which were not added and why; settings, attended platforms
+  and session grants are refused, a destination's wildcard may only be `*.` and one registrable domain, and a key is
+  named, never its value (a key-shaped name is refused). When the chat had read content no scan had seen yet as the
+  agent proposed, the screen says Sentrook could not check what it read just before. The agent hears only how many items were added
+  and to ask you to open `/sentrook setup`. A proposal is kept in `proposals.json` for a day, at most three at once.
+  It answers only where the setup report does, with the same refusal elsewhere and nothing stored; the call itself is
+  not scanned, its result goes to the next scan, and each call is logged as a `setup_proposal` record. The setup
+  report and the proposal share one gate: a tool is recognised as the plugin's own only when Hermes's tool registry
+  names the plugin's handler, and the one-time marker is keyed by the inputs the handler acts on.
+- The agent gets a read-only tool, `sentrook_setup_report` (toolset `sentrook`, declared in `provides_tools`), which
+  the setup skill now uses at check-in: what is set (counts of grants and bindings by kind, never the grants), the
+  gaps in plain words, the grants Sentrook suggested on reviews you approved at least twice (marked covered when a
+  grant in force already covers one), approved reviews with nothing to suggest by tool, and API key names Sentrook saw
+  sent only to their own service, over the last 14 days (`days`, up to 30), saying how far back the log actually went.
+  It shows no call's arguments or request text, and every name from a tool call is neutralised. Only your own message
+  in a direct chat or on the local terminal gets it; everywhere else (group chats, cron, subagents, webhooks, the API
+  server, Hermes's background review, the plugin host) the whole answer is "Setup needs the owner in a direct chat."
+  `pre_tool_call` decides and leaves a one-time marker the tool needs; the call itself is not scanned, its result goes
+  to the next scan, and each call is logged as a `setup_report` record.
+- `/sentrook setup` (owner only; also `hermes sentrook setup`) lists what would stop Sentrook asking about routine
+  work, each item described by Sentrook in its own words with how long it lasts and what to check: a channel binding
+  for each cron job's delivery to a room that is not bound yet, a provider grant for each MCP server no grant covers,
+  the grant Sentrook suggested on at least two reviews you approved in the last 30 days (from your own message, in a
+  chat where the scanner flagged no steering content, and only for exactly that grant: a broader pattern never counts),
+  and items the agent proposed, with its reason shown last as a note. Every name and note is shown in a code span, so
+  links, mentions and emphasis in them do nothing, and a config entry that is not one plain word is left out and
+  counted. The screen ends with a four-digit code, new
+  each time and valid for 15 minutes: `/sentrook setup apply <code>` sets every item, `apply <code> 1,3` some of them.
+  Grants backed by reviews you approved last until revoked, the others 30 days, and channel bindings until removed;
+  `--expires 90d` or `--until-revoked` changes the grants' lifetime. Applied grants are persistent and say where they
+  came from; applying an item twice sets nothing new. `/sentrook setup discard <id>` drops an agent proposal. The
+  setup skill now sends the owner to this screen, and the agent's rules add `/sentrook setup apply` to the commands it
+  never runs.
 - The plugin gives the agent two skills, listed while the plugin is enabled: `sentrook:sentrook-guide` (how Sentrook
   works, so the agent can explain an approval prompt, a block, a held call or a notice, and point the owner to
   `/sentrook why` and `/sentrook report`) and `sentrook:sentrook-setup` (the agent asks the owner what is routine and

@@ -41,16 +41,19 @@ In short, for anyone deciding whether to install it:
   kind per run every 6 hours. Turning a save into a draft is the only change the plugin makes to a call, and these
   notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
-  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls, the passes and denials your answers set, and where their notices go; when each job or run last had a notice with a quiet period; the conversations
-  above), or to the paths
+  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls, the passes and denials your answers set, and where their notices go; when each job or run last had a notice with a quiet period; the
+  agent's setup proposals and the last `/sentrook-setup` list with its code; the conversations above), or to the paths
   you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
-  cron run, that job's definition from OpenClaw's job store (read-only), for the channel the job delivers to; and, to
+  cron run, that job's definition from OpenClaw's job store (read-only), for the channel the job delivers to; when you
+  open `/sentrook-setup`, every job's delivery and the MCP servers in OpenClaw's config; and, to
   turn a reviewed background change to a skill into a draft, that skill's `SKILL.md`. To tell a read of its own skill
   files from any other read, it resolves the path a `read` call named; `verify` also lists the skill folders OpenClaw
   loads for a skill with the name of one of its own. It runs no shell commands and starts no background processes.
 - **Agent skills:** it ships two skills, `sentrook-guide` (how Sentrook works, for the agent to explain it) and
-  `sentrook-setup` (the agent asks what is routine for you and gives you the commands to type), and a few rules in the
-  agent's system prompt: never run the commands that change Sentrook, never edit its settings, never disable it.
+  `sentrook-setup` (the agent asks what is routine for you and adds it to your `/sentrook-setup` list), two agent
+  tools offered only to the owner (`sentrook_setup_report`, read-only, and `sentrook_propose_setup`, which adds items
+  to that list and sets nothing), and a few rules in the agent's system prompt: never run the commands that change
+  Sentrook, never edit its settings, never disable it.
 - **Credentials:** the scan credentials (`SENTROOK_SCAN_CLIENT_ID`, `SENTROOK_SCAN_CLIENT_SECRET`) belong in
   OpenClaw's `~/.openclaw/.env`. `openclaw sentrook login`, which you run yourself, signs in through the identity
   service and writes those two lines there (mode 600), keeping every other line, and keeps a random id for the

@@ -8,11 +8,17 @@
 
 import { createHash } from "node:crypto";
 
-import { agentRules, reportedTool, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
-import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
+import { agentRules, reportedTool, shadowingSkills, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
+import {
+  CLIENT_ID_VAR,
+  CLIENT_SECRET_VAR,
+  envWithOpenclawDotenv,
+  resolveOidcCredentials,
+  resolveSecretString,
+} from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
-import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
+import { CMD, OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import {
   configProblemsNotice,
   configProblemsSummary,
@@ -37,6 +43,9 @@ import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
+import * as setup from "./setup.ts";
+import * as proposals from "./proposals.ts";
+import * as setupReport from "./setupReport.ts";
 import * as snooze from "./snooze.ts";
 import { type HistoryEntry, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
@@ -74,6 +83,8 @@ interface OpenClawPluginApi {
     handler: (ctx: any) => Promise<{ text?: string }>;
   }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
+  /** A tool, or a factory OpenClaw runs whenever a run assembles its tools; null from the factory offers none. */
+  registerTool?: (tool: ((ctx: any) => Json | null) | Json, opts?: { name?: string; optional?: boolean }) => void;
   registerHttpRoute?: (route: {
     path: string;
     auth: "gateway" | "plugin";
@@ -280,6 +291,8 @@ const plugin = {
                       record: (record) => traffic.write(record),
                     },
                     session: commandSessionOf(ctx),
+                    hostConfig: hostConfig(),
+                    openclawDir: ocDir,
                     chat: {
                       channel: ctx.channel,
                       senderId: ctx.senderId,
@@ -302,6 +315,186 @@ const plugin = {
         api.logger.warn(`${LOG} /${sub.command} command unavailable: ${String(err)}`);
       }
     }
+    // ---- the plugin's own agent tools, for the owner's own direct chat: the read-only setup report (setupReport.ts)
+    // and the setup proposal (proposals.ts). Neither sets anything Sentrook allows. ---------------------------------
+    /**
+     * The calls `before_tool_call` allowed, one set of markers per tool, by session and call id, for that tool's own
+     * `execute` to take: a marker for one tool never answers a call of the other.
+     */
+    const ownMarkers = new Map<string, setupReport.Markers>([
+      [setupReport.TOOL, new setupReport.Markers()],
+      [proposals.TOOL, new setupReport.Markers()],
+    ]);
+    /**
+     * For each allowed call (`ownKey`): the inputs its tool reads, as the gate saw them, which `execute` must find the
+     * same (a plugin that changed the arguments after this one's hook leaves the call refused); and whether the session
+     * held content no scan had seen yet.
+     */
+    const ownInputs = new Map<string, { inputs: string; unchecked: boolean }>();
+    const ownKey = (tool: string, sid: string, callId: unknown) => `${tool}\n${sid}\n${String(callId)}`;
+    /** Sessions the factories offered the tools in (OpenClaw said the sender is the owner), most recent last. */
+    const ownOffered = new Map<string, number>();
+    /** The own tools OpenClaw took a registration for. */
+    const ownRegistered = new Set<string>();
+    /** Own tools another plugin's tool of the same name ran in place of, in this process: their calls are scanned. */
+    const ownForeign = new Set<string>();
+    const OWN_RECORD = new Map<string, string>([
+      [setupReport.TOOL, "setup_report"],
+      [proposals.TOOL, "setup_proposal"],
+    ]);
+    const ownRecord = (tool: string, sid: string, outcome: string, extra: Json) =>
+      traffic.write({ kind: OWN_RECORD.get(tool)!, session_ref: sessionRef(sid), outcome, ...extra });
+    const itemsAsked = (params: unknown): Json => {
+      const items = params && typeof params === "object" ? (params as any).items : undefined;
+      return { items: Array.isArray(items) ? items.length : 0 };
+    };
+    const reportText = (days: number, now: Date): string => {
+      const { cfg, env } = loadConfig();
+      const target = store.loadNotify();
+      let shadowed: string[] = [];
+      try {
+        shadowed = shadowingSkills(hostConfig(), process.env).map((s) => s.split(" at ")[0]!);
+      } catch {
+        shadowed = [];
+      }
+      const pc = api.pluginConfig ?? {};
+      const state: setupReport.ReportState = {
+        plugin_version: PLUGIN_VERSION,
+        mode: cfg.mode,
+        review_at: cfg.reviewAt,
+        block_at: cfg.blockAt,
+        scan_ok: cfg.endpoints.scan.ok && cfg.endpoints.issuer.ok,
+        credentials_missing: [
+          resolveSecretString(pc.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
+          resolveSecretString(pc.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
+        ].filter((v): v is string => v !== null),
+        notice: target
+          ? { target: hold.targetText(target), source: "/sentrook-notify here" }
+          : { target: null, why: hold.NOTIFY_UNSET },
+        attended_platforms: null,
+        unsent_grants: Object.keys(cfg.unsentGrants ?? {}).length,
+        shadowed_skills: [...new Set(shadowed)],
+        traffic_log: cfg.trafficLog.enabled,
+      };
+      const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);
+      const log = cfg.trafficLog.enabled ? cfg.trafficLog.path : null;
+      const ev = setup.readEvidence(log, cfg.reviewAt, now, days * 86_400_000);
+      return setupReport.render(state, force, ev, now, days, log !== null && setupReport.logCapped(log));
+    };
+    /** Each own tool: what `execute` answers for a call its marker allowed, and what the traffic log records of it. */
+    const OWN_TOOLS: Array<{
+      name: string;
+      label: string;
+      description: string;
+      parameters: unknown;
+      /** What the tool reads from its arguments; a marker holds it as the gate saw it. */
+      inputs: (params: unknown) => unknown;
+      answer: (sid: string, params: unknown, unchecked: boolean) => { text: string; logged: Json };
+    }> = [
+      {
+        name: setupReport.TOOL,
+        label: "Sentrook setup report",
+        description: setupReport.DESCRIPTION,
+        parameters: setupReport.PARAMETERS,
+        inputs: setupReport.daysOf,
+        answer: (_sid, params) => {
+          const days = setupReport.daysOf(params);
+          return { text: reportText(days, new Date()), logged: { outcome: "answered", days } };
+        },
+      },
+      {
+        name: proposals.TOOL,
+        label: "Sentrook setup proposal",
+        description: proposals.description(CMD),
+        parameters: proposals.PARAMETERS,
+        inputs: proposals.check,
+        answer: (sid, params, unchecked) => {
+          const { cfg } = loadConfig();
+          return proposals.propose(cfg.stateDir, proposals.check(params), sessionRef(sid), new Date(), CMD, proposals.newId, unchecked);
+        },
+      },
+    ];
+    const ownTool = (spec: (typeof OWN_TOOLS)[number], toolCtx: any): Json => ({
+      name: spec.name,
+      label: spec.label,
+      description: spec.description,
+      parameters: spec.parameters,
+      async execute(toolCallId: string, params: unknown) {
+        const sid = sessionIdOf(toolCtx);
+        const extra = spec.name === proposals.TOOL ? itemsAsked(params) : {};
+        let text: string = setupReport.REFUSAL;
+        try {
+          const seen = ownInputs.get(ownKey(spec.name, sid, toolCallId));
+          ownInputs.delete(ownKey(spec.name, sid, toolCallId));
+          if (!ownMarkers.get(spec.name)!.take(sid, toolCallId)) {
+            ownRecord(spec.name, sid, "refused", { reason: "no_marker", ...extra });
+          } else if (!seen || seen.inputs !== JSON.stringify(spec.inputs(params))) {
+            ownRecord(spec.name, sid, "refused", { reason: "changed", ...extra });
+          } else {
+            const got = spec.answer(sid, params, seen.unchecked);
+            text = got.text;
+            ownRecord(spec.name, sid, got.logged.outcome as string, Object.fromEntries(Object.entries(got.logged).filter(([k]) => k !== "outcome")));
+          }
+        } catch (err) {
+          api.logger.warn(`${LOG} ${spec.name} failed: ${String(err)}`);
+          text = setupReport.REFUSAL;
+          safely(`${spec.name} record`, () => ownRecord(spec.name, sid, "refused", { reason: "error", ...extra }));
+        }
+        return { content: [{ type: "text", text }], details: {} };
+      },
+    });
+    for (const spec of OWN_TOOLS) {
+      try {
+        if (typeof api.registerTool !== "function") break;
+        api.registerTool(
+          (toolCtx: any) => {
+            // Detached cron runs never carry the owner's identity; anyone else is not offered the tool at all.
+            if (toolCtx?.senderIsOwner !== true) return null;
+            for (const key of [toolCtx.sessionKey, toolCtx.sessionId]) {
+              if (typeof key !== "string" || !key) continue;
+              ownOffered.delete(key);
+              ownOffered.set(key, Date.now());
+            }
+            while (ownOffered.size > 500) ownOffered.delete(ownOffered.keys().next().value!);
+            return ownTool(spec, toolCtx);
+          },
+          { name: spec.name },
+        );
+        ownRegistered.add(spec.name);
+      } catch (err) {
+        api.logger.warn(`${LOG} ${spec.name} tool unavailable: ${String(err)}`);
+      }
+    }
+    /**
+     * The own tool a call is of, when it is one: a tool the plugin registered, offered in this session, and not found
+     * answered by another plugin's tool (`foreignOwnTool`). Such a call is not scanned (`ownToolGate`).
+     */
+    const ownToolCall = (event: any, ctx: any): string | null =>
+      typeof event?.toolName === "string" &&
+      ownRegistered.has(event.toolName) &&
+      !ownForeign.has(event.toolName) &&
+      [ctx?.sessionKey, ctx?.sessionId].some((k) => typeof k === "string" && ownOffered.has(k))
+        ? event.toolName
+        : null;
+    /**
+     * After a call of an own tool `before_tool_call` allowed: OpenClaw runs the factory before it drops a tool whose
+     * name another plugin already took, so a call can be allowed and then reach the other plugin's tool. A mark still
+     * there on a call that ran without error means this plugin's `execute` never ran: the call is recorded as
+     * `foreign_tool` (`FOREIGN_TEXT`, in status and verify) and every later call of that name is scanned like any other.
+     */
+    const foreignOwnTool = (event: any, ctx: any): void => {
+      const tool = event?.toolName;
+      const callId = event?.toolCallId ?? ctx?.toolCallId;
+      if (typeof tool !== "string" || !OWN_RECORD.has(tool) || !callId) return;
+      const sid = sessionIdOf(ctx);
+      ownInputs.delete(ownKey(tool, sid, callId));
+      if (!ownMarkers.get(tool)!.drop(sid, callId) || event?.error) return;
+      ownForeign.add(tool);
+      api.logger.warn(`${LOG} ${tool}: ${setupReport.FOREIGN_TEXT}`);
+      safely(`${tool} record`, () => ownRecord(tool, sid, "foreign_tool", {}));
+      safely(`${tool} flag`, () => store.saveForeignTool(tool, new Date()));
+    };
+
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
     /**
@@ -451,6 +644,7 @@ const plugin = {
 
     // ---- tool results --------------------------------------------------------------------------
     api.on("after_tool_call", async (event: any, ctx: any) => {
+      safely("own tool check", () => foreignOwnTool(event, ctx));
       try {
         const hostId: string | undefined = event?.toolCallId ?? ctx?.toolCallId;
         if (!hostId || UNSCANNED_TOOLS.has(event?.toolName)) return;
@@ -541,6 +735,8 @@ const plugin = {
       "before_tool_call",
       async (event: any, ctx: any): Promise<BeforeToolCallResult | undefined> => {
         if (UNSCANNED_TOOLS.has(event?.toolName)) return undefined;
+        const own = ownToolCall(event, ctx);
+        if (own) return ownToolGate(event, ctx, own);
         try {
           const { cfg, env } = loadConfig();
           if (cfg.configProblems.length) settingsNotice(cfg);
@@ -554,6 +750,77 @@ const plugin = {
       },
       { priority: 10 },
     );
+
+    /**
+     * `before_tool_call` for the plugin's own agent tools: not scanned, and allowed only on the owner's own message in
+     * a direct chat (`setupReport.reportAllowed`, from the run's trigger as the plugin recorded it). An allowed call
+     * gets its marker (session and call id) and a step in the session's history, so its result goes to the next scan
+     * like any tool result. Anything else, a failure included, gets `setupReport.REFUSAL` and nothing more.
+     */
+    async function ownToolGate(event: any, ctx: any, tool: string): Promise<BeforeToolCallResult | undefined> {
+      const sid = sessionIdOf(ctx);
+      const refuse = (reason: string): BeforeToolCallResult => {
+        const extra = tool === proposals.TOOL ? itemsAsked(event?.params) : {};
+        safely(`${tool} record`, () => ownRecord(tool, sid, "refused", { reason, ...extra }));
+        return { block: true, blockReason: setupReport.REFUSAL };
+      };
+      try {
+        const { cfg } = loadConfig();
+        return await store.withSession(sid, () => {
+          const runId = event?.runId ?? ctx?.runId;
+          const run = store.loadRun(runId);
+          const callId = event?.toolCallId ?? ctx?.toolCallId;
+          if (!runId || typeof callId !== "string" || !callId || !setupReport.reportAllowed(run, ctx, cfg, hostConfig())) {
+            return refuse("not_owner_turn");
+          }
+          const sess = store.loadSession(sid);
+          const built = buildPlanir({
+            hostConfig: hostConfig(),
+            cfg,
+            redactor: createRedactor("standard", store.salt()),
+            event,
+            ctx,
+            sid,
+            sess,
+            run,
+            assistant: store.loadAssistant(ctx?.sessionKey),
+            parents: store.parents(),
+            grants: [],
+            hostVersion,
+            hostProcess: false,
+            selfEdit: null,
+          });
+          sess.history.push({
+            step: built.step,
+            turn: built.turn,
+            call_id: built.callId,
+            tool: event.toolName,
+            tool_kind: built.toolKind,
+            provider: built.provider,
+            arguments: built.historyArgs,
+            result: null,
+            action_fingerprint: null,
+            risk: null,
+            tiers: null,
+            request_id: built.planir.request_id,
+            decision: "allowed",
+            ...(built.hostCallId ? { _host_call_id: built.hostCallId } : {}),
+          });
+          store.saveSession(sid, sess, cfg.historyLimit * 2);
+          ownMarkers.get(tool)!.put(sid, callId);
+          // Content the chat read since the last scan reaches the scanner only with the next scanned call: what it
+          // was cannot be checked now, so the owner is told. The plugin's own tools' results are its own text.
+          const unchecked = (built.planir.new_inputs as any[]).some((i) => !OWN_RECORD.has(i?.tool));
+          const spec = OWN_TOOLS.find((t) => t.name === tool)!;
+          ownInputs.set(ownKey(tool, sid, callId), { inputs: JSON.stringify(spec.inputs(event?.params)), unchecked });
+          while (ownInputs.size > 500) ownInputs.delete(ownInputs.keys().next().value!);
+          return undefined;
+        });
+      } catch (err) {
+        api.logger.warn(`${LOG} ${tool} check failed: ${String(err)}`);
+        return refuse("error");
+      }
+    }
 
     /** On a cron run, the grant for its job's own delivery target (`cronDelivery.ts`); a failed read gives none. */
     function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, params: unknown): GrantConfig[] {

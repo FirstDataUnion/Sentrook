@@ -75,9 +75,12 @@ plugin-planir-check:
 	rm -f tmp/openclaw-planirs.json
 	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
 		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned|must declare|Code Mode cell|own shipped skill" index.test.ts
+	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
+		node --experimental-strip-types --test --test-name-pattern="goes to the next scan" setupReport.test.ts proposals.test.ts
 	rm -rf tmp/hermes-planirs tmp/hermes-planirs.json
 	SENTROOK_PLANIR_DUMP_DIR=$(CURDIR)/tmp/hermes-planirs uv run python -m pytest -q \
-		integrations/hermes/plugin/tests/test_plugin.py -k episode
+		integrations/hermes/plugin/tests/test_plugin.py integrations/hermes/plugin/tests/test_setup_report.py \
+		integrations/hermes/plugin/tests/test_proposals.py -k episode
 	uv run python -c "import glob, json; from sentrook.planir.models import PlanIR; \
 	from sentrook.planir.validate import check; \
 	hermes = sorted(glob.glob('tmp/hermes-planirs/*.json')); assert hermes, 'no Hermes PlanIR dumps'; \

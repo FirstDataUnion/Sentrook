@@ -207,6 +207,7 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
       "sentrook-approve",
       "sentrook-passes",
       "sentrook-notify",
+      "sentrook-setup",
     ],
   );
   const def = commands[0];

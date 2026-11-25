@@ -12,7 +12,7 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 ## Requirements
 
 - Hermes Agent **v0.23.0 or newer** (`hermes --version`), the oldest version the plugin declares.
-  Tested on v0.23.0 and v0.23.3.
+  Tested on v0.23.0 and v0.23.4.
   On an older Hermes, update Hermes first (`hermes update`).
 - Plugins loaded inside Hermes (`plugins.isolation: in_process`, the default). With `plugins.isolation: host` every
   call is still scanned, but Hermes's background skill and memory saves are not recognised (see
@@ -150,6 +150,41 @@ Run these commands in a direct message to the agent or on the machine (see [who 
 type `/sentrook …`. On the command line it is `hermes sentrook …`, with patterns in quotes so the shell leaves the `*`
 alone: `hermes sentrook grant file '/home/you/notes/*' --allows read,write --persistent`.
 
+### Set up with /sentrook setup
+
+`/sentrook setup` lists what Sentrook would need to stop asking about routine work, worked out from what it can see
+itself, and sets it with one command:
+
+- **From your config**: a channel binding for each cron job that delivers to a chat room not bound yet
+  (`deliver: discord:#daily-brief` in `~/.hermes/cron/jobs.json`), and a provider grant for each MCP server in
+  `mcp_servers` that no grant covers. Cron jobs can be changed by the agent, so these items say so: check the
+  channel is one you chose.
+- **From reviews you approved**: the grant Sentrook suggested on at least two reviews you approved in the last 30
+  days, from your own message, in a chat where the scanner saw no content trying to steer the agent. Only that exact
+  grant counts: a broader pattern never inherits the count. With the traffic log off, there is no evidence to count.
+- **From the agent**: items the agent proposed with its `sentrook_propose_setup` tool (see "The agent's setup
+  proposals" below), marked "not seen yet" unless reviews you approved back them, with its reason shown last as a
+  quoted note. A proposal lasts a day.
+
+Sentrook describes each item in its own words, with how long it lasts and warnings to check (a name with characters
+that are not plain ASCII, shown with its registrable domain; deleting files; your whole home folder; a whole package
+registry; something a grant already covers; an agent proposal from a chat that had read content trying to steer it):
+
+```
+3. Send data to `api.example.com`, from any chat or job, until you revoke it.
+   Sentrook suggested this in 3 reviews you approved, the last one 2 days ago.
+
+To set them all, send: /sentrook setup apply 4821
+To set some, list their numbers: /sentrook setup apply 4821 1,3
+```
+
+The code is new each time you open the list and works once, for 15 minutes, so nothing is set unless you have just
+seen the list. Grants backed by reviews you approved last until you revoke them, the others 30 days, and channel
+bindings until you remove them; add `--expires 90d` or `--until-revoked` to `apply` to change how long the grants
+last. Applied grants are persistent, list in `/sentrook grants` and record where they came from; applying an item
+twice sets nothing new. `/sentrook setup discard <id>` drops an agent proposal. Sentrook still decides whether a
+pattern is too broad to relieve anything.
+
 ### Bind the channel a scheduled job reports to
 
 Say a daily-brief cron job posts to a Discord channel and Sentrook asks for approval each time. Find the scan and
@@ -264,6 +299,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
 | `notify here\|off\|status\|<platform>` | Where Sentrook's notices go (see [Where notices go](#where-notices-go)). `here` stores the chat you send it in; `<platform>` that platform's home channel (the form for the command line); `off` goes back to `owner_channel` in the config |
 | `attended add\|remove\|list [platform] [--confirm]` | Platforms where a person answers Hermes's approval prompts, besides the chat platforms and apps (see [Attended platforms](#attended-platforms)). Adding one loosens Sentrook |
+| `setup [apply <code> [1,3] \| discard <id>]` | What would stop Sentrook asking about routine work, each item described by Sentrook; `apply` with the code the list ends with sets them, `--expires 90d` or `--until-revoked` changes how long the grants last (see [Set up with /sentrook setup](#set-up-with-sentrook-setup)) |
 | `help` | Lists the commands, and says where notices go and which platforms are attended |
 
 **Owner only.** `status` and `help` are open to anyone the gateway admits. Every other command runs only for the
@@ -299,14 +335,50 @@ into `~/.hermes/skills`):
   a notice, and point you to `/sentrook why` and `/sentrook report`.
 - `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the
   setup with `hermes sentrook verify`, asks what work is routine (the services, folders, channels and API key names
-  it uses), explains where notices go, and gives you the grant and binding commands to type, one at a time. Later,
-  when Sentrook keeps asking about the same thing, it helps you find the grant with `/sentrook why`.
+  it uses), explains where notices go, adds what you told it to your `/sentrook setup` list with
+  `sentrook_propose_setup`, sends you there to read and set the items, and offers to explain any of them. Later, when Sentrook keeps asking about the same thing,
+  it sends you back to `/sentrook setup` or helps you find the grant with `/sentrook why`.
 
-The agent never runs those commands itself, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
+The agent never runs those commands itself, `/sentrook setup apply` included, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
 short section with the rules the agent follows whether or not it opens a skill: never run the commands that change
 Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked or held call
-reworded. The agent cannot see Sentrook's history: `/sentrook` replies go to you, not to the model, so show it what
-`/sentrook why` says when you want its help with a scan.
+reworded. `/sentrook` replies go to you, not to the model, so show it what `/sentrook why` says when you want its
+help with one scan.
+
+### The agent's setup report
+
+The plugin also gives the agent one read-only tool, `sentrook_setup_report`, which the setup skill uses at check-in.
+It tells the agent what is set and what is missing, the grants Sentrook suggested on reviews you approved at least
+twice (marked covered when a grant already lets them through), the reviews you approved at least twice with nothing
+to suggest (by tool), and the API key names Sentrook saw sent only to their own service, over the last 14 days (up
+to 30), with the same rule as `/sentrook setup`: your own message, no steering content flagged in that chat. It
+changes nothing.
+
+It never shows the grants themselves (only how many of each kind are in force), any call's arguments or request text,
+key values, or anything from a group chat or another sender; every name from a tool call is shown as plain text, and
+with the traffic log off it shows only the settings. Hermes turns plugin tools on everywhere, so Sentrook itself
+decides who gets an answer: only your own message in a direct chat or on the local terminal. In a group chat, a cron
+job, a subagent, a webhook or the API server, Hermes's background review, or with `plugins.isolation: host`, the
+whole answer is "Setup needs the owner in a direct chat." Each call is recorded in the traffic log as a
+`setup_report` record, and the report itself goes to the next scan like any tool result.
+
+### The agent's setup proposals
+
+The agent has a second tool, `sentrook_propose_setup`, which the setup skill uses at hand-over: it adds what you told
+the agent (a service, a folder, a key name, a channel a job posts to) to your `/sentrook setup` list, up to 20 items
+at a time, each with a short reason. It sets nothing: you read each item on the list in Sentrook's words and set it
+with the list's code. Each item must be one `/sentrook grant ... --persistent` or `/sentrook bind add` would accept;
+the agent is told which it did not add and why. It never takes settings, attended platforms or grants for one
+session, a destination's wildcard may only be `*.` and one registrable domain (such as `*.example.com`, never `*`
+or `*.com`), and a key is named, never its value (a name shaped like a key itself is refused). The agent hears only how many items were added and to ask you to open
+`/sentrook setup`: never the list, its warnings or its code. A proposal is kept in `proposals.json` in the plugin's
+state folder for a day; at most three are open, and a new one replaces the oldest. Its reason never counts as
+evidence: an item stays "not seen yet" and lasts 30 days unless reviews you approved back it. If the chat had read
+something no scan had seen yet when the agent proposed (a page fetched just before, say), each of its items says
+Sentrook could not check what the chat read just before. It answers in the same
+places as the setup report, and anywhere else the whole answer is "Setup needs the owner in a direct chat." and
+nothing is stored. Each call is recorded in the traffic log as a `setup_proposal` record with its session and item
+count.
 
 ## Dashboard
 
@@ -754,10 +826,13 @@ In short, for anyone deciding whether to install it:
   failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
   only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
-  the traffic log, grants, snooze state, held calls, passes and denials, where notices go and the attended platforms you added, when each job last had a scan-failure notice, and the
-  conversation logs above), or to the paths you set for them
-  (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
-  secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`
+  the traffic log, grants, snooze state, held calls, passes and denials, where notices go and the attended platforms
+  you added, when each job last had a scan-failure notice, the agent's setup proposals and the last `/sentrook setup`
+  list with its code, and the conversation logs above), or to the paths you set for them (`state_dir`,
+  `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and secret redaction
+  are on (and, when you open `/sentrook setup`, your MCP servers), and the cron jobs in `cron/jobs.json` (a running
+  job's own prompt, and every job's delivery when you open `/sentrook setup`). It runs no shell commands. The one
+  process it starts is Hermes's own `hermes send`
   command, to send a notice above; the notice text goes to it on standard input.
 - **Credentials:** the scan credentials are stored and handed over by Hermes. `hermes sentrook login` (step 2), which
   you run yourself, contacts the identity service and has Hermes store the two `SENTROOK_SCAN_CLIENT_*` values with

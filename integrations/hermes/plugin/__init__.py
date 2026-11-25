@@ -15,7 +15,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +32,12 @@ from . import (
     owner,
     owner_settings,
     passes,
+    proposals,
     run_now,
     scan_failure_notice,
     session_allow,
+    setup,
+    setup_report,
     skill_review,
     skill_turn,
     snooze,
@@ -104,6 +107,20 @@ SETTINGS_KEYS = (
 _ctx: Any = None
 _store: Store | None = None
 _traffic: TrafficLog | None = None
+#: The plugin's own agent tools that `ctx.register_tool` took (the setup report and the setup proposal), by name,
+#: with the handler each was registered with.
+_own_tools: dict[str, Callable[..., str]] = {}
+#: The calls of each own tool that `pre_tool_call` allowed, for its handler to take, by session and the inputs the
+#: handler reads (the report's days, the proposal's checked items).
+_tool_markers = {
+    setup_report.TOOL: setup_report.Markers(setup_report.days_of),
+    proposals.TOOL: setup_report.Markers(proposals.check),
+}
+#: Proposals `pre_tool_call` allowed while the session held content no scan had seen yet, by session and checked
+#: items (`_unchecked_key`), for the handler to store with the proposal.
+_proposal_unchecked: dict[str, bool] = {}
+#: The traffic log record each own tool's calls are logged as.
+_TOOL_RECORD = {setup_report.TOOL: "setup_report", proposals.TOOL: "setup_proposal"}
 
 
 def _settings() -> dict[str, Any]:
@@ -495,6 +512,8 @@ def on_post_api_request(**kw: Any) -> None:
 
 
 def on_pre_tool_call(tool_name: str = "", args: Any = None, **kw: Any) -> dict[str, Any] | None:
+    if _own_tool(tool_name):
+        return _own_tool_gate({**kw, "tool_name": tool_name, "args": args})
     try:
         cfg, env = _load()
         store, traffic = _state(cfg)
@@ -913,6 +932,226 @@ def _scan_one(
             result.latency_ms,
         )
     return directive
+
+
+# ---- the plugin's own agent tools: the setup report and the setup proposal --------------------------------
+
+
+def _own_tool(tool_name: str) -> bool:
+    """`tool_name` is one of the agent tools this plugin registered: the name, a registration Hermes took, and the
+    handler Hermes's tool registry would run is this plugin's. Any other tool of that name, and any call where the
+    registry cannot be read, is scanned like every call."""
+    handler = _own_tools.get(tool_name)
+    if handler is None:
+        return False
+    try:
+        from tools.registry import registry
+    except Exception:  # noqa: BLE001 - the plugin host, where Hermes's registry is in the parent process: scanned,
+        return False  # and the handler refuses it without a marker
+    try:
+        entry = registry.get_entry(tool_name)
+    except Exception:  # noqa: BLE001 - unreadable: not known to be ours
+        return False
+    return getattr(entry, "handler", None) is handler
+
+
+def _unchecked_key(sid: str, args: Any) -> str:
+    return sid + "\n" + json.dumps(proposals.check(args), sort_keys=True, default=str)
+
+
+def _items_asked(args: Any) -> int:
+    items = args.get("items") if isinstance(args, dict) else None
+    return len(items) if isinstance(items, list) else 0
+
+
+def _tool_refused(
+    traffic: TrafficLog | None, tool: str, sid: str, reason: str, args: Any = None
+) -> dict[str, Any]:
+    if traffic is not None:
+        traffic.write(
+            {
+                "kind": _TOOL_RECORD[tool],
+                "session_ref": session_ref(sid),
+                "outcome": "refused",
+                "reason": reason,
+                **({"items": _items_asked(args)} if tool == proposals.TOOL else {}),
+            }
+        )
+    return {"action": "block", "message": setup_report.REFUSAL}
+
+
+def _own_tool_gate(kw: dict[str, Any]) -> dict[str, Any] | None:
+    """`pre_tool_call` for the plugin's own agent tools: not scanned, and allowed only on the owner's own turn
+    (`setup_report.allowed`), judged from the trigger a scan of this call would send. An allowed call gets its
+    marker and a step in the session's history, so its result goes to the next scan like any tool result. Anything
+    else, a failure included, gets `setup_report.REFUSAL` and nothing more."""
+    sid = _sid(kw)
+    tool = kw["tool_name"]
+    traffic: TrafficLog | None = None
+    try:
+        cfg, env = _load()
+        store, traffic = _state(cfg)
+        _capturing(cfg, store)
+        with store.session_lock(sid):
+            sess = store.load_session(sid)
+            turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
+            last_request = store.load_turn(request_turn_id(sess))
+            background = skill_review.in_background_review()
+            built = build_planir(
+                kw=kw,
+                cfg=cfg,
+                redactor=Redactor("standard", store.salt()),
+                sid=sid,
+                sess=sess,
+                turn=turn,
+                facts=session_facts(),
+                env=env,
+                host_cfg={},
+                grants=[],
+                request_turn=last_request if background else None,
+                last_request=last_request,
+            )
+            ok = setup_report.allowed(
+                built["planir"],
+                platform=built["platform"],
+                subagent=built["subagent"],
+                env=env,
+                attended_platforms=owner_settings.attended_of(cfg),
+                background=background or skill_review.in_unattended_review(),
+                isolated=skill_review.host_isolated(env),
+            )
+            if not ok:
+                return _tool_refused(traffic, tool, sid, "not_owner_turn", kw.get("args"))
+            sess["history"].append(
+                {
+                    "step": built["step"],
+                    "turn": built["planir"]["session"]["turn"],
+                    "call_id": built["call_id"],
+                    "tool": built["tool"],
+                    "tool_kind": built["tool_kind"],
+                    "provider": built["provider"],
+                    "arguments": built["history_args"],
+                    "result": None,
+                    "action_fingerprint": None,
+                    "risk": None,
+                    "tiers": None,
+                    "request_id": built["planir"]["request_id"],
+                    "decision": "allowed",
+                    "_host_call_id": built["host_call_id"],
+                }
+            )
+            store.save_session(sid, sess, cfg.history_limit * 2)
+            _tool_markers[tool].put(sid, kw.get("args"))
+            if tool == proposals.TOOL:
+                # Content the chat read since the last scan reaches the scanner only with the next scanned call: what
+                # it was cannot be checked now, so the owner is told.
+                pending = any(
+                    i.get("tool") not in _own_tools for i in built["planir"]["new_inputs"]
+                )
+                key = _unchecked_key(sid, kw.get("args"))
+                _proposal_unchecked[key] = _proposal_unchecked.get(key, False) or pending
+                while len(_proposal_unchecked) > 500:
+                    _proposal_unchecked.pop(next(iter(_proposal_unchecked)))
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook %s check failed: %s", tool, exc)
+        return _tool_refused(traffic, tool, sid, "error", kw.get("args"))
+
+
+def report_handler(
+    args: Any = None, task_id: Any = None, session_id: Any = None, **_kw: Any
+) -> str:
+    """The setup report tool's handler. Hermes passes it only the task and session ids, so it answers only for a
+    call `pre_tool_call` allowed (`_own_tool_gate`'s marker, the same session and days) and refuses anything
+    else."""
+    sid = str(session_id or task_id or "default")
+    traffic: TrafficLog | None = None
+    try:
+        cfg, env = _load()
+        traffic = _state(cfg)[1]
+        if not _tool_markers[setup_report.TOOL].take(sid, args):
+            _tool_refused(traffic, setup_report.TOOL, sid, "no_marker")
+            return setup_report.REFUSAL
+        days = setup_report.days_of(args)
+        text = _report_text(cfg, env, days, datetime.now(UTC))
+        traffic.write(
+            {
+                "kind": "setup_report",
+                "session_ref": session_ref(sid),
+                "outcome": "answered",
+                "days": days,
+            }
+        )
+        return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook setup report failed: %s", exc)
+        _tool_refused(traffic, setup_report.TOOL, sid, "error")
+        return setup_report.REFUSAL
+
+
+def propose_handler(
+    args: Any = None, task_id: Any = None, session_id: Any = None, **_kw: Any
+) -> str:
+    """The setup proposal tool's handler: stores the items the owner's setup screen will list (`proposals.propose`)
+    for a call `pre_tool_call` allowed (`_own_tool_gate`'s marker, the same session and checked items), and refuses
+    anything else. It writes the proposals file and nothing else: no grant, binding or setting."""
+    sid = str(session_id or task_id or "default")
+    traffic: TrafficLog | None = None
+    try:
+        cfg, _env = _load()
+        traffic = _state(cfg)[1]
+        if not _tool_markers[proposals.TOOL].take(sid, args):
+            _tool_refused(traffic, proposals.TOOL, sid, "no_marker", args)
+            return setup_report.REFUSAL
+        checked = proposals.check(args)
+        unchecked = _proposal_unchecked.pop(_unchecked_key(sid, args), True)
+        ref = session_ref(sid)
+        text, logged = proposals.propose(
+            cfg.state_dir, checked, ref, datetime.now(UTC), commands.CMD, unchecked=unchecked
+        )
+        traffic.write({"kind": "setup_proposal", "session_ref": ref, **logged})
+        return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook setup proposal failed: %s", exc)
+        _tool_refused(traffic, proposals.TOOL, sid, "error", args)
+        return setup_report.REFUSAL
+
+
+def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetime) -> str:
+    notify = owner_settings.notify_of(cfg)
+    target, why = _notice_target(cfg)
+    if not target:
+        where = None
+    elif notify.chat_id:
+        where = f"a {notify.platform} chat"
+    else:
+        where = f"the {target} home channel"
+    state = {
+        "plugin_version": PLUGIN_VERSION,
+        "mode": cfg.mode,
+        "review_at": cfg.review_at,
+        "block_at": cfg.block_at,
+        "scan_ok": cfg.endpoints.scan.ok and cfg.endpoints.issuer.ok,
+        "credentials_missing": auth_missing_credentials(),
+        "notice": {
+            "target": where,
+            "source": "the notify command"
+            if notify.source == "command"
+            else "the owner_channel setting",
+            "why": why,
+        },
+        "attended_platforms": sorted(owner_settings.attended_of(cfg)),
+        "unsent_grants": len(cfg.unsent_grants),
+        "shadowed_skills": None,
+        "traffic_log": cfg.traffic_log_enabled,
+    }
+    data = grants.load(cfg.state_dir)
+    force = setup.in_force(cfg, data, now)
+    log = cfg.traffic_log_path if cfg.traffic_log_enabled else None
+    ev = setup.read_evidence(log, cfg.review_at, now, timedelta(days=days))
+    return setup_report.render(
+        state, force, ev, now, days, capped=log is not None and setup_report.log_capped(log)
+    )
 
 
 def _allow_key(
@@ -1716,6 +1955,7 @@ def register(ctx: Any) -> None:
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin slash commands
         logger.info("/sentrook not registered: %s", exc)
     agent_skills.register(ctx)
+    _register_tools(ctx)
     cfg, _ = _load()
     ep = cfg.endpoints
     try:
@@ -1774,6 +2014,39 @@ def register(ctx: Any) -> None:
             "apply it in every session, or use /sentrook grant for one session; see /sentrook grants",
             unsent,
         )
+
+
+def _register_tools(ctx: Any) -> None:
+    """Registers the plugin's own agent tools (toolset `sentrook`): the read-only setup report and the setup proposal.
+    Hermes turns plugin toolsets on everywhere, so who may call them is decided in `pre_tool_call`
+    (`_own_tool_gate`). Neither sets anything Sentrook allows."""
+    _own_tools.clear()
+    register_tool = getattr(ctx, "register_tool", None)
+    if not callable(register_tool):
+        logger.info("sentrook agent tools not registered: this Hermes has no plugin tools")
+        return
+    tools = (
+        (setup_report.TOOL, setup_report.SCHEMA, report_handler, setup_report.DESCRIPTION),
+        (
+            proposals.TOOL,
+            proposals.schema(commands.CMD),
+            propose_handler,
+            proposals.description(commands.CMD),
+        ),
+    )
+    for name, schema, handler, description in tools:
+        try:
+            register_tool(
+                name=name,
+                toolset=setup_report.TOOLSET,
+                schema=schema,
+                handler=handler,
+                description=description,
+                emoji="🪶",
+            )
+            _own_tools[name] = handler
+        except Exception as exc:  # noqa: BLE001 - the plugin works without it
+            logger.warning("sentrook tool %s not registered: %s", name, exc)
 
 
 def settings_from_ctx(ctx: Any) -> dict[str, Any]:

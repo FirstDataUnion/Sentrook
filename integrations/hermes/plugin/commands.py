@@ -7,8 +7,9 @@ CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are b
 `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
 grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`, the
 same as `allow`) answer a call held on an unattended run (see `hold`), `passes` lists and revokes what those
-answers set (see `passes`), and `notify` and `attended` set where notices go and which extra platforms have a person
-answering approvals (see `owner_settings`), so only the owner may run them: both forms go through the owner check
+answers set (see `passes`), `notify` and `attended` set where notices go and which extra platforms have a person
+answering approvals (see `owner_settings`), and `setup` shows what would stop Sentrook asking about routine work and
+sets it with the screen's code (see `setup`), so only the owner may run them: both forms go through the owner check
 (`owner_command`), which audits every attempt. `status` and `help` stay open.
 
 `notify here` stores the chat the slash command was sent in: Hermes passes the handler that chat (`source`, a
@@ -28,9 +29,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, hold, owner_settings, passes, report, run_now, skill_review, snooze
+from . import (
+    grants,
+    history,
+    hold,
+    owner_settings,
+    passes,
+    report,
+    run_now,
+    setup,
+    skill_review,
+    snooze,
+)
 from .auth import missing_credentials
-from .config import PluginConfig, resolve_config
+from .config import PluginConfig, hermes_home, resolve_config
+from .intent import hermes_config
 from .owner import refusal
 from .planir import PLUGIN_VERSION, session_ref
 from .traffic import TrafficLog
@@ -327,6 +340,25 @@ def run_attended(
     return _changed(cfg, owner_settings.run_attended(cfg, rest, who, now, CMD), who, "settings")
 
 
+def run_setup(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env)
+    if who is None:
+        return refusal("setup")
+    log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
+    return setup.run(
+        cfg,
+        rest,
+        who,
+        datetime.now(UTC),
+        CMD,
+        log.write,
+        home=hermes_home(dict(os.environ) if env is None else env),
+        host_cfg=hermes_config(),
+    )
+
+
 def run_help(
     rest: str = "",
     settings: dict[str, Any] | None = None,
@@ -463,6 +495,16 @@ COMMANDS: dict[str, Subcommand] = {
         "unattended needs --confirm",
         run_attended,
         args="add|remove|list [platform] [--confirm]",
+        owner_only=True,
+        cli_rest=True,
+    ),
+    "setup": Subcommand(
+        "what would stop Sentrook asking about routine work: channels your cron jobs deliver to, your MCP "
+        "servers, grants Sentrook suggested on reviews you approved, and the agent's proposals, each described by "
+        "Sentrook; apply <code> [1,3] [--expires 90d | --until-revoked] sets them with the code the list shows; "
+        "discard <id> drops an agent proposal",
+        run_setup,
+        args="[apply <code> [1,3] | discard <id>]",
         owner_only=True,
         cli_rest=True,
     ),

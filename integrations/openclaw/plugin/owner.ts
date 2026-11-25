@@ -3,11 +3,15 @@
  *
  * OpenClaw tells a command handler whether the sender is the owner (`senderIsOwner`) and gives it
  * `assertOwnerCurrent`, which throws once that authority is gone, but only when the command declares
- * `requiredScopes`. Owner commands therefore require `operator.admin`: the owner's default Control UI
- * connection holds it, and limited Control UI sessions and write-only CLI clients are refused by the
- * host before the handler runs. Inside the handler the owner is `senderIsOwner === true` with
- * `assertOwnerCurrent` present and passing; the command calls `gate.beforeWrite()` before each write,
- * so an owner demoted mid-command writes nothing more.
+ * `requiredScopes`. Owner commands therefore declare `operator.admin`, and the host lets two kinds of sender run
+ * them:
+ * - the owner on a chat channel, from their own direct message: a sender listed in `commands.ownerAllowFrom` (when
+ *   the list is empty, OpenClaw fills it with the sender of the first pairing approval) or linked to an admin
+ *   operator profile. A chat sender holds no gateway scopes; the host lets the owner past the missing scope;
+ * - a gateway client holding `operator.admin`, such as the owner's default Control UI connection. Limited Control UI
+ *   sessions and write-only CLI clients are refused by the host before the handler runs.
+ * Inside the handler the owner is `senderIsOwner === true` with `assertOwnerCurrent` present and passing; the
+ * command calls `gate.beforeWrite()` before each write, so an owner demoted mid-command writes nothing more.
  *
  * Anyone holding the shared gateway token has `operator.admin` and so counts as the owner. Control UI
  * connections carry no sender id, so their audit records show the basis, not a name.
@@ -52,8 +56,13 @@ export function senderRef(senderId: unknown, salt: string): string | null {
   return typeof senderId === "string" && senderId ? `u_${createHmac("sha256", salt).update(senderId).digest("hex").slice(0, 16)}` : null;
 }
 
+/** Where an owner command runs, for refusals and help. */
+export const OWNER_ROUTES =
+  "from the owner's own direct message to the agent (a sender in commands.ownerAllowFrom, which the first pairing " +
+  "approval fills), from the Control UI, or as openclaw sentrook <command> on the machine";
+
 export function refusal(verb: string): string {
-  return `Only the owner can run /sentrook ${verb}: use the owner's Control UI connection (gateway scope operator.admin).`;
+  return `Only the owner can run /sentrook ${verb}: send /sentrook-${verb} ${OWNER_ROUTES}.`;
 }
 
 /** Write one `command` record to the traffic log. */

@@ -1,0 +1,13 @@
+{
+  "plugin_version": "2.0.0-beta.18",
+  "mode": "enforce",
+  "review_at": 45,
+  "block_at": 80,
+  "scan_ok": true,
+  "credentials_missing": [],
+  "notice": {"target": null, "source": null, "why": "no notice target is set"},
+  "attended_platforms": ["api_server", "[web](https://evil.example)"],
+  "unsent_grants": 1,
+  "shadowed_skills": ["sentrook-setup"],
+  "traffic_log": true
+}
