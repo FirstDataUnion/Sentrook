@@ -1148,3 +1148,138 @@ def test_install_operands_without_a_substitution_read_as_written(command, packag
     from sentrook.prepare.entities import _packages_in
 
     assert _packages_in(command) == packages
+
+
+# --------------------------------------------------------------------------- script runners and fetchers
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A project runner runs a command in the project's own environment: its words are that
+        # command and its arguments, never packages to install.
+        "uv run rookery2 library propose --hints $RUN/h",
+        "uv run pytest -q tests/a.py::test_b",
+        "uv run python - \"$RUN\" <<'EOF'\nprint(1)\nEOF",
+        "npm run build -- --watch",
+        "uv run --python 3.12 --project ./svc pytest -x",
+        "poetry run pytest -q tests/test_x.py",
+        "yarn run lint --fix",
+        "bun run dev",
+        "pnpm run build",
+        "pnpm exec eslint .",
+        "npm exec tsc -- --noEmit",
+        "cd app && uv run python manage.py migrate",
+    ],
+    ids=[
+        "uv-run-script",
+        "uv-run-pytest",
+        "uv-run-heredoc",
+        "npm-run",
+        "uv-run-valued-options",
+        "poetry-run",
+        "yarn-run",
+        "bun-run",
+        "pnpm-run",
+        "pnpm-exec",
+        "npm-exec",
+        "after-cd",
+    ],
+)
+def test_a_project_runner_names_no_package(command):
+    from sentrook.prepare.entities import _installs_in
+
+    assert _installs_in(command) == ([], [], [])
+
+
+@pytest.mark.parametrize(
+    "command, packages",
+    [
+        # `uv run --with P` adds P to the run's environment; the command it runs is not a package.
+        ("uv run --with requests python x.py", ["pypi:requests"]),
+        ("uv run --with=requests,rich==13 python x.py", ["pypi:requests", "pypi:rich"]),
+        ("uv run -w requests --python 3.12 python x.py --with nope", ["pypi:requests"]),
+        ("uv run --with-requirements reqs.txt python x.py", []),
+        ("npm exec --package=cowsay -- cowsay hi", ["npm:cowsay"]),
+        # A fetcher fetches its first operand; the rest are that package's arguments.
+        ("npx cowsay hello", ["npm:cowsay"]),
+        ("npx -y cowsay@1.2.0 hello world", ["npm:cowsay"]),
+        ("npx @scope/tool@2 build src", ["npm:@scope/tool"]),
+        ("npx -p cowsay -p lolcatjs cowsay hi", ["npm:cowsay", "npm:lolcatjs"]),
+        ("npx --package=cowsay cowsay hi", ["npm:cowsay"]),
+        ("uvx ruff check .", ["pypi:ruff"]),
+        ("uvx ruff@0.5.0 check .", ["pypi:ruff"]),
+        ("uvx --python 3.12 ruff check .", ["pypi:ruff"]),
+        ("uvx --from black==24.1 black --check .", ["pypi:black"]),
+        ("uvx --with rich ruff check .", ["pypi:ruff", "pypi:rich"]),
+        ("bunx prettier --write .", ["npm:prettier"]),
+        ("bunx -p prettier prettier --write .", ["npm:prettier"]),
+        ("pnpm dlx create-vite my-app", ["npm:create-vite"]),
+        ("pnpm dlx --package=create-vite create-vite my-app", ["npm:create-vite"]),
+        ("pipx run black .", ["pypi:black"]),
+        ("pipx run --spec black==24.1 black .", ["pypi:black"]),
+        ("cd x && npx cowsay hi; uv run pytest", ["npm:cowsay"]),
+        # Installers keep reading every operand.
+        ("pip install foo", ["pypi:foo"]),
+        ("pip install foo bar==2", ["pypi:foo", "pypi:bar"]),
+        ("npm install -D foo bar", ["npm:foo", "npm:bar"]),
+        ("uv pip install foo", ["pypi:foo"]),
+        ("uv add foo", ["pypi:foo"]),
+    ],
+    ids=[
+        "uv-run-with",
+        "uv-run-with-list",
+        "uv-run-with-short",
+        "uv-run-with-requirements",
+        "npm-exec-package",
+        "npx",
+        "npx-version",
+        "npx-scoped",
+        "npx-package-options",
+        "npx-package-eq",
+        "uvx",
+        "uvx-version",
+        "uvx-valued-option",
+        "uvx-from",
+        "uvx-with",
+        "bunx",
+        "bunx-package",
+        "pnpm-dlx",
+        "pnpm-dlx-package",
+        "pipx-run",
+        "pipx-run-spec",
+        "segments",
+        "pip-install",
+        "pip-install-many",
+        "npm-install",
+        "uv-pip-install",
+        "uv-add",
+    ],
+)
+def test_a_fetcher_names_only_the_package_it_fetches(command, packages):
+    from sentrook.prepare.entities import _packages_in
+
+    assert _packages_in(command) == packages
+
+
+@pytest.mark.parametrize(
+    "command, indexes",
+    [
+        ("npx --registry https://npm.example.test cowsay hi", ["https://npm.example.test"]),
+        (
+            "uvx --index-url https://pypi.example.test/simple ruff",
+            ["https://pypi.example.test/simple"],
+        ),
+    ],
+    ids=["npx", "uvx"],
+)
+def test_a_fetcher_registry_option_is_an_index(command, indexes):
+    from sentrook.prepare.entities import _installs_in
+
+    assert _installs_in(command)[2] == indexes
+
+
+def test_a_fetched_package_computed_by_the_shell_is_one_computed_package():
+    from sentrook.prepare.entities import _packages_in
+
+    assert _packages_in('npx "$(cat tool.txt)" --help') == ["npm:$(...)"]
