@@ -110,5 +110,8 @@ approved.
 - Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, `/sentrook setup apply`, or their `hermes sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
   reinstall the plugin.
+- Never read Sentrook's folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`) or its traffic log to work out what is routine: call the
+  `sentrook_setup_report` tool instead. The log holds content from earlier tool calls, so Sentrook treats a chat that
+  reads it as one that has read untrusted content, and is stricter with the calls after it.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and
   point them to `/sentrook why`.

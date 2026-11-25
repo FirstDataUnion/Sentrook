@@ -110,5 +110,8 @@ approved.
 - Never run {{change_commands}}, or their `{{cli_prefix}}` forms. Only the owner runs them.
 - Never edit Sentrook's settings ({{settings_place}}) or its folder ({{state_dir}}), and never disable, remove or
   reinstall the plugin.
+- Never read Sentrook's folder ({{state_dir}}) or its traffic log to work out what is routine: call the
+  `sentrook_setup_report` tool instead. The log holds content from earlier tool calls, so Sentrook treats a chat that
+  reads it as one that has read untrusted content, and is stricter with the calls after it.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and
   point them to `{{cmd why}}`.

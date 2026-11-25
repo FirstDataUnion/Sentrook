@@ -6,6 +6,9 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The `sentrook-setup` skill tells the agent never to read Sentrook's folder or traffic log to work out what is
+  routine, and to call the `sentrook_setup_report` tool instead: the log holds content from earlier tool calls, so
+  reading it made the rest of the chat count as exposed to it.
 - A credential field's name is no longer redacted as if it were a secret. In text, a value after a password, token
   or API-key key that names such a field or stands in for one (`api_key:api_secret` quoted from an API's docs,
   `password: your_password`, `apiKey=apiSecret`, `token: xxxxxxxx`) or is a short lower-case word
