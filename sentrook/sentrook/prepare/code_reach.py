@@ -60,7 +60,6 @@ _LOCAL_MODULES = frozenset(
         "collections",
         "collections.abc",
         "configparser",
-        "contextlib",
         "copy",
         "csv",
         "dataclasses",
@@ -167,6 +166,7 @@ _RESTRICTED: dict[str, frozenset[str]] = {
         }
     ),
     "urllib": frozenset({"parse"}),
+    "contextlib": frozenset({"contextmanager", "suppress", "nullcontext", "closing"}),
     "io": frozenset({"StringIO", "BytesIO"}),
     "tempfile": frozenset({"gettempdir", "mkdtemp", "TemporaryDirectory"}),
     # `string.Formatter().get_field` and `typing.get_type_hints` reach attributes and code by name.
@@ -448,6 +448,8 @@ def _allowed_path(start: str | None, end: str | None) -> bool:
         name_known = True
     if any(p.startswith(".") and p not in (".", "..") for p in parts):
         return False
+    if start is not None and text.startswith("/etc/"):
+        return False  # system configuration
     if start is not None and end is None:
         return True  # a start alone: the name is checked from the end
     name = (parts[-1] if parts else "").lower()
@@ -557,7 +559,10 @@ def _allowed_attrs(obj: object) -> frozenset[str] | None:
 
 
 class _Reader:
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, *, tolerant: bool = False) -> None:
+        #: Reading what a program leaves in the interpreter (`kernel_effects`): the web-read tools and the
+        #: followed HTTP clients are allowed, and so are names an earlier program bound.
+        self.tolerant = tolerant
         self.tree = tree
         self.parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
@@ -634,7 +639,10 @@ class _Reader:
                     self.http_funcs[bound] = a.name
             return
         if module in _RESTRICTED:
-            if any(n not in _RESTRICTED[module] for n in names):
+            allowed = _RESTRICTED[module]
+            if self.tolerant and module == "hermes_tools":
+                allowed = allowed | _WEB_READ_TOOLS
+            if any(n not in allowed for n in names):
                 raise _Unfollowed
         elif module not in _LOCAL_MODULES:
             raise _Unfollowed
@@ -812,8 +820,12 @@ class _Reader:
                 path = kw if kw is not None else (node.args[0] if node.args else None)
         else:
             return
+        if self.tolerant and path is not None and self._outside_import_path(path):
+            return  # nothing written under /tmp or the tool's scratch space is imported later
         if path is None or not self._data_path(path, frozenset()):
             raise _Unfollowed
+        if self.tolerant:
+            return  # a data file changes nothing later programs reach in the interpreter
         if not self._write_allowed(path):
             raise _Unfollowed  # a dot-directory, or a data file a tool reads settings or commands from
 
@@ -935,6 +947,22 @@ class _Reader:
             return out or None
         return None
 
+    def _outside_import_path(self, path: ast.expr) -> bool:
+        """The path's known start is under /tmp or the code tool's scratch space, with no `..` and no `%`
+        or `{` before the first computed part."""
+        prefixes = self._path_prefixes(path, frozenset())
+        if not prefixes:
+            return False
+        return all(
+            re.match(
+                r"\A(?:/tmp/|/var/tmp/|(?:~|/home/[^/]+|/root|/Users/[^/]+)/\.hermes/cache/)", p
+            )
+            and ".." not in p
+            and "%" not in p
+            and "{" not in p
+            for p in prefixes
+        )
+
     def _data_path(self, expr: ast.expr, seen: frozenset[str]) -> bool:
         """`expr` is a path that ends in a data extension, however the rest of it is computed."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
@@ -944,6 +972,15 @@ class _Reader:
             return last is not None and self._data_path(last, seen)
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
             return self._data_path(expr.right, seen)
+        if (
+            isinstance(expr, ast.BinOp)
+            and isinstance(expr.op, ast.Mod)
+            and isinstance(expr.left, ast.Constant)
+            and isinstance(expr.left.value, str)
+        ):
+            # `"p%d.txt" % n`: the text after the last conversion is written as is
+            tail = re.split(r"%[-#0 +]*\d*(?:\.\d+)?[a-zA-Z%]", expr.left.value)[-1]
+            return tail.lower().endswith(_DATA_EXTENSIONS)
         if isinstance(expr, ast.Call):
             fn = _call_name(expr.func)
             if (
@@ -961,7 +998,7 @@ class _Reader:
 
     def _check_name(self, node: ast.Name) -> None:
         parent = self.parents.get(node)
-        if node.id not in self.bindings and node.id not in _BUILTINS:
+        if node.id not in self.bindings and node.id not in _BUILTINS and not self.tolerant:
             # A name the program never binds: a function the host provides (a tool, called or passed
             # around), or one this reading cannot see.
             raise _Unfollowed
@@ -1518,6 +1555,61 @@ def kernel_reads(source: str) -> frozenset[str] | None:
     return frozenset(out)
 
 
+#: Hermes tools that only fetch: a program that uses them may stay in the session's interpreter without
+#: changing what later programs reach.
+_WEB_READ_TOOLS = frozenset({"web_extract", "web_search"})
+#: Dunder methods a class may define without code running when nobody calls it (`__del__` runs when a later
+#: program rebinds the name that holds the object).
+_PLAIN_DUNDER_METHODS = frozenset(
+    {
+        "__init__",
+        "__repr__",
+        "__str__",
+        "__eq__",
+        "__hash__",
+        "__lt__",
+        "__len__",
+        "__iter__",
+        "__next__",
+        "__contains__",
+        "__getitem__",
+        "__post_init__",
+    }
+)
+
+
+def _runs_unasked(tree: ast.Module) -> bool:
+    """Code that can run later with no call from a later program: a finalizer or other hook method, a
+    generator or coroutine holding a `finally` or `with` (it runs when the object is collected), or an
+    `async` function."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef):
+            return True
+        if isinstance(node, ast.FunctionDef):
+            if node.name.startswith("__") and node.name not in _PLAIN_DUNDER_METHODS:
+                return True
+            body = [n for stmt in node.body for n in ast.walk(stmt)]
+            if any(isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await)) for n in body) and any(
+                isinstance(n, (ast.Try, ast.With, ast.AsyncWith)) for n in body
+            ):
+                return True
+    return False
+
+
+def _clean_effects(tree: ast.Module) -> bool:
+    """The program does nothing to the interpreter that a listing of rebound builtins could miss: it passes the
+    local reading (`_Reader`) but for its use of the web-read tools, the followed HTTP clients and names an
+    earlier program bound, and nothing of it runs unasked later (`_runs_unasked`). A thread, a subprocess, the
+    terminal tool, an import hook, a redirected stdout or a module's private state all fail it."""
+    if _runs_unasked(tree):
+        return False
+    try:
+        _Reader(tree, tolerant=True).scan()
+    except (_Unfollowed, RecursionError):
+        return False
+    return True
+
+
 #: Calls through a module that register something every later program goes through (`codecs.register`,
 #: `copyreg.pickle`, `sys.settrace`).
 _REGISTERING = re.compile(r"\A(?:register|install|settrace|setprofile|addaudithook|pickle\Z)")
@@ -1669,6 +1761,8 @@ def kernel_effects(source: str) -> KernelEffects:
                 continue
             handed_around = True  # `[json.JSONEncoder]`, `f(json)`: a patch may follow it anywhere
     if handed_around and loose_store:
+        return _UNKNOWN_EFFECTS
+    if not _clean_effects(tree):
         return _UNKNOWN_EFFECTS
     kernelish = _BUILTINS | _SAFE_DUNDER_NAMES
     return KernelEffects(frozenset("n:" + n for n in names if n in kernelish), False)

