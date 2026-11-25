@@ -350,9 +350,11 @@ OpenClaw decides who the owner is by the sender, not the room, and keeps a comma
 transcript. So every dashed command refuses in a group or channel room, even from you, since its reply (recent scans,
 hosts, file paths, reasons, grants, setup codes) would be shown to everyone there; and in a chat it cannot tell from
 one: a chat channel with no session key, or the agent's main session when `session.groupScope` routes rooms into it.
-This includes a Control UI session that is a room's. Run them in your direct message, the Control UI or on the machine
-instead. `/sentrook-notify here` also needs a direct message on a chat channel, since that is where it sends notices.
-Every attempt, allowed or refused, is recorded in the traffic log (unless you turned it off).
+This includes a Control UI session that is a room's, and the Control UI on the main session when rooms share it, since
+its transcript is theirs too. A thread or topic is the chat it is in: one in your DM works, one in a room is refused.
+Run them in your direct message, the Control UI (in a session no room shares) or on the machine instead.
+`/sentrook-notify here` also needs a direct message on a chat channel, since that is where it sends notices. Every
+attempt, allowed or refused, is recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner

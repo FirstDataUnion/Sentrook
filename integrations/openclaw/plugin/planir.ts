@@ -311,6 +311,23 @@ function groupsInMain(config: any): boolean {
 }
 
 /**
+ * The part of a session key that names the chat (after `agent:<id>:`, the agent id being any word, without a thread or
+ * topic suffix), and whether that is the agent's main session.
+ */
+function chatOfKey(sessionKey: unknown, config: any): { main: boolean; rest: string } {
+  const full = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase() : "";
+  const agent = /^agent:[^:]+:/.exec(full);
+  const rest = (agent ? full.slice(agent[0].length) : full).replace(THREAD_SUFFIX, "");
+  const mainKey = String(config?.session?.mainKey ?? "").trim().toLowerCase() || "main";
+  return { main: agent !== null && rest === mainKey, rest };
+}
+
+/** Whether the session key is the agent's main session while OpenClaw routes group or channel rooms into it. */
+export function mainSharedWithRooms(sessionKey: unknown, config: any): boolean {
+  return chatOfKey(sessionKey, config).main && groupsInMain(config);
+}
+
+/**
  * The kind of chat a turn came from, read from its session key as OpenClaw builds it: a room gets its own
  * `agent:<id>:<channel>:group|channel:<id>` key, a direct chat `...:direct:<peer>` or, under the default
  * `session.dmScope: "main"`, the agent's main key `agent:<id>:<mainKey>`. A thread or topic is the chat it is in.
@@ -318,29 +335,11 @@ function groupsInMain(config: any): boolean {
  * operator's. `unknown` when nothing says.
  */
 export function chatKindOfTurn(sessionKey: unknown, channel: string | null, config: any): ChatKind {
-  const full = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase() : "";
-  // Only the part after `agent:<id>:` names the chat; the agent id is any word.
-  const agent = /^agent:[^:]+:/.exec(full);
-  const rest = (agent ? full.slice(agent[0].length) : full).replace(THREAD_SUFFIX, "");
-  const mainKey = String(config?.session?.mainKey ?? "").trim().toLowerCase() || "main";
-  if (agent && rest === mainKey) return groupsInMain(config) ? "unknown" : "direct";
+  const { main, rest } = chatOfKey(sessionKey, config);
+  if (main) return groupsInMain(config) ? "unknown" : "direct";
   if (GROUP_SEGMENT.test(rest)) return "group";
   if (DIRECT_SEGMENT.test(rest)) return "direct";
   if (channel === "chat") return "direct";
-  return "unknown";
-}
-
-/**
- * Whether a command came from a direct message, as far as its context says: OpenClaw names the chat in the session
- * key and the reply address (`...:direct:...` or `user:` for one person, `...:group:...`, `channel:` and the like
- * for many). `unknown` when neither says, as in the agent's main session.
- */
-export function chatKindOf(ctx: { sessionKey?: unknown; to?: unknown; from?: unknown }): ChatKind {
-  const said = [ctx.sessionKey, ctx.to, ctx.from]
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v !== "");
-  if (said.some((v) => /(^|:)(group|channel|room|space|thread|topic)(:|$)/i.test(v))) return "group";
-  if (said.some((v) => /(^|:)(direct|dm|user)(:|$)/i.test(v))) return "direct";
   return "unknown";
 }
 

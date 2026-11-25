@@ -413,7 +413,7 @@ test("the registered /sentrook-setup reads OpenClaw's MCP servers and job store,
   }
 });
 
-test("/sentrook-setup refuses a chat it cannot tell from a room; the Control UI and the command line still work", async () => {
+test("/sentrook-setup refuses a chat it cannot tell from a room and a main session rooms share; the command line still works", async () => {
   const { default: plugin } = await import("./index.ts");
   const s = scene();
   const saved = { OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR };
@@ -442,13 +442,16 @@ test("/sentrook-setup refuses a chat it cannot tell from a room; the Control UI 
     ]) {
       assert.equal(await text(ctx), roomRefusal("setup"), JSON.stringify(ctx));
     }
-    // The owner's own DM, by its own key; the Control UI on the main key (no sender, the admin scope).
+    // The owner's own DM, by its own key, or a thread in it.
     assert.ok((await text({ senderId: "123", channel: "telegram", sessionKey: "agent:main:telegram:direct:123" })).startsWith("Sentrook setup: "));
+    assert.ok((await text({ senderId: "123", channel: "telegram", sessionKey: "agent:main:telegram:direct:123:topic:7" })).startsWith("Sentrook setup: "));
+    // The Control UI on the main key: its transcript is the rooms' too. A Control UI session of its own works.
     const ui = { senderId: "", channel: "webchat", sessionKey: "agent:main:main", gatewayClientScopes: ["operator.read", "operator.write", "operator.admin"] };
-    assert.ok((await text(ui)).startsWith("Sentrook setup: "));
-    assert.ok((await text({ ...ui, gatewayClientScopes: undefined })).startsWith("Sentrook setup: "), "webchat is the operator's own surface");
+    assert.equal(await text(ui), roomRefusal("setup"));
+    assert.equal(await text({ ...ui, gatewayClientScopes: undefined }), roomRefusal("setup"));
+    assert.ok((await text({ ...ui, sessionKey: "agent:main:dashboard:abc" })).startsWith("Sentrook setup: "));
     const log = readFileSync(path.join(s.state, "traffic.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    assert.equal(log.filter((r) => r.kind === "command" && r.verb === "setup" && r.reason === "unknown_chat").length, 3);
+    assert.equal(log.filter((r) => r.kind === "command" && r.verb === "setup" && r.reason === "unknown_chat").length, 5);
     // The command line has no chat: it is the machine's owner.
     const o = OWNER_SUBCOMMANDS.setup!;
     const cli = await o.run(

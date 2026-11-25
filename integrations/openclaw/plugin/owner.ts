@@ -15,9 +15,9 @@
  *
  * OpenClaw decides the owner by the sender, not the room: the owner's own message in a group or channel room counts
  * as the owner's too, and OpenClaw writes the command and its reply into that room's session transcript. So every
- * owner command also refuses a group or channel room, and a chat on a chat channel it cannot tell from one (no
- * session key, or the agent's main session while OpenClaw routes rooms into it): its reply (scans, hosts, file
- * paths, reasons, grants) would be shown to everyone there.
+ * owner command also refuses a group or channel room, the agent's main session while OpenClaw routes rooms into it
+ * (from the Control UI too), and a chat on a chat channel it cannot tell from a room (no session key): its reply
+ * (scans, hosts, file paths, reasons, grants) would be shown to everyone there.
  *
  * Anyone holding the shared gateway token has `operator.admin` and so counts as the owner. Control UI
  * connections carry no sender id, so their audit records show the basis, not a name.
@@ -33,7 +33,7 @@
 
 import { createHmac } from "node:crypto";
 
-import { channelOf, chatKindOf, chatKindOfTurn } from "./planir.ts";
+import { channelOf, chatKindOfTurn, GROUP_SEGMENT, mainSharedWithRooms } from "./planir.ts";
 
 export const OWNER_SCOPES = ["operator.admin"];
 
@@ -79,27 +79,33 @@ export function refusal(verb: string): string {
   return `Only the owner can run /sentrook ${verb}: send /sentrook-${verb} ${OWNER_ROUTES}.`;
 }
 
-/** The reply to the owner's command in a room, or in a chat Sentrook cannot tell from one. */
+/** The reply to the owner's command in a room, in a session a room shares, or in a chat Sentrook cannot tell from one. */
 export function roomRefusal(verb: string): string {
   return (
-    `Run /sentrook-${verb} in your own direct message to the agent, in the Control UI, or as openclaw sentrook ${verb} ` +
-    "on the machine: this chat is a group or channel, or one Sentrook cannot tell from one, and everyone there would " +
-    "see the reply. Nothing was shown or changed."
+    `Run /sentrook-${verb} in your own direct message to the agent or in the Control UI, in a session no group or ` +
+    `channel shares, or as openclaw sentrook ${verb} on the machine: this chat is a group or channel, shares its ` +
+    "session with one, or is one Sentrook cannot tell from one, and everyone there could see the reply. Nothing was " +
+    "shown or changed."
   );
 }
 
 const ROOM_REASONS = new Set(["group_chat", "unknown_chat"]);
 
 /**
- * Why an owner command may not answer in the chat it came from: `group_chat` for a group or channel room (by its
- * session key or reply address, as scans read a turn's chat), `unknown_chat` for a chat whose kind nothing says (no
- * session key, or the main session while OpenClaw routes rooms into it); null for a direct chat, OpenClaw's own
- * surfaces (the Control UI, webchat, the terminal) and a gateway client with the admin scope outside a room.
+ * Why an owner command may not answer in the chat it came from:
+ * - `group_chat` for a group or channel room, or a thread or topic in one: by its session key, as scans read a turn's
+ *   chat, or by a reply address that names a room;
+ * - `unknown_chat` for the agent's main session while OpenClaw routes rooms into it, from any surface (its transcript
+ *   is the rooms' too), and for a chat on a chat channel whose kind nothing says (no session key);
+ * null for a direct chat (a thread or topic in one included), OpenClaw's own surfaces (the Control UI, webchat, the
+ * terminal) and a gateway client with the admin scope, outside those.
  */
 export function roomOf(ctx: OwnerContext, hostConfig: unknown, admin: boolean): "group_chat" | "unknown_chat" | null {
   const channel = channelOf(ctx.channel);
   const kind = chatKindOfTurn(ctx.sessionKey, channel, hostConfig);
-  if (kind === "group" || chatKindOf(ctx) === "group") return "group_chat";
+  const addressed = [ctx.to, ctx.from].some((v) => typeof v === "string" && GROUP_SEGMENT.test(v.trim()));
+  if (kind === "group" || addressed) return "group_chat";
+  if (mainSharedWithRooms(ctx.sessionKey, hostConfig)) return "unknown_chat";
   if (kind === "direct" || channel === "chat" || admin) return null;
   return "unknown_chat";
 }

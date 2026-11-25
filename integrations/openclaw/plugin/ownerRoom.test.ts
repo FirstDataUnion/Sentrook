@@ -83,7 +83,10 @@ test("every owner command refuses the owner in a group or channel room and audit
     const rooms = [
       { sessionKey: "agent:main:discord:channel:123456" },
       { channel: "telegram", sessionKey: "agent:main:telegram:group:-1001234567890" },
+      // A thread or topic in a room is the room.
       { channel: "slack", sessionKey: "agent:main:slack:channel:c123:thread:1700000000.1" },
+      { channel: "telegram", sessionKey: "agent:main:telegram:group:-1001234:topic:9" },
+      { channel: "discord", sessionKey: "agent:main:discord:channel:1498333845953712258:thread:77", gatewayClientScopes: ADMIN },
       // The room named only by the reply address.
       { channel: "slack", senderId: "U1", sessionKey: "agent:main:main", to: "channel:C123" },
       // A gateway client with the admin scope, in a room's session: the reply still lands in the room's transcript.
@@ -164,6 +167,16 @@ test("owner commands still run from the owner's DM, the Control UI and an admin 
       { channel: "telegram", sessionKey: "agent:main:telegram:direct:123" },
       { channel: "telegram", sessionKey: "agent:main:main" },
       { channel: "discord", sessionKey: "agent:main:main", to: "user:123" },
+      // A thread or topic in the owner's DM is the DM, by its own key or in the main session.
+      { channel: "telegram", sessionKey: "agent:main:telegram:direct:5150:topic:7" },
+      { channel: "slack", sessionKey: "agent:main:slack:direct:u0abc:thread:1731.22" },
+      { channel: "slack", sessionKey: "agent:main:main:thread:42" },
+      { channel: "telegram", sessionKey: "agent:main:telegram:direct:5150:topic:7", gatewayClientScopes: ADMIN },
+      { channel: "slack", sessionKey: "agent:main:slack:direct:u0abc:thread:1731.22", gatewayClientScopes: ADMIN },
+      { channel: "webchat", senderId: "", sessionKey: "agent:main:main:thread:42", gatewayClientScopes: ADMIN },
+      // The DM of an agent whose id is a room word.
+      { channel: "discord", sessionKey: "agent:group:discord:direct:381022" },
+      { channel: "telegram", sessionKey: "agent:channel:main" },
       // The Control UI: no sender, the admin scope, the main session or none.
       { channel: "webchat", senderId: "", sessionKey: "agent:main:main", gatewayClientScopes: ADMIN },
       { channel: "webchat", senderId: "", gatewayClientScopes: ADMIN },
@@ -185,23 +198,38 @@ test("owner commands still run from the owner's DM, the Control UI and an admin 
   }
 });
 
-test("with rooms routed into the main session, the Control UI on the main key still works", async () => {
-  const h = await registered({ session: { groupScope: "main" } });
-  try {
-    for (const verb of VERBS) {
-      const def = h.commands[OWNER_SUBCOMMANDS[verb]!.command];
-      for (const place of [
+test("with rooms routed into the main session, the Control UI on the main key is refused too; its own DM key works", async () => {
+  for (const config of [{ session: { groupScope: "main" } }, { bindings: [{ match: { channel: "discord" }, session: { groupScope: "main" } }] }]) {
+    const h = await registered(config);
+    try {
+      const shared = [
         { channel: "webchat", senderId: "", sessionKey: "agent:main:main", gatewayClientScopes: ADMIN },
-        // webchat is the operator's own surface, even without the scope list.
+        // webchat is the operator's own surface, even without the scope list; its transcript is still the rooms'.
         { channel: "webchat", senderId: "", sessionKey: "agent:main:main" },
+        { channel: undefined, senderId: undefined, sessionKey: "agent:main:main:thread:42", gatewayClientScopes: ADMIN },
+      ];
+      const own = [
         { channel: "telegram", sessionKey: "agent:main:telegram:direct:123" },
-      ]) {
-        const reply = String((await def.handler(owner(place))).text);
-        assert.notEqual(reply, roomRefusal(verb), `${verb} ${JSON.stringify(place)}`);
+        { channel: "webchat", senderId: "", sessionKey: "agent:main:dashboard:abc", gatewayClientScopes: ADMIN },
+        { channel: "webchat", senderId: "", gatewayClientScopes: ADMIN },
+      ];
+      for (const verb of VERBS) {
+        const def = h.commands[OWNER_SUBCOMMANDS[verb]!.command];
+        for (const place of shared) {
+          assert.equal(String((await def.handler(owner(place))).text), roomRefusal(verb), `${verb} ${JSON.stringify(place)}`);
+        }
+        for (const place of own) {
+          const reply = String((await def.handler(owner(place))).text);
+          assert.notEqual(reply, roomRefusal(verb), `${verb} ${JSON.stringify(place)}`);
+          assert.ok(!reply.startsWith("Only the owner"), `${verb} ${JSON.stringify(place)}: ${reply}`);
+        }
       }
+      const refused = h.log().filter((r) => r.outcome === "refused");
+      assert.equal(refused.length, VERBS.length * shared.length);
+      assert.ok(refused.every((r) => r.reason === "unknown_chat"));
+    } finally {
+      h.restore();
     }
-  } finally {
-    h.restore();
   }
 });
 
@@ -225,8 +253,7 @@ test("the command line has no chat and runs every owner command", async () => {
 
 test("the room refusal names the owner's DM, the Control UI and the command line", () => {
   const text = roomRefusal("history");
-  assert.match(text, /^Run \/sentrook-history in your own direct message to the agent/);
-  assert.match(text, /the Control UI/);
+  assert.match(text, /^Run \/sentrook-history in your own direct message to the agent or in the Control UI, in a session no group or channel shares/);
   assert.match(text, /openclaw sentrook history on the machine/);
   assert.match(text, /group or channel/);
 });
