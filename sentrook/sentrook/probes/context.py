@@ -377,17 +377,34 @@ _LAUNCHER_NAME_RE = re.compile(
 )
 #: A `PATH` assignment, exported or for one command, with its value.
 _PATH_ASSIGN_RE = re.compile(r"(?<![\w$])PATH=(\"[^\"]*\"|'[^']*'|[^\s;&|)]*)")
+#: Tools whose `-C <folder>` runs them in that folder, as a `cd` before them would.
+_DIR_FLAG_HEADS = frozenset({"git", "make"})
+
+#: One acting segment of a command, comparable across spellings: (program, operands resolved
+#: against the folder it runs in, flags, that folder when no operand carries it).
+_Segment = tuple[str, tuple[str, ...], frozenset[str], str]
 
 
 @dataclass(frozen=True)
 class _ExecEnvironment:
-    """What an exec command sets up rather than acts on. `paths`: the folders it `cd`s into or puts on
-    `PATH`, and interpreters or launchers it runs by path, minus any of those the command also names
-    as an operand. `signature`: its acting segments as (working folder, tokens), the folder and `PATH`
-    setup left out, to tell the same command again from another one."""
+    """What an exec command sets up rather than acts on. `paths`: the folders it `cd`s into, runs a
+    tool in with `-C` or puts on `PATH`, and interpreters or launchers it runs by path, minus any of
+    those the command also names as an operand. `segments`: its acting segments (`_Segment`), the
+    folder and `PATH` setup left out, to tell the same command again from another one."""
 
     paths: frozenset[str]
-    signature: tuple[tuple[str, tuple[str, ...]], ...]
+    segments: frozenset[_Segment]
+
+    def repeats(self, denied: _ExecEnvironment) -> bool:
+        """This command runs every acting segment of the `denied` one."""
+        return bool(denied.segments) and denied.segments <= self.segments
+
+
+def _flags(tok: str) -> list[str]:
+    """`-fdx` is `-f -d -x`; any other flag is itself."""
+    if re.fullmatch(r"-[A-Za-z]{2,}", tok):
+        return ["-" + c for c in tok[1:]]
+    return [tok]
 
 
 def _exec_environment(
@@ -402,7 +419,8 @@ def _exec_environment(
 
     env: set[str] = set()
     operands: set[str] = set()
-    signature: list[tuple[str, tuple[str, ...]]] = []
+    segments: set[_Segment] = set()
+    stack: list[str] = []
     for raw in _PATH_ASSIGN_RE.findall(command):
         for part in raw.strip("'\"").split(":"):
             if part and "$" not in part.replace("$HOME", ""):
@@ -410,21 +428,44 @@ def _exec_environment(
     for _, tokens in shell_segments_sep(command):
         head, args = tokens[0], tokens[1:]
         if head in _NAVIGATION_HEADS:
-            if args and head != "popd":
-                base = at(args[0], base)
+            if head == "popd":
+                base = stack.pop() if stack else base
+                continue
+            target = next((a for a in args if not a.startswith("-")), None)
+            if target is not None:
+                if head == "pushd":
+                    stack.append(base)
+                base = at(target, base)
                 env.add(base)
             continue
         if head == "export" and all("=" in a or a.startswith("-") for a in args):
             continue
-        if "/" in head and _LAUNCHER_NAME_RE.fullmatch(head.rsplit("/", 1)[-1]):
-            env.add(at(head, base))
+        where = base
+        if head in _DIR_FLAG_HEADS and "-C" in args:
+            k = args.index("-C")
+            if k + 1 < len(args):
+                where = at(args[k + 1], base)
+                env.add(where)
+                args = args[:k] + args[k + 2 :]
+        name = head.rsplit("/", 1)[-1]
+        launcher = _LAUNCHER_NAME_RE.fullmatch(name)
+        if launcher:
+            if "/" in head:
+                env.add(at(head, where))
+            program = re.sub(r"[\d.]+$", "", name)  # `python3` and `~/v/bin/python` run alike
         else:
-            operands.add(at(head, base))
+            program = at(head, where) if "/" in head else head
+            operands.add(at(head, where))
+        resolved: list[str] = []
+        flags: set[str] = set()
         for tok in args:
-            if not tok.startswith("-") or tok in ("-",):
-                operands.add(at(tok, base))
-        signature.append((base, tuple(tokens)))
-    return _ExecEnvironment(paths=frozenset(env - operands), signature=tuple(signature))
+            if tok.startswith("-") and tok != "-":
+                flags.update(_flags(tok))
+                continue
+            resolved.append(at(tok, where))
+        operands.update(resolved)
+        segments.add((program, tuple(resolved), frozenset(flags), "" if resolved else where))
+    return _ExecEnvironment(paths=frozenset(env - operands), segments=frozenset(segments))
 
 
 _SHAPE_ROLES = (
@@ -1371,7 +1412,9 @@ class ContextProbe:
         nothing. A destructive SQL statement that names the object a denied destructive statement
         named is the same action through whatever tool it now goes. A skill-tool call that changes a skill a
         denied skill-tool call changed is the same action (`skill_steps.skills_changed`); two skill-tool
-        calls match on nothing else. Each match records whether its
+        calls match on nothing else. The folders an exec works in or puts on `PATH`, and the
+        interpreter it runs, are its environment and match nothing (`_exec_environment`); an exec that
+        runs every acting segment of a denied one again is the same action. Each match records whether its
         step was a review nobody answered (`Prepared.unanswered_review`); convergence caps a retry
         whose every match is one at review (`converge.retry_cap`)."""
         p = self.params
@@ -1423,15 +1466,10 @@ class ContextProbe:
             h_code = _hashes(shape, echoed, Role.CODE_SOURCE, Role.EXECUTABLE) - h_env_hashes
             src_shared, dst_shared = bool(h_src & p_all), bool(h_dst & p_all)
             code_shared = bool(h_code & p_all)
-            # A command that names nothing it acts on (`git clean -fdx` in a folder it `cd`s into)
-            # matches only itself: the same acting segments, run in the same folders.
-            same_command = bool(
-                not (h_src or h_dst or h_code)
-                and h_env is not None
-                and p_env is not None
-                and h_env.signature
-                and h_env.signature == p_env.signature
-            )
+            # A command run again is the same action even where it names what it acts on in a way
+            # no entity carries (`rm -rf data` in a folder it `cd`s into, `git clean -fdx`): the
+            # pending call runs every acting segment of the denied one, in the same folders.
+            same_command = bool(h_env is not None and p_env is not None and p_env.repeats(h_env))
             # The same destructive statement through another tool or client shares no path or code:
             # the object it destroys is the match, unless each names a different database file.
             sql_shared = sorted(p_sql & _sql_objects(sql_targets(call))) if p_sql else []
@@ -1457,9 +1495,9 @@ class ContextProbe:
             ):
                 continue
             carry = True
-            if sql_shared or skill_shared:
+            if sql_shared or skill_shared or (same_command and not read_shaped):
                 value, reason = p.retry_same_action, "retry.same_action"
-            elif same_command and read_shaped:
+            elif same_command and not (src_shared or dst_shared or code_shared):
                 value, reason, carry = p.retry_same_source_only, "retry.same_source_only", False
             elif two_sided:  # the denied step moved data from a source to a destination
                 if src_shared and dst_shared:
