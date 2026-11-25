@@ -267,7 +267,14 @@ def entity_hash(salt: str, kind: str, value: str) -> str:
 
 
 def fresh_state(salt: str, status: TokenStatus, deployment: str | None = None) -> SessionState:
-    return SessionState(salt=salt, deployment=deployment, status=status)
+    """A new session state. Past the first step (a lost, stale or foreign token), what earlier code-tool calls
+    left in the interpreter is not known, and it stays unknown for the rest of the session."""
+    return SessionState(
+        salt=salt,
+        deployment=deployment,
+        status=status,
+        kernel_unknown=status is not TokenStatus.FIRST_STEP,
+    )
 
 
 def decode_state(

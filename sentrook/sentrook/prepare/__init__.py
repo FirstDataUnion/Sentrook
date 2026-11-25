@@ -1355,26 +1355,36 @@ def kernel_hashes(state: SessionState, names: Iterable[str]) -> set[str]:
 
 
 def kernel_effects_of(state: SessionState, call: CanonicalCall) -> KernelEffects | None:
-    """What a code tool's call leaves in the conversation's interpreter (`code_reach.kernel_effects`), with
-    the builtins it reads that earlier calls left bound to a sink; None for any other call."""
+    """What a code tool's call leaves in the conversation's interpreter (`code_reach.kernel_effects`); None
+    for any other call. A call cut to its head and tail (`too_large`) may leave anything."""
     if not is_code_call(call):
         return None
-    source = call.command or ""
-    tracked, _ = state.kernel_marks()
-    reads = kernel_reads(source) or frozenset()
-    seen = frozenset(n for n in reads if entity_hash(state.salt, "kernel", n) in tracked)
-    return kernel_effects(source, seen)
+    if call.too_large:
+        return KernelEffects(frozenset(), True)
+    return kernel_effects(call.command or "")
 
 
-def mark_kernel_clear(state: SessionState, calls: list[CanonicalCall]) -> None:
+#: A module file written in the session (`csv.py`, `csv/__init__.py`): importing that module may load it.
+_MODULE_FILE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\.py\b|/__init__\.py\b)")
+
+
+def mark_kernel_clear(
+    state: SessionState,
+    calls: list[CanonicalCall],
+    history: list[CanonicalCall] = (),  # type: ignore[assignment]
+) -> None:
     """Mark the code-tool calls whose program may be read as code: the token is this session's (or the session
-    is new), nothing has changed the interpreter in a way that cannot be listed, and the program reads no
-    builtin or module that an earlier call (or another call of this batch) left bound to a sink or patched."""
+    is new), nothing has changed the interpreter in a way that cannot be listed, the program reads no builtin
+    that an earlier call (or another call of this batch) rebound, and it imports no module whose file a call in
+    the request wrote or named (a `csv.py` next to the program would load instead of the library's)."""
     tracked, unknown = state.kernel_marks()
     if state.status not in (TokenStatus.VALID, TokenStatus.FIRST_STEP, TokenStatus.SEEDED):
         return  # what earlier calls left in the interpreter is not known
     code = [c for c in calls if is_code_call(c)]
     effects = {id(c): kernel_effects_of(state, c) for c in code}
+    written = [
+        (c, {m.group(1) for m in _MODULE_FILE.finditer(c.text or "")}) for c in [*history, *calls]
+    ]
     for c in code:
         reads = kernel_reads(c.command or "")
         if unknown or reads is None:
@@ -1388,6 +1398,9 @@ def mark_kernel_clear(state: SessionState, calls: list[CanonicalCall]) -> None:
             others |= kernel_hashes(state, eff.names)
             batch_unknown = batch_unknown or eff.unknown
         if batch_unknown or kernel_hashes(state, reads) & others:
+            continue
+        module_files = set().union(*(names for o, names in written if o is not c))
+        if any(r.startswith("m:") and r[2:] in module_files for r in reads):
             continue
         c.kernel_clear = True
 
@@ -1450,7 +1463,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for s in (planir.pending_call.batch.siblings if planir.pending_call.batch else [])
     ]
     history = [canonical_history(platform, h) for h in planir.history]
-    mark_kernel_clear(state, [pending, *siblings])
+    mark_kernel_clear(state, [pending, *siblings], history)
     # An OpenClaw background run's exec comes with the run's `self_edit` block: a self-edit only when it is a plain
     # save into the declared store (`own_store.exec_store_writes`). Otherwise the block is dropped here, before
     # anything reads it, and the command is scored as the ordinary command it is.

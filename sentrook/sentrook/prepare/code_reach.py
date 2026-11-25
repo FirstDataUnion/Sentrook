@@ -1518,68 +1518,60 @@ def kernel_reads(source: str) -> frozenset[str] | None:
     return frozenset(out)
 
 
-def _sink_import(module: str, name: str | None) -> bool:
-    """An import that brings something able to reach the network into the interpreter."""
-    if name is None:
-        return module not in _LOCAL_MODULES
-    if module in _RESTRICTED:
-        return name not in _RESTRICTED[module]
-    return module not in _LOCAL_MODULES
-
-
-def _loads(node: ast.AST) -> set[str]:
-    """Globals `node` reads: every name it loads, less what its own functions and comprehensions bind."""
-    names = {
-        n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-    }
-    local: set[str] = set()
-    for n in ast.walk(node):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            local |= _local_names(n)
-        elif isinstance(n, ast.comprehension):
-            local |= _target_names(n.target)
-    return names - local
+#: Calls through a module that register something every later program goes through (`codecs.register`,
+#: `copyreg.pickle`, `sys.settrace`).
+_REGISTERING = re.compile(r"\A(?:register|install|settrace|setprofile|addaudithook|pickle\Z)")
 
 
 @lru_cache(maxsize=256)
-def kernel_effects(source: str, tracked: frozenset[str] = frozenset()) -> KernelEffects:
-    """What `source` leaves in a code tool's interpreter for later programs. `tracked` holds what earlier
-    programs left there (`n:…` names), so a builtin rebound to one of them is tracked in turn.
+def kernel_effects(source: str) -> KernelEffects:
+    """What `source` leaves in a code tool's interpreter for later programs.
 
-    Only builtins and modules matter: a later program is read as local only when every other global it reads is
-    one it binds first. A builtin bound at module level (or through `global`) to anything that reads a sink
-    import, a tracked builtin, a global the program does not bind, or another such name is tracked. A module (or
-    something taken from one) whose attribute the program sets is tracked. A program that changes the
-    interpreter by `exec`, `setattr`, `sys.modules`, frames or a module passed around makes the set unknown."""
+    A later program is read as local only when every global it reads, other than a builtin, is one it binds
+    first (`_Flow`), so what matters is what it may read without binding: builtins and modules. Every builtin
+    this program rebinds in the interpreter's globals (at module level, or through `global` in a function), in
+    any form and to anything (`print = terminal`, `print = open`, `for print in …`, an import under that name),
+    is tracked. Changing a module, or anything taken from one, by setting an attribute or registering a hook,
+    makes the set unknown, as do `exec`, `setattr`, `sys.modules`, frames, a module handed around where a
+    patch may follow it, and a program the scanner cannot parse (it may still run on a newer Python)."""
     try:
         tree = _parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return _NO_EFFECTS  # it never runs
+        return _UNKNOWN_EFFECTS
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parents[child] = node
-    # Bindings at module level (statements outside functions and classes, and `global` stores).
-    bindings: list[tuple[set[str], ast.AST | None]] = []
-    sinky: set[str] = set()
-    #: Names that hold a module or something taken from one, and the module.
-    module_of: dict[str, str] = {}
-    module_names: set[str] = set()
-    globals_in_functions = {
+    global_names = {
         n for node in ast.walk(tree) if isinstance(node, ast.Global) for n in node.names
     }
 
-    def module_level(node: ast.AST) -> bool:
+    def module_scope(node: ast.AST, walrus: bool = False) -> bool:
+        """`node` binds in the module's namespace: no function, lambda or class around it (a walrus target
+        in a comprehension binds outside the comprehension)."""
         p = parents.get(node)
         while p is not None and not isinstance(p, ast.Module):
-            if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            if isinstance(p, _SCOPES):
+                return False
+            if isinstance(p, _COMPREHENSIONS) and not walrus:
                 return False
             p = parents.get(p)
         return True
 
+    def global_binding(name: str, node: ast.AST, walrus: bool = False) -> bool:
+        return module_scope(node, walrus) or name in global_names
+
+    def chain_root(node: ast.expr) -> ast.expr:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return node
+
+    names: set[str] = set()
+    module_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _KERNEL_OPAQUE_NAMES:
-            if node.id == "globals" and _plain_globals_key(node, parents) is not None:
+            if node.id == "globals" and (key := _plain_globals_key(node, parents)) is not None:
+                names.add(key)
                 continue
             harmless = _harmless_opaque(node, parents)
             if harmless is None:
@@ -1587,8 +1579,10 @@ def kernel_effects(source: str, tracked: frozenset[str] = frozenset()) -> Kernel
             if harmless.startswith("import:"):
                 holder = parents.get(parents[node])
                 if isinstance(holder, ast.NamedExpr):
-                    module_of[holder.target.id] = harmless[7:]
                     module_names.add(holder.target.id)
+                elif isinstance(holder, ast.Assign):
+                    for t in holder.targets:
+                        module_names |= _target_names(t)
             continue
         if isinstance(node, ast.Attribute) and (
             node.attr in _KERNEL_OPAQUE_ATTRS
@@ -1609,130 +1603,75 @@ def kernel_effects(source: str, tracked: frozenset[str] = frozenset()) -> Kernel
                 _UNKNOWN_EFFECTS  # `type(obj).attr = …` patches a class shared with later programs
             )
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            module = node.module or "" if isinstance(node, ast.ImportFrom) else ""
             if isinstance(node, ast.ImportFrom) and node.level:
                 continue
             for a in node.names:
-                full = a.name if isinstance(node, ast.Import) else module
+                full = a.name if isinstance(node, ast.Import) else node.module or ""
                 if full.split(".")[0] in _KERNEL_OPAQUE_MODULES or (
-                    isinstance(node, ast.ImportFrom) and module == "sys" and a.name == "modules"
+                    isinstance(node, ast.ImportFrom) and full == "sys" and a.name == "modules"
                 ):
                     return _UNKNOWN_EFFECTS
+                if a.name == "*":
+                    return _UNKNOWN_EFFECTS  # binds names this reading does not list
                 bound = a.asname or a.name.split(".")[0]
-                top = full.split(".")[0]
-                module_of[bound] = top
                 module_names.add(bound)
-                if isinstance(node, ast.Import):
-                    # `import os` brings `os.system`; a local module brings nothing
-                    is_sink = top in _RESTRICTED or _sink_import(a.name, None)
-                else:
-                    is_sink = _sink_import(module, a.name)
-                if is_sink:
-                    sinky.add(bound)
-                if module_level(node):
-                    bindings.append(({bound}, None))
-        elif isinstance(node, ast.Assign):
-            names = set().union(*(_target_names(t) for t in node.targets))
-            key = None
-            for t in node.targets:
-                if (
-                    isinstance(t, ast.Subscript)
-                    and isinstance(t.value, ast.Call)
-                    and isinstance(t.value.func, ast.Name)
-                ):
-                    key = _plain_globals_key(t.value.func, parents)
-                    if key is not None:
-                        names.add(key)
-            if module_level(node) or names & globals_in_functions:
-                bindings.append((names, node.value))
-            # `E = json.JSONEncoder`: E holds something taken from a module
-            if isinstance(node.value, (ast.Name, ast.Attribute)):
-                root = node.value
-                while isinstance(root, ast.Attribute):
-                    root = root.value
-                if isinstance(root, ast.Name):
-                    for n in names:
-                        if root.id in module_names:
-                            module_names.add(n)
-                        if root.id in module_of:
-                            module_of[n] = module_of[root.id]
-        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)) and node.value is not None:
-            names = _target_names(node.target)
-            if module_level(node) or names & globals_in_functions:
-                bindings.append((names, node.value))
-        elif isinstance(node, (ast.For, ast.AsyncFor)) and module_level(node):
-            bindings.append((_target_names(node.target), node.iter))
-        elif isinstance(node, (ast.With, ast.AsyncWith)) and module_level(node):
-            for item in node.items:
-                if item.optional_vars is not None:
-                    bindings.append((_target_names(item.optional_vars), item.context_expr))
-        elif isinstance(node, ast.NamedExpr) and module_level(node):
-            bindings.append(({node.target.id}, node.value))
+                if global_binding(bound, node):
+                    names.add(bound)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            walrus = isinstance(parents.get(node), ast.NamedExpr)
+            if global_binding(node.id, node, walrus):
+                names.add(node.id)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if module_level(node) or node.name in globals_in_functions:
-                bindings.append(({node.name}, node))
-    bound_here = set().union(*(names for names, _ in bindings)) if bindings else set()
-    kernelish = _BUILTINS | _SAFE_DUNDER_NAMES
-    reads_of = {id(v): _loads(v) for _, v in bindings if v is not None}
-    for _names, value in bindings:
-        if value is None:
-            continue
-        for r in reads_of[id(value)]:
-            if r in bound_here:
-                continue
-            if r in kernelish:
-                if "n:" + r in tracked:
-                    sinky.add(r)
-            else:
-                sinky.add(r)  # a global it never binds: whatever an earlier program left
-    # Spread along "this binding reads that name": each binding is visited once its first sinky read is seen.
-    readers: dict[str, list[int]] = {}
-    for i, (_names, value) in enumerate(bindings):
-        if value is not None:
-            for r in reads_of[id(value)]:
-                readers.setdefault(r, []).append(i)
-    work = list(sinky)
-    done: set[int] = set()
-    while work:
-        name = work.pop()
-        for i in readers.get(name, ()):
-            if i in done:
-                continue
-            done.add(i)
-            for n in bindings[i][0] - sinky:
-                sinky.add(n)
-                work.append(n)
-    out = {"n:" + n for n in sinky & bound_here if n in kernelish}
-    # Patched modules. An imported name handed around as a value (`f(json)`, `defaultdict(Counter)`) can be
-    # patched where it lands, so a program that also sets attributes on something it cannot trace back to an
-    # import (`c.default = …` on a parameter) is not listed.
+            if global_binding(node.name, node):
+                names.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            if global_binding(node.name, node):
+                names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            if global_binding(node.rest, node):
+                names.add(node.rest)
+        elif isinstance(node, ast.Assign):
+            root = chain_root(node.value)
+            if isinstance(root, ast.Name) and root.id in module_names:
+                for t in node.targets:
+                    module_names |= _target_names(t)  # `E = json.JSONEncoder`
+    # Patching a module, or something taken from one, and registering a hook through one.
     handed_around = False
     loose_store = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            root = node.value
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            if isinstance(root, ast.Name) and root.id in module_of:
-                out.add("m:" + module_of[root.id])
-            else:
-                loose_store = True
+            root = chain_root(node.value)
+            if not isinstance(root, ast.Name) or root.id in module_names:
+                return _UNKNOWN_EFFECTS
+            loose_store = True
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            root = chain_root(node.func.value)
+            if (
+                isinstance(root, ast.Name)
+                and root.id in module_names
+                and _REGISTERING.match(node.func.attr)
+            ):
+                return _UNKNOWN_EFFECTS
         elif (
             isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
             and node.id in module_names
         ):
-            parent = parents.get(node)
-            if isinstance(parent, ast.Attribute) and parent.value is node:
+            top: ast.AST = node
+            while isinstance(parents.get(top), ast.Attribute) and parents[top].value is top:  # type: ignore[attr-defined]
+                top = parents[top]
+            holder = parents.get(top)
+            if isinstance(holder, ast.Call) and holder.func is top:
                 continue
-            if isinstance(parent, ast.Call) and parent.func is node:
+            if isinstance(holder, ast.Assign) and holder.value is top:
+                continue  # an alias, followed above
+            if isinstance(holder, ast.ExceptHandler):
                 continue
-            if isinstance(parent, ast.Assign) and parent.value is node:
-                continue  # `m = json`: followed through `module_of`
-            handed_around = True
+            handed_around = True  # `[json.JSONEncoder]`, `f(json)`: a patch may follow it anywhere
     if handed_around and loose_store:
         return _UNKNOWN_EFFECTS
-    return KernelEffects(frozenset(out), False)
+    kernelish = _BUILTINS | _SAFE_DUNDER_NAMES
+    return KernelEffects(frozenset("n:" + n for n in names if n in kernelish), False)
 
 
 def _plain_globals_key(node: ast.Name, parents: dict[ast.AST, ast.AST]) -> str | None:
