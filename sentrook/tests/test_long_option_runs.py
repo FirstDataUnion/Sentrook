@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import threading
 import time
 
@@ -765,12 +766,32 @@ def test_inline_code_paths_are_found_as_the_regex_finds_them():
         "(",
         ".",
     ]
-    words += ["sentrookx", "/sentrook/", "_"]
+    words += ["sentrookx", "/sentrook/", "_", "SENTROOK", "sentroo", "k"]
     rng = random.Random(1)
+    reference = re.compile(r"[\w~$./-]*sentrook[\w~$./-]*", re.IGNORECASE)
     for _ in range(20000):
         text = "".join(rng.choice(words) for _ in range(rng.randint(0, 12)))
-        want = [m.span() for m in detectors._SENTROOK_PATH.finditer(text)]
-        assert [m.span() for m in detectors._sentrook_paths(text)] == want, text
+        want = [m.span() for m in reference.finditer(text)]
+        assert list(detectors._sentrook_runs(text)) == want, text
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["sentrook/", "/sentrook ", "a/", "~/.hermes/plugins/sentrook/sentrook/", "'sentrook' ", "../"],
+)
+def test_inline_code_text_paths_are_read_in_linear_time(unit):
+    from sentrook.aira.lists import load_lists
+
+    lists = load_lists()
+
+    def read(d: int) -> object:
+        text = "os.chdir(x)\n" + unit * (SIZE // len(unit) // d) + "sentrook"
+        return list(detectors._code_text_state_paths(text, lists, None))
+
+    start = time.perf_counter()
+    read(1)
+    spent = time.perf_counter() - start
+    assert_fast_or_linear(spent, FAST / 4, read, f"code text paths on {unit!r}")
 
 
 def test_inline_code_that_writes_into_sentrook_state_still_takes_the_floor():

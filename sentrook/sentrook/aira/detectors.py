@@ -5028,32 +5028,86 @@ def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
     return found
 
 
-_SENTROOK_PATH = re.compile(r"[\w~$./-]*(?:/|\A)sentrook(?:/[\w./-]*)?")
+_SENTROOK_WORD = re.compile("sentrook", re.IGNORECASE)
 _PATH_CHAR = re.compile(r"[\w~$./-]")
+_PATH_RUN = re.compile(r"[\w~$./-]*")
+#: How many path components, up to and including a `sentrook` one, a location pattern is read over.
+_LOCATION_COMPONENTS = 6
 
 
-def _sentrook_paths(text: str) -> Iterator[re.Match[str]]:
-    """`_SENTROOK_PATH.finditer(text)` in linear time. The regex, tried from every start, reads each
-    run of path characters to its end again (quadratic in a long `a/a/…`); a match from a position
-    exists exactly when the run from there holds `/sentrook` (or the text starts with `sentrook`),
-    so the leftmost one starts where the run holding the first such word begins, and the regex
-    matches from there."""
+def _sentrook_runs(text: str) -> Iterator[tuple[int, int]]:
+    """The spans of the runs of path characters in `text` that hold `sentrook` in any case, in
+    linear time: each run is found from the word and read once, and the next search starts after it."""
     pos = 0
-    while pos <= len(text):
-        if pos == 0 and text.startswith("sentrook"):
-            start = 0
-        else:
-            o = text.find("/sentrook", pos)
-            if o < 0:
-                return
-            start = o
-            while start > pos and _PATH_CHAR.match(text, start - 1):
-                start -= 1
-        m = _SENTROOK_PATH.match(text, start)
+    while True:
+        m = _SENTROOK_WORD.search(text, pos)
         if m is None:
             return
-        yield m
-        pos = m.end() if m.end() > m.start() else m.end() + 1
+        start = m.start()
+        while start > pos and _PATH_CHAR.match(text, start - 1):
+            start -= 1
+        end = _PATH_RUN.match(text, m.end()).end()  # type: ignore[union-attr]
+        yield start, end
+        pos = end
+
+
+def _code_text_state_paths(text: str, lists: Lists, cwd: str | None) -> Iterator[str]:
+    """The paths in inline code's text that name Sentrook's state or install folders, per
+    `guardrail.yaml: code_text_paths`; a mention of Sentrook's source tree is not one."""
+    key = ("guardrail", "code_text_paths")
+    locations = lists.patterns(*key, "location_patterns")
+    parents = {s.lower() for s in lists.strings(*key, "relative_parent_segments")}
+    source_tree = {s.lower() for s in lists.strings(*key, "source_tree_segments")}
+    legacy = {s.lower() for s in lists.strings("guardrail", "legacy_basenames")}
+    folder: list[bool] = []
+
+    def folder_unknown() -> bool:
+        # Whether a relative path may sit under a host's home: the text (or the call's folder)
+        # names one, or the code changes folder.
+        if not folder:
+            homes = lists.patterns(*key, "home_patterns")
+            folder.append(
+                _found_any(homes, text)
+                or bool(cwd and _found_any(homes, cwd))
+                or _found_any(lists.patterns(*key, "chdir_patterns"), text)
+            )
+        return folder[0]
+
+    for start, end in _sentrook_runs(text):
+        run = text[start:end]
+        norm = posixpath.normpath(run)
+        absolute = norm.startswith("/")
+        parts = norm.lstrip("/").split("/")
+        if parts[-1].lower() in legacy:
+            yield run
+            continue
+        for i, part in enumerate(parts):
+            if part.lower() != "sentrook":
+                continue
+            first = max(0, i - _LOCATION_COMPONENTS + 1)
+            prefix = ("/" if absolute and first == 0 else "") + "/".join(parts[first : i + 1])
+            if _found_any(locations, prefix):
+                yield run
+                break
+            # A path relative to an unknown folder, or the tail of one joined at runtime.
+            if part != "sentrook" or (i + 1 < len(parts) and parts[i + 1].lower() in source_tree):
+                continue
+            above = [p for p in parts[:i] if p != ".."]
+            if len(above) > 1 or (above and above[0].lower() not in parents):
+                continue
+            if i + 1 == len(parts):
+                # Nothing after it: only a whole quoted string, or the end of an interpolation, so a
+                # slash command in prose is not read as a path.
+                before = text[start - 1] if start else ""
+                after = text[end] if end < len(text) else ""
+                if not (
+                    (before in ("'", '"') and after == before)
+                    or (before == "}" and after in ("'", '"', "`"))
+                ):
+                    continue
+            if absolute or folder_unknown():
+                yield run
+                break
 
 
 #: Guardrail reasons of the review tier: the owner is always asked, the floor never blocks.
@@ -5167,7 +5221,8 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
 
     # 2. Inline interpreter code (Hermes `execute_code`, `python -c`). A file the code writes, deletes,
     #    moves or changes whose path the scan resolves into Sentrook's state takes the block floor.
-    #    Otherwise a guardrail path anywhere in the text plus a write marker takes the review floor:
+    #    Otherwise a path into Sentrook's state or install folders anywhere in the text
+    #    (`code_text_paths`; not a mention of its source tree) plus a write marker takes the review floor:
     #    the text may only mention the path (a note, a message, data the code writes elsewhere), or
     #    reach it in a way the scan cannot follow, so the owner is asked.
     if a.inline_code or (a.shape is not None and a.shape.inline_eval):
@@ -5180,14 +5235,13 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 break
         markers = lists.patterns("guardrail", "content_write_marker_patterns")
         if not blocked and _match_any(markers, a.scan_text):
-            for m in _sentrook_paths(a.scan_text):
-                if _guardrail_path_reason(m.group(0), None, ctx):
-                    emit(
-                        "guardrail.state_dir_write_review",
-                        None,
-                        {"path": m.group(0), "mechanism": "content_match"},
-                    )
-                    break
+            for path in _code_text_state_paths(a.scan_text, lists, a.cwd):
+                emit(
+                    "guardrail.state_dir_write_review",
+                    None,
+                    {"path": path[:300], "mechanism": "content_match"},
+                )
+                break
 
     # 3. CLI forms: plugin disable/remove, the plugin's own commands, config entry, gateway stop,
     #    host approvals, process kill. `<head> [options] <subcommand> [options] <verb> …`,

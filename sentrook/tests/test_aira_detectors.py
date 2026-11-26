@@ -1417,15 +1417,10 @@ def test_c4star_inline_code_relative_write_resolves_against_its_folder():
 @pytest.mark.parametrize(
     "code",
     [
-        # Mentions only: the files written are elsewhere.
-        _NOTES
-        + "T='The fallback lives in sentrook/sentrook/jev/client.py and the probe prompts.'\n"
-        "open(OUT+'Ticket drafts.md','w',encoding='utf-8').write(T)",
+        # Mentions only, but of the state folder itself: the files written are elsewhere.
         _NOTES + "p=OUT+'notes.md'\n"
         "t=open(p,encoding='utf-8').read().replace('old','new')\n"
         "open(p,'w',encoding='utf-8').write(t + '\\nGrants live in ~/.hermes/sentrook/grants.json.')",
-        "from pathlib import Path\n"
-        "(Path.home()/'notes'/'sentrook.md').write_text('see sentrook/sentrook/aira/detectors.py')",
         # Reaching the state in ways the scan does not follow: asked, not passed.
         "d=find_home()\nopen(d+'/sentrook/grants.json','w').write('{}')",
         _STATE + "p=S\nopen(p,'w').write('{}')\np='/tmp/done'",
@@ -1444,9 +1439,7 @@ def test_c4star_inline_code_relative_write_resolves_against_its_folder():
         "print('cleaned ~/.hermes/sentrook/ scratch copy')",
     ],
     ids=[
-        "ticket-draft",
         "content-names-state-file",
-        "pathlib-elsewhere",
         "unresolved",
         "reassigned",
         "loop",
@@ -1473,6 +1466,98 @@ def test_c4star_inline_code_naming_a_sentrook_path_is_asked_not_blocked(code):
 def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
     _, env = run(_code("print('Grants live in ~/.hermes/sentrook/grants.json')"))
     assert env.floors == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # A path built at runtime, with the state file named in the text.
+        "import os\nNOTE='mirror of ~/.hermes/sentrook/snooze.json'\n"
+        "p=pick_target()\nopen(p,'w').write(NOTE)",
+        # The Hermes plugin's own code folder.
+        "T='~/.hermes/plugins/sentrook/__init__.py'\nopen(resolve(T),'w').write('')",
+        "T='/home/u/.hermes/profiles/work/plugins/sentrook/snooze.py'\nopen(resolve(T),'w').write('')",
+        # Changing into the host's home, then a relative path into the state folder.
+        "import os\nos.chdir(os.path.expanduser('~/.hermes'))\nopen('sentrook/snooze.json','w').write('{}')",
+        "import os\nos.chdir(home())\nopen('./sentrook/x/../snooze.json','w').write('{}')",
+        "import subprocess\nsubprocess.run(['rm','sentrook/snooze.json'], cwd=hermes_dir())",
+        # Other homes and spellings of them.
+        "open(resolve('/home/u/.hermes/profiles/work/sentrook/grants.json'),'w').write('{}')",
+        "import os\nopen(os.path.expandvars('$HERMES_HOME/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('/opt/data/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('~/.openclaw/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('~/.openclaw/extensions/sentrook/index.js'),'w').write('')",
+        "open(resolve('~/.Hermes/Sentrook/grants.json'),'w').write('{}')",
+        "import os\nd=f\"{os.environ['HERMES_HOME']}/sentrook\"\nopen(pick(d),'w').write('{}')",
+        "import os\nfrom pathlib import Path\n"
+        "(Path(os.environ['HERMES_HOME'])/'sentrook'/'grants.json').write_text('{}')",
+        # A 1.x file name, wherever it is.
+        "open(resolve('sentrook-allowlist.json'),'w').write('{}')",
+    ],
+    ids=[
+        "runtime-target-names-state-file",
+        "hermes-plugin-code",
+        "hermes-profile-plugin-code",
+        "chdir-home-then-relative",
+        "chdir-unknown-then-relative",
+        "subprocess-cwd-relative",
+        "hermes-profile-state",
+        "hermes-home-variable",
+        "hermes-docker-home",
+        "openclaw-state",
+        "openclaw-extension",
+        "home-other-case",
+        "fragment-after-interpolation",
+        "join-component-with-home-named",
+        "legacy-file-name",
+    ],
+)
+def test_c4star_inline_code_naming_a_state_or_install_location_is_asked(code):
+    _, env = run(_code(code))
+    reasons = floor_reasons(env)
+    assert _REVIEW in reasons or "guardrail.state_dir_write" in reasons, env.evidence["findings"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # Notes, reports and tables that cite Sentrook's source files, written elsewhere.
+        "import os\nT='The fallback lives in sentrook/sentrook/jev/client.py.'\n"
+        "open(os.path.expanduser('~/docs/notes.md'),'w').write(T)",
+        "rows=['| deploy/sentrook-scan/nginx.conf | proxy |','| deploy/sentrook-scan/compose.yaml | stack |']\n"
+        "open('/tmp/x.md','w').write('\\n'.join(rows))",
+        "import os\nR='Snooze is in ~/projects/Sentrook/integrations/hermes/plugin/snooze.py.'\n"
+        "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
+        "import os\nR='Snooze is in ~/projects/sentrook/integrations/hermes/plugin/snooze.py.'\n"
+        "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
+        # The same, with the host's home named for the file written.
+        _NOTES
+        + "T='The fallback lives in sentrook/sentrook/jev/client.py and the probe prompts.'\n"
+        "open(OUT+'Ticket drafts.md','w',encoding='utf-8').write(T)",
+        _NOTES + "T='Use `/sentrook status` to check, and Sentrook/Hermes notes for the rest.'\n"
+        "open(OUT+'a.md','w').write(T)",
+        "from pathlib import Path\n"
+        "(Path.home()/'notes'/'sentrook.md').write_text('see sentrook/sentrook/aira/detectors.py')",
+        # A relative path with no host home named and no change of folder.
+        "open('/tmp/n.md','w').write('see sentrook/README.md')",
+    ],
+    ids=[
+        "source-file-cited",
+        "deploy-table",
+        "repo-checkout-path",
+        "repo-checkout-path-lower",
+        "source-file-cited-home-named",
+        "slash-command-and-prose",
+        "pathlib-elsewhere",
+        "relative-unknown-folder",
+    ],
+)
+def test_c4star_inline_code_citing_sentrook_source_files_is_silent(code):
+    _, env = run(_code(code))
+    reasons = floor_reasons(env)
+    assert _REVIEW not in reasons and "guardrail.state_dir_write" not in reasons, env.evidence[
+        "findings"
+    ]
 
 
 @pytest.mark.parametrize(
