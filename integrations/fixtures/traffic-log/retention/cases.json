@@ -1,0 +1,112 @@
+{
+  "about": "Local traffic log retention: on a write, records older than 30 days before `now` are dropped from traffic.jsonl and traffic.jsonl.1. `before` is the files ahead of the write, `after` what each holds just before the new record is appended (a file missing from `after` is deleted). A line's age is the `ts` it starts with; a line without one goes with the dated line before it (at the top of a file, the first dated line after it).",
+  "now": "2026-11-26T12:00:00.000Z",
+  "cases": [
+    {
+      "name": "a 31-day-old record goes and a 29-day-old one stays",
+      "before": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\n{\"ts\": \"2026-10-28T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a29\"}\n"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-28T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a29\"}\n"
+      }
+    },
+    {
+      "name": "a record exactly 30 days old stays, one a millisecond older goes",
+      "before": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-27T11:59:59.999Z\", \"kind\": \"scan\", \"request_id\": \"old\"}\n{\"ts\": \"2026-10-27T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"edge\"}\n"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-27T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"edge\"}\n"
+      }
+    },
+    {
+      "name": "a time with an offset is read in UTC",
+      "before": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-27T13:30:00.000+02:00\", \"kind\": \"scan\", \"request_id\": \"off\"}\n{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      }
+    },
+    {
+      "name": "a rotated file whose newest record is older than 30 days is deleted",
+      "before": {
+        "traffic.jsonl.1": "{\"ts\": \"2026-10-17T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a40\"}\n{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\n",
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      }
+    },
+    {
+      "name": "a rotated file that straddles the boundary keeps only its recent records",
+      "before": {
+        "traffic.jsonl.1": "{\"ts\": \"2026-10-17T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a40\"}\n{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\n{\"ts\": \"2026-10-28T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a29\"}\n",
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      },
+      "after": {
+        "traffic.jsonl.1": "{\"ts\": \"2026-10-28T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a29\"}\n",
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      }
+    },
+    {
+      "name": "a torn last line after a recent record loses nothing",
+      "before": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\n{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n{\"kind\": \"scan\", \"request_id\": \"9999"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n{\"kind\": \"scan\", \"request_id\": \"9999"
+      }
+    },
+    {
+      "name": "a torn last line with its own recent time is kept",
+      "before": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\n{\"ts\": \"2026-11-25T13:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"99"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T13:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"99"
+      }
+    },
+    {
+      "name": "a line without a time goes with the record before it",
+      "before": {
+        "traffic.jsonl": "not json at all\n{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\njunk after old\n{\"ts\": \"2026-10-28T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a29\"}\njunk after new\n"
+      },
+      "after": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-28T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a29\"}\njunk after new\n"
+      }
+    },
+    {
+      "name": "a log whose records are all older than 30 days starts again with the new record",
+      "before": {
+        "traffic.jsonl": "{\"ts\": \"2026-10-17T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"a40\"}\n{\"ts\": \"2026-10-26T12:00:00.000Z\", \"kind\": \"scan\", \"request_id\": \"a31\"}\n{\"kind\": \"scan\", \"request_id\": \"9999"
+      },
+      "after": {
+        "traffic.jsonl": ""
+      }
+    },
+    {
+      "name": "files with nothing older than 30 days are untouched, in either writer's spacing",
+      "before": {
+        "traffic.jsonl.1": "{\"ts\":\"2026-10-28T12:00:00.000Z\",\"kind\":\"scan\",\"request_id\":\"a29\"}\n{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n",
+        "traffic.jsonl": "{\"ts\":\"2026-11-26T11:00:00.000Z\",\"kind\":\"scan\",\"request_id\":\"n1\"}\n{\"kind\": \"scan\", \"request_id\": \"9999"
+      },
+      "after": {
+        "traffic.jsonl.1": "{\"ts\":\"2026-10-28T12:00:00.000Z\",\"kind\":\"scan\",\"request_id\":\"a29\"}\n{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n",
+        "traffic.jsonl": "{\"ts\":\"2026-11-26T11:00:00.000Z\",\"kind\":\"scan\",\"request_id\":\"n1\"}\n{\"kind\": \"scan\", \"request_id\": \"9999"
+      }
+    },
+    {
+      "name": "a file with no dated line is left alone",
+      "before": {
+        "traffic.jsonl.1": "not json at all\n{\"kind\": \"scan\", \"request_id\": \"9999",
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      },
+      "after": {
+        "traffic.jsonl.1": "not json at all\n{\"kind\": \"scan\", \"request_id\": \"9999",
+        "traffic.jsonl": "{\"ts\": \"2026-11-25T12:00:00.000+00:00\", \"kind\": \"scan\", \"request_id\": \"d1\"}\n"
+      }
+    }
+  ]
+}

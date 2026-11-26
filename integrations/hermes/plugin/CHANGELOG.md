@@ -6,6 +6,10 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The local traffic log keeps records for 30 days. As it writes (at most once an hour), the plugin deletes older
+  records from `traffic.jsonl` and its rotated copy `traffic.jsonl.1`: a file holding only older records is deleted,
+  and one that holds both is rewritten without them. `/sentrook history`, `/sentrook why`, `/sentrook report` and the
+  dashboard show what is inside those 30 days.
 - `/sentrook dismiss <id>` (or `/sentrook dismiss all`) takes a held call off the waiting list without answering it,
   as if it had expired now. It works on any hold, including one that offers no answer (a run with no source, or a
   hold from an earlier version) and one you would rather not deny for 30 days. The call never runs and nothing is set:

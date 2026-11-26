@@ -10,6 +10,7 @@ import { SUPPORT_EMAIL, WRONG_SCAN_ISSUE_URL } from "./config.ts";
 import { formatWhy, LOG_OFF, NO_SCANS, parseRef } from "./history.ts";
 import plugin from "./index.ts";
 import * as report from "./report.ts";
+import { keepAllRecordsForTests } from "./traffic.ts";
 
 /** Shared with the Hermes plugin's tests: both hosts build the same report for the same log. */
 const FIXTURES = fileURLToPath(new URL("../../fixtures/traffic-log/report/", import.meta.url));
@@ -32,6 +33,8 @@ const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_SCAN_CLIENT_ID", "SENTROOK_SCA
 const savedEnv: Record<string, string | undefined> = {};
 let logFile = "";
 beforeEach(() => {
+  // The fixture logs were recorded on a fixed date; writing the audit record must not age them out.
+  keepAllRecordsForTests(true);
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   for (const k of ENV_KEYS) delete process.env[k];
   process.env.OPENCLAW_STATE_DIR = mkdtempSync(path.join(tmpdir(), "sentrook-report-"));
@@ -40,6 +43,7 @@ beforeEach(() => {
   copyFileSync(path.join(FIXTURES, "traffic.jsonl"), logFile);
 });
 afterEach(() => {
+  keepAllRecordsForTests(false);
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
