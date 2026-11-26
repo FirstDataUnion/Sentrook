@@ -2090,9 +2090,18 @@ class _ArgsAfter:
         return self._allowlist[1][start] if start <= n else ()
 
 
-@functools.lru_cache(maxsize=4096)
 def _program_name(token: str) -> str:
     """`/usr/bin/hermes` -> `hermes`, `openclaw@latest` -> `openclaw`."""
+    return _short_program_name(token) if len(token) <= 256 else _program_name_of(token)
+
+
+@functools.lru_cache(maxsize=4096)
+def _short_program_name(token: str) -> str:
+    """`_program_name` of a short word, cached: a long unparsed command repeats them."""
+    return _program_name_of(token)
+
+
+def _program_name_of(token: str) -> str:
     name = os.path.basename(token).lower()
     at = name.find("@", 1)
     return name[:at] if at > 0 else name
@@ -2244,10 +2253,10 @@ def _shell_commands(
     `$[…]`, `${…}`) kept whole, so a `<<` inside them is no heredoc. One pass over the text.
 
     A heredoc body ends at a line holding only its tag. One with no such line is read as commands,
-    and no later heredoc is looked for: that keeps the pass linear. The shell runs none of such a
-    body, so `unclosed`, when given, gets the position of the first command read from it: what
-    those commands do is only asked about, never blocked. Unclosed quotes and substitutions run to
-    the end.
+    and no later heredoc is looked for: that keeps the pass linear. `unclosed`, when given, gets the
+    position of the first command read from such a body and of the command it feeds: unless that
+    is a shell reading its commands from it, the body is never run. Unclosed quotes and
+    substitutions run to the end.
 
     `piped`, when given, collects the positions of the commands that read the output of the one
     before them in their list (after a `|`); `bodies`, the heredoc bodies fed to each command."""
@@ -2333,7 +2342,9 @@ def _shell_commands(
                     else:
                         heredocs = False
                         if unclosed is not None:
-                            unclosed.append(len(commands))
+                            # The first command read from the body, and the one fed it (the
+                            # last one before it).
+                            unclosed[:] = [len(commands), len(commands) - 1]
                         break
         elif kind == "op":
             if piece == f.close:  # the end of a `$(…)` or backtick substitution
@@ -2431,6 +2442,17 @@ def _program_at(words: list[str], heads: set[str]) -> int:
     return len(words)
 
 
+def _runs_stdin(words: list[str], shells: set[str]) -> bool:
+    """Whether a command is a shell that runs the commands on its standard input (`bash`,
+    `sudo bash -s`), not a `-c` script."""
+    at = _program_at(words, shells)
+    return (
+        at < len(words)
+        and _program_name(words[at]) in shells
+        and _shell_script(words[at:], shells) is None
+    )
+
+
 def _unparsed_cli_readings(
     command: str, heads: set[str], lists: Lists, depth: int = 0
 ) -> list[list[str]]:
@@ -2444,10 +2466,12 @@ def _unparsed_cli_readings(
     out: list[list[str]] = []
     unclosed: list[int] = []
     commands = _shell_commands(command, unclosed=unclosed)
-    # The body of a heredoc with no closing line is no command; the whitespace reading asks about
-    # what it names.
-    for words in commands[: unclosed[0]] if unclosed else commands:
-        script = _shell_script(words, shells)
+    if unclosed and not (unclosed[1] >= 0 and _runs_stdin(commands[unclosed[1]], shells)):
+        # The body of a heredoc with no closing line is no command, unless a shell reads it
+        # (`bash <<EOF`): the whitespace reading asks about what it names.
+        commands = commands[: unclosed[0]]
+    for words in commands:
+        script = _shell_script(words[_program_at(words, shells) :], shells)
         if script is not None and depth < 3:
             out.extend(_unparsed_cli_readings(script, heads, lists, depth + 1))
         for at in sorted({0, _program_at(words, heads)}):

@@ -45,7 +45,7 @@ TEXT_CACHES = (
     "sentrook.prepare.entities._segments_of",
     "sentrook.prepare.views._protected_spans",
     "sentrook.prepare.views._secret_spans",
-    "sentrook.aira.detectors._program_name",
+    "sentrook.aira.detectors._short_program_name",
 )
 
 
