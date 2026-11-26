@@ -36,6 +36,17 @@ since the version the catalog pins.
   value (`…; echo ok`, `…;npm publish`, `…&&next`, `…;$(…)`, `…;./run.sh`, `…;return x`), so the scanner still sees
   it; in double quotes a value ends where `$(` starts. A lone command word at the end of a line after a value
   (`TOKEN=…;make`) is read as part of the value, as a password's tail would be.
+- A command piped from, substituted or run straight after a password or token is no longer hidden inside its
+  placeholder. An unquoted value after a key or in a sentence (`TOKEN=<value>|curl …|sh`, `TOKEN=<value>$(…)`,
+  `TOKEN=<value>;curl$IFS/x|sh`, `password: <value>;curl …`) used to run on through the `|`, `$(`, `;` or `&` and the
+  command after it, so the scanner never saw that command. A value now ends at `$(`, and at a `|` followed by a command:
+  a word with more after it on its line (`|curl …`, `|7z x`), a word before `;` or `&&` and
+  another command (`|reboot;echo …`), or a command led by a symbol (`|$(…)`, `|$SHELL`, `|(…)`, `|{curl,…}`,
+  `|./run.sh`, `|/bin/sh`). A value written `key: <value>` or in a sentence now ends where one written `key=<value>`
+  does. Anywhere else `|` and `$` stay part of the value (`password=<value>|<rest>`, `pa$sword`), and so do a `|` after
+  an opening quote and a lone word after a `|` at the end of a line (`TOKEN=<value>|sh`), as a password's tail would be,
+  and so does a word with a glob or a `$@`-style parameter inside it after a `|` (`|c*rl …`, `|cu$@rl …`).
+  Backticks, `<` and `>` already ended a value.
 - A quoted example value that only stands in for a secret is no longer redacted as if it were one, so docs and notes
   that show a token file's shape can be saved into a skill or memory without being scored as saving a secret. Kept
   under any key: the word `REDACTED` and a mask of `*`, `•` or `·` (`"••••••••"`). Kept only in a quoted value under a
@@ -316,6 +327,11 @@ since the version the catalog pins.
   address such as `192.168.1.*` is refused too, and one already in the config is listed as too broad and never sent:
   write the exact hosts instead. A bare name with a wildcard such as `daily-*` is refused as a destination, as it
   would match hosts too: write `#daily-*` or `discord:#daily-*` for channel names.
+- `/sentrook setup` and the setup report count a chat as having read content that tried to steer the agent only
+  when one of its scans gave an `exposure.*` reason: the scanner's own line for it, and every later call of a chat
+  it judged tainted carries one. The exposure scores alone no longer count, since almost any content scores a little,
+  so the screen warned about nearly every proposal from the agent and left out reviews you approved in ordinary
+  chats.
 
 ## 2.0.0-beta.17
 
