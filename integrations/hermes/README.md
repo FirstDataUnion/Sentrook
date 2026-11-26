@@ -571,7 +571,7 @@ Where nobody can answer a review (the runs above), the call is **held**:
   and `why` say how many times it was held.
 - A hold nobody answers expires after 7 days, and nothing runs.
 
-A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
+A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. There are two exceptions, both held as a review would be: a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block, and an `execute_code` program that calls nothing on the network when only the URLs or commands written in its strings take it to a block. The traffic log records
 the scan with decision `held`, then your answer or the expiry; a call a pass let through is recorded as
 `allowed_by_pass`, and one a denial refused as `denied_by_owner`. `/sentrook history` shows them.
 

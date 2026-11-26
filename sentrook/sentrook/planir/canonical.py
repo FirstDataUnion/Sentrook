@@ -148,6 +148,10 @@ class CanonicalCall:
     #: An OpenClaw Code Mode cell (`pending_call.input_kind` `javascript` on an `exec`): `command` is
     #: JavaScript, not shell. Its nested tool calls are scanned on their own.
     code_cell: bool = False
+    #: A Hermes `execute_code` program whose interpreter, as far as the session state token knows, holds
+    #: nothing from earlier calls that the program could reach without binding it itself: its code may then
+    #: be read as code (`prepare.code_reach`). Set by preparation; False means read it as text.
+    kernel_clear: bool = False
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.args.get(key, default)

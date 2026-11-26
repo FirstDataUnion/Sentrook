@@ -703,8 +703,9 @@ def _scan_one(
     )
     if isinstance(result, ScanOk):
         resp = result.response
-        # A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
-        # retry is held for the owner. The attended-owner ceiling is dropped there (`decision.unattended_view`).
+        # A run nobody can answer lowers a block to a review only for a retry of a review nobody answered or code
+        # that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
+        # (`decision.unattended_view`).
         verdict = decide(unattended_view(resp) if unattended else resp, cfg.review_at, cfg.block_at)
         if (
             cfg.mode != "observe"

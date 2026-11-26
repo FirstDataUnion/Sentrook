@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -48,6 +49,42 @@ def result(h, cid, text, status="ok"):
         status=status,
         turn_id="t1",
         **SID,
+    )
+
+
+#: Whole values the plugin makes at random or from the clock: request ids, hold, grant and proposal ids, times.
+_GENERATED = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|(?:h|gr|p)-[0-9a-f]{6}"
+    r"|\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?"
+)
+
+
+def without_generated_ids(value):
+    """`value` with every string that is wholly a generated id or time replaced, so a check that a short test
+    value never left the host cannot match it inside a random id by chance. A secret is never one of those
+    whole-value shapes, so a raw secret anywhere else is still found."""
+    if isinstance(value, dict):
+        return {k: without_generated_ids(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [without_generated_ids(v) for v in value]
+    if isinstance(value, str) and _GENERATED.fullmatch(value):
+        return "<generated>"
+    return value
+
+
+def test_generated_ids_are_dropped_and_everything_else_kept():
+    sent = {
+        "request_id": "60d40c91-dbdf-4c4a-822e-b48268157ce5",
+        "sent_at": "2026-11-26T03:46:02Z",
+        "hold": {"id": "h-426815", "expires_at": "2026-12-03T10:52:55.681+00:00"},
+        "request": {"text": "the gate code is 6815"},
+        "history": [{"arguments": {"command": "echo 60d40c91-dbdf-4c4a-822e-b48268157ce5"}}],
+    }
+    dumped = json.dumps(without_generated_ids(sent))
+    assert dumped.count("6815") == 2  # the request text and the command, not the ids or times
+    assert "6815" not in json.dumps(
+        without_generated_ids({k: sent[k] for k in ("request_id", "sent_at", "hold")})
     )
 
 
