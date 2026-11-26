@@ -37,6 +37,26 @@ from sentrook.planir.bounds import MAX_CALL_CHARS
 
 #: Just over the parse limit, well over it, and near the bound on what a call analyses.
 SIZES = [MAX_PARSE_CHARS + 1, 24_000, 95_000]
+#: Every case runs at the first size, where the unparsed reading takes over. A larger size costs up to
+#: six times as much per case and is read by the same code, so it runs on every FAR_EVERY-th case of a
+#: list (the first included): each list still meets every size, and the growth checks time the reading.
+FAR_EVERY = 4
+
+
+def sized(argnames: str, cases: list, ids: list[str] | None = None):
+    """`pytest.mark.parametrize` over `argnames` and `size`: every case at `SIZES[0]`, every
+    FAR_EVERY-th case also at the larger sizes."""
+    several = "," in argnames
+    params = []
+    for size in SIZES:
+        for k, case in enumerate(cases):
+            if size != SIZES[0] and k % FAR_EVERY:
+                continue
+            values = (*case, size) if several else (case, size)
+            case_id = ids[k] if ids else None
+            params.append(pytest.param(*values, id=f"{case_id}-{size}" if case_id else None))
+    return pytest.mark.parametrize(f"{argnames}, size", params)
+
 
 #: A host CLI's name as a word, also the first of a quoted script or a command substitution:
 #: `openclaw`, `/usr/local/bin/openclaw`, `openclaw@latest`, `hermes`, `hermes_cli.main` (after `python -m`).
@@ -71,8 +91,7 @@ def hc(size: int, rest: str) -> dict:
 # --------------------------------------------------------------------------- must fire
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "rest",
     [
         "config set tools.exec.security full",
@@ -90,8 +109,7 @@ def test_openclaw_loosening_behind_padding_takes_the_floor(rest, size):
     fires(oc(size, rest))
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "command",
     [
         "cd /tmp && openclaw config set tools.exec.security full",
@@ -168,8 +186,7 @@ def test_a_padded_loosening_in_a_chain_or_script_takes_the_floor(command, size):
     fires(ex(padded(command, size)))
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "rest",
     [
         "config set approvals.mode off",
@@ -182,8 +199,7 @@ def test_hermes_loosening_behind_padding_takes_the_floor(rest, size):
     fires(hc(size, rest))
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "command",
     [
         'echo "`hermes config set approvals.mode off`"',
@@ -210,8 +226,7 @@ def test_the_padded_command_is_not_parsed():
 # --------------------------------------------------------------------------- must stay silent
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "raw",
     [
         # Reads.

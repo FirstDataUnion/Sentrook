@@ -26,7 +26,7 @@ import pytest
 import test_aira_detectors as detector_tests
 from linear_time import assert_linear
 from test_aira_detectors import ex, floor_reasons, planir, run
-from test_approval_loosening_unparsed import _CLI_WORD, FILL, SIZES, ZSH, padded
+from test_approval_loosening_unparsed import _CLI_WORD, FILL, ZSH, padded, sized
 
 from sentrook.aira.exec_shape import MAX_PARSE_CHARS, derive_exec_shape
 from sentrook.enums import Enforce
@@ -129,8 +129,7 @@ FIRES = [
 PARSED_GAPS = {"eval " + D, "env -u HOME " + D}
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize("command, reason", FIRES, ids=[c for c, _ in FIRES])
+@sized("command, reason", FIRES, ids=[c for c, _ in FIRES])
 def test_a_padded_guardrail_command_in_a_chain_or_script_takes_the_floor(command, reason, size):
     if command not in PARSED_GAPS:
         assert tier(_call(command)) == f"block: guardrail.{reason}", "the short command"
@@ -149,8 +148,7 @@ def test_a_guardrail_command_with_a_syntax_error_takes_the_floor(command, reason
 # --------------------------------------------------------------------------- must stay silent
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "command",
     [
         "openclaw plugins list",
