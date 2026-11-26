@@ -42,6 +42,9 @@ from .runtime import ServeRuntime
 logger = logging.getLogger("sentrook.serve")
 MAX_BODY_BYTES = 4 * 1024 * 1024
 TESTNEST_PATH = "/testnest/scan"
+# What a log line may name: fixed strings from code, never the client's own text.
+_LOG_METHODS = ("GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "PATCH")
+_LOG_ROUTES = ("/health", "/healthz", "/metrics", "/scan", TESTNEST_PATH)
 
 
 def _parse_clock(value: Any) -> datetime | None:
@@ -78,19 +81,31 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
 
         # Logs hold metadata only: the method, the route (a known endpoint or `other`) and the status. Never
         # the client's address, the raw request line (its path or query may carry anything), headers or body.
+        # Method and route are matched against fixed sets and the constant from code is logged, so no
+        # client-supplied text (CR/LF included) reaches a log line.
+        def _log_method(self) -> str:
+            raw = getattr(self, "command", None)
+            for method in _LOG_METHODS:
+                if raw == method:
+                    return method
+            return "other"
+
         def _route(self) -> str:
-            path = getattr(self, "path", "") or ""
-            return endpoint_label(path.split("?", 1)[0].rstrip("/") or "/")
+            path = (getattr(self, "path", "") or "").split("?", 1)[0].rstrip("/") or "/"
+            for route in _LOG_ROUTES:
+                if path == route:
+                    return route
+            return "other"
 
         def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-            method = getattr(self, "command", None) or "-"
-            logger.debug("%s %s %s", method, self._route(), getattr(code, "value", code))
+            if isinstance(code, int):
+                logger.debug("%s %s %d", self._log_method(), self._route(), int(code))
+            else:
+                logger.debug("%s %s -", self._log_method(), self._route())
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002 (stdlib signature)
             # The stdlib's error lines quote the raw request; keep only that there was one.
-            logger.debug(
-                "%s %s request error", getattr(self, "command", None) or "-", self._route()
-            )
+            logger.debug("%s %s request error", self._log_method(), self._route())
 
         # ---------------------------------------------------------------- plumbing
         def _write(

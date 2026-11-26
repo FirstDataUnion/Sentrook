@@ -59,3 +59,20 @@ def test_an_unhandled_error_logs_its_type_and_place_only(server, caplog, monkeyp
             c.post("/scan", json={"x": 1})
     assert "unhandled error serving a request: ValueError at" in caplog.text
     assert "quillon" not in caplog.text
+
+
+def test_cr_lf_in_the_method_or_path_never_reaches_the_log(server, caplog):
+    caplog.set_level(logging.DEBUG, logger="sentrook.serve")
+    for line in (
+        b"GET /healthz%0d%0aFORGED quillon HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        b"GET\rFORGED /scan\nquillon HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        b"POST /scan\rFORGED quillon HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    ):
+        with socket.create_connection((server.host, server.port), timeout=3) as s:
+            s.sendall(line)
+            s.recv(4096)
+    for record in caplog.records:
+        message = record.getMessage()
+        assert "\r" not in message and "\n" not in message
+        assert "FORGED" not in message and "quillon" not in message
+        assert "%0d" not in message.lower()
