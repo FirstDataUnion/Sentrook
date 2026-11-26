@@ -75,6 +75,18 @@ def notice_route(monkeypatch):
     return route
 
 
+@pytest.fixture(autouse=True)
+def notice_retry_kicks(monkeypatch):
+    """The retry thread of notices Hermes could not address yet (`notice_retry`) is not started in tests: each start
+    is recorded here instead, and a test tries the kept notices with `notice_retry.run_due` at a time it chooses."""
+    from plugin import notice_retry
+
+    kicks = []
+    monkeypatch.setattr(notice_retry, "kick", kicks.append)
+    monkeypatch.setattr(notice_retry, "_runs_retries", lambda: False)
+    return kicks
+
+
 #: Hermes's `hermes` launcher in tests that send with `hermes send` through a stand-in `subprocess.run`.
 FAKE_LAUNCHER = "/opt/hermes-test/bin/hermes"
 
