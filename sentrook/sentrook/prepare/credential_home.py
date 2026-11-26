@@ -13,7 +13,9 @@ holds, and the call's credential does not count as sensitive data sent, only whe
 - every off-machine party the call or its batch touches, in any role, is a host the library lists with credential
   names (an exact library answer, never a near miss), so a URL to any other host in the code fails the check, and
   none of them reached the agent through content it read (a host only untrusted content named, or one it was
-  steered to). A host that only the agent's own installed skills named (a read of an installed skill, on this step
+  steered to). A host the pending program only mentions is no party: the code reading knows the target of every
+  request the program makes and this host is none of them (a link inside the body it posts), and no other call in
+  the batch names it. A host that only the agent's own installed skills named (a read of an installed skill, on this step
   or an earlier one, and no other content) does not count as content here: the skill is the agent's standing
   instructions for the service, and the library already ties the key to that host. Memory reads do count, and
   everything else still scores such a host as untrusted;
@@ -52,7 +54,7 @@ from typing import Any
 
 from ..enums import SessionFlag
 from ..planir.models import ToolKind
-from .entities import EntityKind, Origin
+from .entities import EntityKind, Origin, Role, call_code_reach, normalise_host
 
 #: An environment name shaped like a credential: words joined by `_` ending in a key, token, secret or password word.
 CREDENTIAL_NAME_RE = re.compile(
@@ -334,6 +336,27 @@ def _shell_puts_key_elsewhere(a: Any, ctx: Any, names: set[str]) -> bool:
     return False
 
 
+def _code_targets(pending: Any) -> frozenset[str] | None:
+    """The hosts the pending program's requests are aimed at, when the code reading knows every one."""
+    reach = call_code_reach(pending)
+    if reach is None or not reach.network or not reach.targets:
+        return None
+    return frozenset(normalise_host(t) for t in reach.targets)
+
+
+def _only_mentioned_by_code(ent: Any, targets: frozenset[str] | None) -> bool:
+    """A host the pending program only writes in its data (a link in a request body), sent to by nothing."""
+    return (
+        targets is not None
+        and ent.kind is EntityKind.HOST
+        and ent.value not in targets
+        and set(ent.roles) == {Role.MENTIONED}
+        and not ent.future_roles
+        and not ent.in_resolved_command
+        and not ent.has_origin(Origin.WRITTEN_FILE, Origin.SIBLING)
+    )
+
+
 def check(
     prepared: Any, extra_grants: tuple[tuple[str, str, str], ...] = ()
 ) -> tuple[CredentialHome | None, str]:
@@ -371,6 +394,7 @@ def _check(
     # Every off-machine party the call or its batch touches is a host the library lists with credential names, or one
     # the owner's credential grants tie names to.
     owner_grants = [*live_credential_grants(prepared), *extra_grants]
+    code_targets = _code_targets(pending)
     hosts: dict[str, list[str]] = {}
     host_grants: dict[str, list[tuple[str, str]]] = {}
     for ent in prepared.entities:
@@ -382,6 +406,8 @@ def _check(
         ):
             continue
         if ent.kind is EntityKind.HOST and is_local_host(ent.value):
+            continue
+        if _only_mentioned_by_code(ent, code_targets):
             continue
         if ent.kind is not EntityKind.HOST:
             return None, "other_party"

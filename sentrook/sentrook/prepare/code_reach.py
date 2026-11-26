@@ -9,10 +9,16 @@ writes. Writing a file counts as a sink unless the file is plainly data (`.json`
 command written into `~/.bashrc` or a `.pth` file runs later.
 
 When the code's only sinks are HTTP calls this module follows (`requests`, `httpx`, `urllib.request`) and
-every request call is aimed at a URL written in the code (directly, through a name set only to such URLs,
-or through a `Request` built from one), the hosts of those URLs are its targets: a URL inside the body or
-any other data is a mention. A target the code computes (`requests.post(T["u"])`, a loop variable, a
-function argument) is not followed, and then every host the code writes stays a possible destination.
+every request call is aimed at a URL whose host the code writes, the hosts of those URLs are its targets: a
+URL inside the body or any other data is a mention. The host is written when the whole URL is, or when the
+written start of it reaches past the host (the `/` after it, or a `?` or `#`) whatever follows:
+`'https://api.x.io/v1/' + path`, an f-string, `.format` or `%` with such a start, or `urljoin` of such a
+base with a written relative path. The URL may come directly, through a name set only to such URLs (read
+from the scope Python reads it from), through a `Request` built from one, or through a parameter of a
+function the program defines and calls only by its name, every call passing such a URL. A target the code
+computes (`requests.post(T["u"])`, a loop variable, an argument some call computes, a start that stops at
+the host: `'https://api.x.io' + rest` may go on as `.evil.net`) is not followed, and then every host the
+code writes stays a possible destination. So is a function an earlier program left in the interpreter.
 """
 
 from __future__ import annotations
@@ -22,10 +28,13 @@ import builtins
 import importlib
 import inspect
 import re
+import urllib
+import urllib.parse
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 __all__ = ["CodeReach", "KernelEffects", "kernel_effects", "kernel_reads", "python_reach"]
 
@@ -437,6 +446,33 @@ def _url_arg(call: ast.Call) -> ast.expr | None:
     return first
 
 
+def _argument(call: ast.Call, args: ast.arguments, param: ast.arg) -> ast.expr | None:
+    """What `call` passes for `param`: the argument in its place, by keyword, or the parameter's default.
+    None when the call unpacks arguments (`*a`, `**kw`) or `param` collects them."""
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(
+        k.arg is None for k in call.keywords
+    ):
+        return None
+    positional = [*args.posonlyargs, *args.args]
+    at = next((i for i, a in enumerate(positional) if a is param), None)
+    if at is not None:
+        if at < len(call.args):
+            return call.args[at]
+        if at >= len(args.posonlyargs):
+            for k in call.keywords:
+                if k.arg == param.arg:
+                    return k.value
+        first = len(positional) - len(args.defaults)
+        return args.defaults[at - first] if at >= first else None
+    at = next((i for i, a in enumerate(args.kwonlyargs) if a is param), None)
+    if at is None:
+        return None
+    for k in call.keywords:
+        if k.arg == param.arg:
+            return k.value
+    return args.kw_defaults[at]
+
+
 def _allowed_path(start: str | None, end: str | None) -> bool:
     """A write target whose known start (`start`), known end (`end`) or whole path (both, the same) passes:
     no dot-directory or dotfile, other than the code tool's scratch space, and no denied name. `end` alone may
@@ -544,6 +580,55 @@ class _Unfollowed(Exception):
     pass
 
 
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+#: A name as read in one scope: the function (or lambda) that owns it, None for the module, or "*" for a name
+#: read unscoped (`_Reader.declared`).
+_Key = tuple[object, str]
+#: A binding: the value assigned, a parameter (`ast.arg`), a `def`, or None for anything else.
+_Bound = ast.expr | ast.arg | ast.FunctionDef | ast.AsyncFunctionDef | None
+
+
+def _scopes(tree: ast.Module) -> dict[ast.AST, ast.AST | None]:
+    """The function or lambda whose local names each node's names are, None for the module. A def's
+    decorators, defaults and annotations belong to the scope it is written in, its parameters and body to the
+    function. A class body or a comprehension counts as the scope around it: a name bound there is one more
+    value the outer name may hold, never one fewer."""
+    out: dict[ast.AST, ast.AST | None] = {}
+    stack: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
+    while stack:
+        node, scope = stack.pop()
+        out[node] = scope
+        if not isinstance(node, _FUNCS):
+            stack.extend((c, scope) for c in ast.iter_child_nodes(node))
+            continue
+        a = node.args
+        out[a] = node
+        outer: list[ast.AST] = [*a.defaults, *(d for d in a.kw_defaults if d is not None)]
+        if not isinstance(node, ast.Lambda):
+            outer += [*node.decorator_list, *getattr(node, "type_params", [])]
+            if node.returns is not None:
+                outer.append(node.returns)
+        for arg in (*a.posonlyargs, *a.args, a.vararg, *a.kwonlyargs, a.kwarg):
+            if arg is not None:
+                out[arg] = node
+                if arg.annotation is not None:
+                    outer.append(arg.annotation)
+        stack.extend((n, scope) for n in outer)
+        body = node.body if isinstance(node.body, list) else [node.body]
+        stack.extend((n, node) for n in body)
+    return out
+
+
+def _relative(text: str) -> bool:
+    """A reference `urljoin` resolves against the base's host: no scheme, no `//` authority, nothing a parser
+    strips or reads as a separator (spaces, controls, backslashes)."""
+    return (
+        not text.startswith("//")
+        and ":" not in text
+        and all(33 <= ord(c) < 127 and c != "\\" for c in text)
+    )
+
+
 def _check_module(obj: object) -> None:
     if inspect.ismodule(obj) and not (
         obj.__name__ in _LOCAL_MODULES
@@ -573,6 +658,14 @@ class _Reader:
                 self.parents[child] = node
         #: Every value a plain name is bound to; None marks a binding that is not a simple assignment.
         self.bindings: dict[str, list[ast.expr | None]] = {}
+        #: The function (or lambda) each node's names belong to, None for the module (`_scopes`).
+        self.scope_of = _scopes(tree)
+        #: The same bindings by the scope that owns them; a parameter binds its `ast.arg` and a `def` its node.
+        self.scoped: dict[tuple[ast.AST | None, str], list[_Bound]] = {}
+        #: Names some scope declares `global` or `nonlocal`, or bound where no scope was given: read unscoped.
+        self.declared: set[str] = set()
+        #: Every read of each plain name, gathered when a parameter is resolved from the calls.
+        self._loads: dict[str, list[ast.Name]] | None = None
         #: Names bound to a restricted module, with the attributes allowed through them.
         self.restricted: dict[str, set[str]] = {}
         #: Names bound to a followed client module, and functions imported from one (alias → name).
@@ -585,22 +678,33 @@ class _Reader:
         self.xml = False
         #: A function that sets where requests go was imported under another name.
         self.targets_off = False
-        #: What each name resolves to, once worked out, so many calls on one name stay linear.
-        self._name_values: dict[str, list[tuple[str, bool]] | None] = {}
-        self._name_hosts: dict[str, set[str] | None] = {}
-        self._name_keys: dict[str, bool] = {}
+        #: What each name (in the scope that owns it) resolves to, once worked out, so many calls on one name
+        #: stay linear.
+        self._name_values: dict[_Key, list[tuple[str, bool]] | None] = {}
+        self._name_hosts: dict[_Key, set[str] | None] = {}
+        self._name_keys: dict[_Key, bool] = {}
+        self._name_own: dict[_Key, bool] = {}
 
     # ------------------------------------------------------------------ imports and sinks
 
-    def _bind(self, name: str, value: ast.expr | None = None) -> None:
+    def _bind(self, name: str, value: ast.expr | None = None, site: ast.AST | None = None) -> None:
+        """Record a binding of `name` at `site` (the node that binds it); with no site, the name is read
+        unscoped wherever it is read."""
         self.bindings.setdefault(name, []).append(value)
+        if site is None:
+            self.declared.add(name)
+            return
+        bound: _Bound = value
+        if isinstance(site, (ast.arg, ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound = site
+        self.scoped.setdefault((self.scope_of.get(site), name), []).append(bound)
 
     def _import(self, node: ast.Import) -> None:
         for a in node.names:
             top = a.name.split(".")[0]
             bound = a.asname or top
             module = a.name if a.asname else top
-            self._bind(bound)
+            self._bind(bound, site=node)
             if a.name in _HTTP_MODULES:
                 self.http = True
                 self.http_modules.add(bound)
@@ -623,7 +727,7 @@ class _Reader:
         module = node.module or ""
         names = [a.name for a in node.names]
         for a in node.names:
-            self._bind(a.asname or a.name)
+            self._bind(a.asname or a.name, site=node)
             if a.name in _ATTR_CALLERS or a.name in _ATTR_BY_NAME or a.name in _OPAQUE_BUILTINS:
                 raise _Unfollowed  # `from operator import attrgetter as ag`
             if a.name in _WRITERS and a.asname and a.asname != a.name:
@@ -676,11 +780,12 @@ class _Reader:
     def _store(self, name: ast.Name) -> None:
         parent = self.parents.get(name)
         if isinstance(parent, ast.Assign) and any(t is name for t in parent.targets):
-            self._bind(name.id, parent.value)
+            self._bind(name.id, parent.value, name)
         elif isinstance(parent, ast.AnnAssign) and parent.target is name and parent.value:
-            self._bind(name.id, parent.value)
+            self._bind(name.id, parent.value, name)
         else:
-            self._bind(name.id)  # a loop, `with`, unpacking, `+=` or walrus: not followed
+            # a loop, `with`, unpacking, `+=` or walrus: not followed
+            self._bind(name.id, site=name)
 
     def scan(self) -> None:
         """Collect bindings and imports; raise `_Unfollowed` at anything this reading does not follow."""
@@ -718,18 +823,18 @@ class _Reader:
                 if node.attr in _ATTR_CALLERS or node.attr in _FILE_MOVES:
                     raise _Unfollowed
             elif isinstance(node, ast.arg):
-                self._bind(node.arg)
+                self._bind(node.arg, site=node)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                self._bind(node.name)
+                self._bind(node.name, site=node)
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
                 for n in node.names:
-                    self._bind(n)
+                    self._bind(n)  # read unscoped: another scope's assignments reach it
             elif isinstance(node, ast.ExceptHandler) and node.name:
-                self._bind(node.name)
+                self._bind(node.name, site=node)
             elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
-                self._bind(node.name)
+                self._bind(node.name, site=node)
             elif isinstance(node, ast.MatchMapping) and node.rest:
-                self._bind(node.rest)
+                self._bind(node.rest, site=node)
         for key in globals_keys:
             # `globals()["R"] = R` binds a plain name; one that names a module, a client function or a
             # builtin could swap what a call reaches.
@@ -741,7 +846,7 @@ class _Reader:
                 or key in _BUILTINS
             ):
                 raise _Unfollowed
-            self._bind(key)
+            self._bind(key, site=self.tree)  # a global: the module's scope
         for call, module in imported:
             self._dynamic_import(call, module)
         for node in ast.walk(self.tree):
@@ -1139,6 +1244,8 @@ class _Reader:
                 continue
             name = _call_name(node.func)
             if isinstance(node.func, ast.Name):
+                if self._own_function(node.func):
+                    continue  # the program's own `def post(p, body)`: its requests are read inside it
                 name = self.http_funcs.get(name or "", name)
             if name in _UNFOLLOWED_CALLS:
                 return None
@@ -1177,47 +1284,82 @@ class _Reader:
     def _plain_key(self, expr: ast.expr) -> bool:
         """`expr` is only ever plain strings that are no URL (a dict or environment key)."""
         if isinstance(expr, ast.Name):
-            if expr.id not in self._name_keys:
-                self._name_keys[expr.id] = _plain_keys(self._values(expr, frozenset()))
-            return self._name_keys[expr.id]
+            key, _ = self._scope_binds(expr)
+            if key not in self._name_keys:
+                self._name_keys[key] = _plain_keys(self._values(expr, frozenset()))
+            return self._name_keys[key]
         return _plain_keys(self._values(expr, frozenset()))
 
-    def _request_hosts(self, expr: ast.expr, seen: frozenset[str]) -> set[str] | None:
+    def _scope_binds(self, name: ast.Name) -> tuple[_Key, Sequence[_Bound]]:
+        """The bindings `name` reads, from the innermost scope that binds it as Python does (a function's
+        locals, then each enclosing function's, then the module's). A name some scope declares `global` or
+        `nonlocal` reads every binding anywhere."""
+        if name.id in self.declared:
+            return ("*", name.id), self.bindings.get(name.id) or []
+        scope = self.scope_of.get(name)
+        while scope is not None:
+            if (scope, name.id) in self.scoped:
+                return (scope, name.id), self.scoped[(scope, name.id)]
+            scope = self.scope_of.get(scope)
+        return (None, name.id), self.scoped.get((None, name.id), [])
+
+    def _own_function(self, name: ast.Name) -> bool:
+        """`name` is only ever a function this program defines with `def`."""
+        key, binds = self._scope_binds(name)
+        if key not in self._name_own:
+            self._name_own[key] = bool(binds) and all(
+                isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) for b in binds
+            )
+        return self._name_own[key]
+
+    def _request_hosts(self, expr: ast.expr, seen: frozenset[object]) -> set[str] | None:
         """The hosts a request URL argument (or a `Request` it names) is aimed at, or None."""
-        if isinstance(expr, ast.Call) and _call_name(expr.func) in ("Request", "build_request"):
+        name = _call_name(expr.func) if isinstance(expr, ast.Call) else None
+        if isinstance(expr, ast.Call) and name in ("Request", "build_request"):
+            # The client's own: a `Request` the program defines or binds (`def Request(u)`, a method of that
+            # name, `Request = …`) may return any URL.
+            if name in self.declared or len(self.bindings.get(name) or []) != (
+                1 if name in self.http_funcs else 0
+            ):
+                return None
             inner = _url_arg(expr)
             return None if inner is None else self._request_hosts(inner, seen)
-        if isinstance(expr, ast.Name) and expr.id not in seen:
-            if expr.id not in self._name_hosts:
-                binds = self.bindings.get(expr.id) or []
+        if isinstance(expr, ast.Name):
+            key, binds = self._scope_binds(expr)
+            if key in seen:
+                return None
+            if key not in self._name_hosts:
                 if binds and all(isinstance(b, ast.Call) for b in binds):
-                    hosts = self._bound_hosts(expr.id, binds, seen)
+                    hosts = self._bound_hosts(key, binds, seen)
                 else:
                     hosts = _hosts_of(self._values(expr, seen))
-                self._name_hosts[expr.id] = hosts
-            return self._name_hosts[expr.id]
+                self._name_hosts[key] = hosts
+            return self._name_hosts[key]
         return _hosts_of(self._values(expr, seen))
 
     def _bound_hosts(
-        self, name: str, binds: list[ast.expr | None], seen: frozenset[str]
+        self, key: _Key, binds: Sequence[_Bound], seen: frozenset[object]
     ) -> set[str] | None:
         out: set[str] = set()
         for b in binds:
-            assert b is not None
-            got = self._request_hosts(b, seen | {name})
+            assert isinstance(b, ast.Call)
+            got = self._request_hosts(b, seen | {key})
             if got is None:
                 return None
             out |= got
         return out
 
     def _bound_values(
-        self, name: str, binds: list[ast.expr | None], seen: frozenset[str]
+        self, key: _Key, binds: Sequence[_Bound], seen: frozenset[object]
     ) -> list[tuple[str, bool]] | None:
         out: list[tuple[str, bool]] = []
         for b in binds:
-            if b is None:
+            if b is None or isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 return None
-            got = self._values(b, seen | {name})
+            if isinstance(b, ast.arg):
+                got = self._param_values(b, seen | {key})
+            else:
+                got = self._values(b, seen | {key})
             if got is None:
                 return None
             out.extend(got)
@@ -1225,19 +1367,96 @@ class _Reader:
                 return None  # too many to follow: every host stays a possible destination
         return out
 
-    def _values(self, expr: ast.expr, seen: frozenset[str]) -> list[tuple[str, bool]] | None:
+    def _param_values(
+        self, param: ast.arg, seen: frozenset[object]
+    ) -> list[tuple[str, bool]] | None:
+        """The values a parameter takes: what every call of its function passes (or its default), when the
+        function is a plain `def` this program calls only by its name, each call with arguments in plain
+        view. Anything else (a method, a decorated or lambda function, a function passed around or called
+        with `*args`/`**kw`, a `*args` parameter) is not followed."""
+        func = self.scope_of.get(param)
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) or func.decorator_list:
+            return None
+        if isinstance(self.parents.get(func), ast.ClassDef) or func.name in self.declared:
+            return None
+        if len(self.bindings.get(func.name) or []) != 1:
+            return None  # the name is bound to something else too, somewhere
+        if self._loads is None:
+            self._loads = {}
+            for n in ast.walk(self.tree):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+                    self._loads.setdefault(n.id, []).append(n)
+        reads = self._loads.get(func.name) or []
+        if not reads:
+            return None
+        out: list[tuple[str, bool]] = []
+        for read in reads:
+            call = self.parents.get(read)
+            if not (isinstance(call, ast.Call) and call.func is read):
+                return None  # `map(send, urls)`, `f = send`: calls this reading does not see
+            arg = _argument(call, func.args, param)
+            got = None if arg is None else self._values(arg, seen)
+            if got is None:
+                return None
+            out.extend(got)
+            if len(out) > _MAX_VALUES:
+                return None
+        return out
+
+    def _is_urljoin(self, func: ast.expr) -> bool:
+        """`func` is `urllib.parse.urljoin`, imported by name or reached through the module."""
+        root = func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name) or root.id in self.declared:
+            return False
+        if len(self.bindings.get(root.id) or []) != 1:
+            return False
+        if isinstance(func, ast.Name):
+            return self.objects.get(func.id) is urllib.parse.urljoin
+        if not (isinstance(func, ast.Attribute) and func.attr == "urljoin"):
+            return False
+        if func.value is root:
+            return self.objects.get(root.id) is urllib.parse  # `import urllib.parse as up`
+        mod = func.value
+        if not (isinstance(mod, ast.Attribute) and mod.value is root and mod.attr == "parse"):
+            return False
+        return self.objects.get(root.id) is urllib or (
+            root.id in self.http_modules and "parse" in self.restricted.get(root.id, ())
+        )
+
+    def _joined(self, call: ast.Call, seen: frozenset[object]) -> list[tuple[str, bool]] | None:
+        """`urljoin(base, "rel")` with a written relative reference: the base's host is the result's."""
+        if len(call.args) != 2 or call.keywords:
+            return None
+        rel = call.args[1]
+        if not (isinstance(rel, ast.Constant) and isinstance(rel.value, str)):
+            return None
+        if not _relative(rel.value):
+            return None
+        base = self._values(call.args[0], seen)
+        if base is None:
+            return None
+        out: list[tuple[str, bool]] = []
+        for text, exact in base:
+            if _host(text, exact) is None:
+                return None
+            out.append((urljoin(text, rel.value), True) if exact else (text, False))
+        return out
+
+    def _values(self, expr: ast.expr, seen: frozenset[object]) -> list[tuple[str, bool]] | None:
         """The string values `expr` can take, each as (text, exact): `exact` False means only a prefix of
         the value is known. None when nothing is known."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             return [(expr.value, True)]
         if isinstance(expr, ast.Name):
-            binds = self.bindings.get(expr.id)
-            if not binds or expr.id in seen:
+            key, binds = self._scope_binds(expr)
+            if not binds or key in seen:
                 return None
             # A name that depends on itself (`u = u + "/x"`) resolves to None however it is reached.
-            if expr.id not in self._name_values:
-                self._name_values[expr.id] = self._bound_values(expr.id, binds, seen)
-            return self._name_values[expr.id]
+            if key not in self._name_values:
+                self._name_values[key] = self._bound_values(key, binds, seen)
+            return self._name_values[key]
         if isinstance(expr, ast.JoinedStr):
             text = ""
             for part in expr.values:
@@ -1268,6 +1487,13 @@ class _Reader:
             if base is None:
                 return None
             return [(t.split("{", 1)[0], False) for t, _ in base]
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+            base = self._values(expr.left, seen)  # `"https://h/v1/%s" % p`
+            if base is None:
+                return None
+            return [(t.split("%", 1)[0], False) for t, _ in base]
+        if isinstance(expr, ast.Call) and self._is_urljoin(expr.func):
+            return self._joined(expr, seen)
         return None
 
 
