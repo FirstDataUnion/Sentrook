@@ -27,6 +27,7 @@ import inspect
 import pathlib
 import posixpath
 import re
+import unicodedata
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -367,6 +368,8 @@ _DENIED_NAMES = frozenset(
         "user.md",
         "tools.md",
         "heartbeat.md",
+        "jobs.json",  # scheduled jobs (`~/.hermes/cron/jobs.json`)
+        "openclaw.json",
         "cmakelists.txt",
         "lefthook.json",
         "nodemon.json",
@@ -387,6 +390,7 @@ _DENIED_WORDS = (
     "agents",
     "gemini",
     "hermes",
+    "openclaw",
     "skill",
 )
 #: Calls that write a file at their path argument.
@@ -519,13 +523,45 @@ def _url_arg(call: ast.Call) -> ast.expr | None:
     return first
 
 
+def _squash(text: str) -> str:
+    """`text` with empty and `.` parts dropped (`//etc/./x` is `/etc/x`), as the file system reads it, and
+    `/private/etc` and `/private/var` (where macOS keeps `/etc` and `/var`) written as `/etc` and `/var`."""
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    out = ("/" if text.startswith("/") else "") + "/".join(parts)
+    if text.endswith("/") and parts:
+        out += "/"
+    if out.startswith(("/private/etc/", "/private/var/")) or out in (
+        "/private/etc",
+        "/private/var",
+    ):
+        out = out[len("/private") :]
+    return out
+
+
+def _as_pathlib(text: str) -> str:
+    """A path as `pathlib` holds it: no trailing `/`, no empty or `.` parts (`Path("a//./b/")` is `a/b`)."""
+    lead = (
+        "//"
+        if text.startswith("//") and not text.startswith("///")
+        else text[:1]
+        if text[:1] == "/"
+        else ""
+    )
+    rest = "/".join(p for p in text.split("/") if p not in ("", "."))
+    return (lead + rest) or "."
+
+
+def _fold(name: str) -> str:
+    """A name as a case-insensitive file system may match it (`AGENTſ.md` opens `AGENTS.md`)."""
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
 def _allowed_path(start: str | None, end: str | None) -> bool:
     """A write target whose known start (`start`), known end (`end`) or whole path (both, the same) passes:
-    no dot-directory or dotfile, other than the folders data files may go in (`_DATA_DOT_DIRS`), and no denied
-    name. `end` alone may
-    begin inside a name."""
+    no dot-directory or dotfile, other than the folders data files may go in (`_DATA_DOT_DIRS`), nothing under
+    `/etc`, and no denied name. `end` alone may begin inside a name."""
     text = start if start is not None else end or ""
-    text = _mask_data_dirs(text)
+    text = _mask_data_dirs(_squash(text) if start is not None else text)
     parts = text.split("/")
     if end is not None and start is None and not text.startswith("/"):
         name_known = len(parts) > 1
@@ -534,12 +570,12 @@ def _allowed_path(start: str | None, end: str | None) -> bool:
         name_known = True
     if any(p.startswith(".") and p not in (".", "..") for p in parts):
         return False
-    if start is not None and text.startswith("/etc/"):
+    if start is not None and (text.startswith("/etc/") or text == "/etc"):
         return False  # system configuration
     if start is not None and end is None:
         return True  # a start alone: the name is checked from the end
-    name = (parts[-1] if parts else "").lower()
-    tail = (end or "").rsplit("/", 1)[-1].lower()
+    name = _fold(parts[-1] if parts else "")
+    tail = _fold((end or "").rsplit("/", 1)[-1])
     if not name_known:
         # `D + k + "_rows.json"`: the name ends with the tail; it must not be able to end as a denied one
         if tail.startswith(".") or any(d.endswith(tail) for d in _DENIED_NAMES):
@@ -552,7 +588,24 @@ def _allowed_path(start: str | None, end: str | None) -> bool:
 
 def _plain_data_file(path: str) -> bool:
     """A path written out in full that names a data file (`_DATA_EXTENSIONS`) and climbs nowhere (`..`)."""
-    return path.lower().endswith(_DATA_EXTENSIONS) and ".." not in path.split("/")
+    return _fold(path).endswith(_DATA_EXTENSIONS) and ".." not in path.split("/")
+
+
+#: Where a `shutil` copy or move may put a file: the user's home or `/tmp`.
+_COPY_ROOTS = re.compile(r"(?:~|/home/[^/]+|/Users/[^/]+|/root)/|/tmp/")
+#: Folders a copied file may not land in anywhere: programs are run or imported from them.
+_COPY_REFUSED_FOLDERS = frozenset({"bin", "sbin", "site-packages", "dist-packages", "node_modules"})
+
+
+def _copy_destination(path: str) -> bool:
+    """A `shutil` destination written out in full: under the user's home or `/tmp` (not `/usr`, `/opt`,
+    `/Library`, `/System`, `/private`, `/etc` or `/var`), with no `..` and no folder programs are run or imported
+    from (`_COPY_REFUSED_FOLDERS`)."""
+    text = _squash(path)
+    parts = text.split("/")
+    if ".." in parts or not _COPY_ROOTS.match(text):
+        return False
+    return not any(_fold(p) in _COPY_REFUSED_FOLDERS for p in parts)
 
 
 def _hosts_of(values: list[tuple[str, bool]] | None) -> set[str] | None:
@@ -716,7 +769,13 @@ class _Reader:
         #: What the path reading worked out for each name (`_per_name`), and the names it is working on.
         self._path_memo: dict[tuple[str, str], object] = {}
         self._path_busy: set[tuple[str, str]] = set()
+        #: Names this reading tracks (loop targets, parameters) whose values it could not work out, and names
+        #: past `_MAX_VALUES`: a path may not start with one (`_misplaced`).
+        self.path_unknown: set[str] = set()
         self._collections: dict[str, ast.Dict | ast.List | ast.Tuple | ast.Set | None] = {}
+        self._collection_values: dict[
+            tuple[ast.AST, str, int | None, int], list[ast.expr] | None
+        ] = {}
         #: Names bound to a restricted module, with the attributes allowed through them.
         self.restricted: dict[str, set[str]] = {}
         #: Names bound to a followed client module, and functions imported from one (alias → name).
@@ -871,14 +930,15 @@ class _Reader:
                     values = None if by_param is None else by_param.get(b.node.arg)
                 if values is None:
                     out.append(None)
+                    self.path_unknown.add(name)
                 else:
                     out.extend(values)
             self.path_bindings[name] = out
         for name, binds in self.path_bindings.items():
             if len(binds) > _MAX_VALUES:
-                self.path_bindings[name] = [
-                    None
-                ]  # too many to follow (`for v in L` written many times)
+                # too many to follow (`for v in L` written many times)
+                self.path_bindings[name] = [None]
+                self.path_unknown.add(name)
 
     def _loop_values(self, target: ast.Name) -> list[ast.expr] | None:
         """The values a loop target takes when the loop runs over a literal collection (written in place, or a
@@ -901,6 +961,18 @@ class _Reader:
         coll = self._literal_collection(it)
         if coll is None:
             return None
+        key = (coll, selector, index, size)
+        if key not in self._collection_values:  # worked out once however many loops run over it
+            self._collection_values[key] = self._collection_items(coll, selector, index, size)
+        return self._collection_values[key]
+
+    def _collection_items(
+        self,
+        coll: ast.Dict | ast.List | ast.Tuple | ast.Set,
+        selector: str,
+        index: int | None,
+        size: int,
+    ) -> list[ast.expr] | None:
         if not all(_frozen(e) for e in _items_of(coll)):
             return None  # an item that is itself a list, dict or set can change after it is written
         items: list[ast.expr]
@@ -1206,8 +1278,10 @@ class _Reader:
         """A `shutil` file copy or move (`copy`, `copy2`, `copyfile`, `move`) is followed when both paths are
         written out in full (`_exact_paths`: no part computed) and every value they can take passes: the source
         is a data file (`_DATA_EXTENSIONS`) and the destination is one too, or (but for `copyfile`) a folder written
-        with a trailing `/`, where the file keeps its name; each passes `_allowed_path` and has no `..`. Folder
-        copies and removals (`copytree`, `rmtree`) are not followed: what a folder holds is not known."""
+        as a string with a trailing `/`, where the file keeps its name; each passes `_allowed_path` and has no `..`,
+        and the destination is in the user's home or `/tmp` and nowhere programs are run or imported from
+        (`_copy_destination`). Folder copies and removals (`copytree`, `rmtree`) are not followed: what a folder
+        holds is not known."""
         if any(isinstance(a, ast.Starred) for a in node.args) or any(
             k.arg is None for k in node.keywords
         ):
@@ -1231,10 +1305,11 @@ class _Reader:
             if not (_plain_data_file(path) and _allowed_path(path, path)):
                 raise _Unfollowed
         for path in targets:
+            # Only a string keeps a trailing `/`: `Path("x.pth/")` is the file `x.pth` (`_as_pathlib`).
             into_folder = op != "copyfile" and path.endswith("/")
             if not (into_folder or _plain_data_file(path)) or not _allowed_path(path, path):
                 raise _Unfollowed
-            if ".." in path.split("/"):
+            if not _copy_destination(path):
                 raise _Unfollowed
 
     def _check_write(self, node: ast.Call, name: str | None) -> None:
@@ -1304,7 +1379,7 @@ class _Reader:
         exact = self._exact_paths(path)
         if exact is not None:
             return all(".." not in t.split("/") and _allowed_path(t, t) for t in exact)
-        if into_data_dir:
+        if into_data_dir or self._misplaced(path, True):
             return False
         prefixes = self._path_prefixes(path)
         suffixes = self._path_suffixes(path)
@@ -1329,6 +1404,47 @@ class _Reader:
             self._path_busy.discard(key)
         self._path_memo[key] = result
         return result
+
+    def _misplaced(self, expr: ast.expr, start: bool) -> bool:
+        """A name this reading tracks but could not work out (`path_unknown`) sits where it can set where the path
+        starts: first, or as any part of a `join` or `/` that comes first (an absolute part starts the path over).
+        Appended to a known start (`D + k + "_row.txt"`) it is a computed name, judged by the name rules."""
+        if isinstance(expr, ast.Name):
+            if expr.id in self.path_unknown:
+                return start
+            return self._per_name(
+                "misplaced" if start else "appended",
+                expr.id,
+                lambda: any(
+                    self._misplaced(b, start)
+                    for b in self.path_bindings.get(expr.id) or []
+                    if isinstance(b, ast.expr)
+                ),
+                True,
+            )
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            return self._misplaced(expr.left, start) or self._misplaced(expr.right, False)
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+            return self._misplaced(expr.left, start) or self._misplaced(expr.right, start)
+        if isinstance(expr, ast.JoinedStr):
+            return any(
+                self._misplaced(
+                    v.value if isinstance(v, ast.FormattedValue) else v, start and i == 0
+                )
+                for i, v in enumerate(expr.values)
+            )
+        if isinstance(expr, ast.Call) and _call_name(expr.func) in (
+            "Path",
+            "PurePath",
+            "join",
+            "expanduser",
+            "abspath",
+            "normpath",
+        ):
+            return any(self._misplaced(a, start) for a in expr.args)
+        if not start:
+            return False
+        return any(self._misplaced(n, True) for n in ast.walk(expr) if isinstance(n, ast.Name))
 
     def _binds_of(self, name: str) -> list[ast.expr] | None:
         """The path bindings of `name`, or None when one of them is not followed (or there are none)."""
@@ -1393,7 +1509,7 @@ class _Reader:
                 return None
             if isinstance(expr.op, ast.Add):
                 return [a + b for a in left for b in right]
-            return [posixpath.join(a, b) for a in left for b in right]
+            return [_as_pathlib(posixpath.join(a, b)) for a in left for b in right]
         if (
             isinstance(expr, ast.Call)
             and expr.args
@@ -1411,6 +1527,8 @@ class _Reader:
                 if got is None or len(out) * len(got) > _MAX_VALUES:
                     return None
                 out = [posixpath.join(a, b) if a else b for a in out for b in got]
+            if fn is not posixpath.join and fn is not posixpath.expanduser:
+                out = [_as_pathlib(t) for t in out]  # `Path("x.pth/")` is the file `x.pth`
             return out
         return None
 
@@ -1511,11 +1629,17 @@ class _Reader:
         if binds is None:
             return None
         out: list[str] = []
+        seen: set[str] = set()
         for b in binds:
             got = ends(b)
             if got is None:
                 return None
-            out.extend(got)
+            for t in got:
+                if t not in seen:
+                    seen.add(t)
+                    out.append(t)
+            if len(out) > _MAX_VALUES:
+                raise _Unfollowed  # too many to follow; doubling at every name would not end
         return out or None
 
     def _outside_import_path(self, path: ast.expr) -> bool:

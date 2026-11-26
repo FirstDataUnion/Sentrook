@@ -444,6 +444,84 @@ FIRES = {
             "a computed cache name": "'/home/me/.hermes/cache/' + input() + '.md'",
         }.items()
     },
+    # a Path drops a trailing `/`: the destination is a file of that name, not a folder
+    **{
+        f"copy to {dst}": f"import shutil\nfrom pathlib import Path, PurePath\nshutil.{op}({_D}, {dst})"
+        for op, dst in (
+            ("copy", "Path('/home/me/proj/conftest.py/')"),
+            ("copy", "Path('/home/me/proj') / 'sitecustomize.py/'"),
+            ("copy", "Path('/opt/homebrew/lib/python3.12/site-packages/evil.pth/')"),
+            ("move", "Path('/home/me/proj/Makefile/')"),
+            ("copy2", "PurePath('/home/me/proj/run.sh/')"),
+            ("copy", "Path('/home/me/proj//Makefile/./')"),
+        )
+    },
+    "copy to a Path from a loop": (
+        "import shutil\nfrom pathlib import Path\nfor d in ['/home/me/proj/Makefile/']:\n"
+        f"    shutil.copy({_D}, Path(d))"
+    ),
+    "copy to a Path from a helper": (
+        "import shutil\nfrom pathlib import Path\ndef cp(d):\n"
+        f"    shutil.copy({_D}, Path(d))\ncp('/home/me/proj/Makefile/')"
+    ),
+    # where a copy may land: the user's home or /tmp, nowhere programs run or are imported from
+    **{
+        f"copy into {dst}": f"import shutil\nshutil.copy('/home/me/docs/run.txt', '{dst}')"
+        for dst in (
+            "/usr/local/bin/",
+            "/opt/tools/a.md",
+            "/Library/x/a.md",
+            "/System/x/a.md",
+            "/private/tmp/a.md",
+            "/var/tmp/a.md",
+            "/etc/docker/",
+            "//etc/docker/",
+            "/tmp/../etc/a.md",
+            "/home/me/bin/",
+            "/home/me/.local/bin/a.md",
+            "/home/me/lib/site-packages/a.md",
+            "/home/me/proj/node_modules/x/a.md",
+            "out/a.md",
+        )
+    },
+    # a name the reading tracks but cannot work out may not start a path
+    "a loop over too many folders": (
+        "D = ["
+        + ", ".join(f"'/home/me/docs/d{i}/'" for i in range(64))
+        + ", '/home/me/.hermes/cron/']\n"
+        f"for d in D:\n    open(d + 'notes.json', 'w').write({_CURL})"
+    ),
+    "a parameter of a helper never called": (
+        f"def f(d):\n    open(d + 'notes.json', 'w').write({_CURL})"
+    ),
+    "a loop over a collection that escapes": (
+        "import json\nD = ['/home/me/.ssh/']\nprint(json.dumps(D))\n"
+        f"for d in D:\n    open(d + 'notes.json', 'w').write({_CURL})"
+    ),
+    **{
+        f"an unknown loop target in {how}": (
+            "import json, os\nfrom pathlib import Path\nV = '/home/me/docs/'\nD = ['/home/me/.ssh/']\n"
+            f"print(json.dumps(D))\nfor d in D:\n    open({path}, 'w').write({_CURL})"
+        )
+        for how, path in {
+            "an f-string": "f'{d}notes.json'",
+            "str()": "str(d) + 'notes.json'",
+            "a join": "os.path.join(V, d, 'notes.json')",
+            "a Path": "Path(V) / d / 'notes.json'",
+        }.items()
+    },
+    # system folders however they are spelled
+    "a doubled slash before etc": "open('//etc/docker/daemon.json', 'w').write('{}')",
+    "a dot part before etc": "open('/./etc/docker/daemon.json', 'w').write('{}')",
+    "etc under private": "open('/private/etc/docker/daemon.json', 'w').write('{}')",
+    # denied names however they are spelled
+    "a long s in a denied name": "open('/home/me/proj/AGENT\u017f.md', 'w').write('x')",
+    "a long s in a denied word": "open('/home/me/proj/\u017fettings.json', 'w').write('x')",
+    "full-width letters in a denied name": (
+        "open('/home/me/proj/\uff21\uff27\uff25\uff2e\uff34\uff33.md', 'w').write('x')"
+    ),
+    "scheduled jobs": "open('/home/me/work/cron/jobs.json', 'w').write('[]')",
+    "an OpenClaw config": "open('/home/me/work/openclaw.json', 'w').write('{}')",
     # Hermes's own folders and files
     "skills": "open('/home/me/.hermes/skills/x/notes.md', 'w').write('x')",
     "skills under ~": "open('~/.hermes/skills/x/notes.md', 'w').write('x')",
@@ -539,6 +617,37 @@ GROWTH = {
     # one helper called many times with a few dozen names
     "helper calls": "wr('n{j}.md', 'x')\n",
 }
+
+
+def _big_list(d: int) -> str:
+    n = 50_000 // d
+    return (
+        "L = [" + ", ".join("1" for _ in range(n)) + "]\n" + "for v in L:\n    0\n" * (7_600 // d)
+    )
+
+
+def _big_dict(d: int) -> str:
+    n = 10_000 // d
+    items = ", ".join(f"'k{i}': 'v'" for i in range(n))
+    return "D = {" + items + "}\n" + "for k, v in D.items():\n    0\n" * (5_000 // d)
+
+
+def _chain(d: int) -> str:
+    """Each name bound twice from the one before: a reading that follows every binding doubles per name."""
+    n = 1_200 // d
+    lines = ["b0 = '/home/me/docs/'"]
+    for i in range(1, n):
+        lines += [f"b{i} = b{i - 1} + 'a'", f"b{i} = b{i - 1} + 'b'"]
+    return "\n".join(lines) + f"\nopen(b{n - 1} + 'x.json', 'w').write('x')\n"
+
+
+@pytest.mark.parametrize(
+    "make", [_big_list, _big_dict, _chain], ids=["big list", "big dict", "doubling chain"]
+)
+def test_large_collections_and_chains_read_linearly(make):
+    texts = {d: make(d) for d in (1, FACTOR)}
+    _, large = assert_linear(lambda d: python_reach.__wrapped__(texts[d]), make.__name__)
+    assert large < 4.0
 
 
 @pytest.mark.parametrize("unit", GROWTH.values(), ids=GROWTH.keys())
