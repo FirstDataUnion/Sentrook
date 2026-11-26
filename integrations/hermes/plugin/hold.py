@@ -76,6 +76,10 @@ job delivers to the home channel. The child process gets no `HERMES_CRON_AUTO_DE
 other place Hermes looks for that target. It is pinned to this process's Hermes home, so a profile made sticky with
 `hermes profile use` cannot change where the notice goes; a turn this process serves for another profile's home is
 not sent with it (`send_route`).
+
+A notice to one chat that `hermes send` could not resolve (Hermes reaches some platforms' chats only once its channel
+directory lists them) is kept and tried again in the background for up to 10 minutes, then sent to the platform's
+home channel when it has one (`notice_retry`).
 """
 
 from __future__ import annotations
@@ -96,7 +100,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import grants, passes
+from . import grants, notice_retry, passes
 from .decision import BLOCK_CATEGORIES, block_category, describe
 from .store import Store, file_lock, read_time
 
@@ -1585,8 +1589,9 @@ def _send(
     text: str,
     on_fail: Callable[[], None] | None = None,
     on_ok: Callable[[], None] | None = None,
+    state_dir: Path | None = None,
 ) -> None:
-    delivered, said = False, "no way to send it from this process"
+    delivered, said, kept = False, "no way to send it from this process", False
     try:
         if route == HERMES_SEND:
             delivered, said = _with_hermes_send(platform, defuse(text))
@@ -1599,6 +1604,13 @@ def _send(
                 route or "no route",
                 _unnamed(said, platform),
             )
+            if (
+                route == HERMES_SEND
+                and state_dir is not None
+                and notice_retry.retryable(platform, said)
+            ):
+                # A kept notice still counts as sent: `on_fail` runs only if its last try fails too.
+                kept = notice_retry.keep(state_dir, platform, text, on_fail)
     except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
         logger.warning(
             "sentrook hold notice to %s failed with %s: %s",
@@ -1606,7 +1618,7 @@ def _send(
             route,
             _unnamed(str(exc), platform),
         )
-    if not delivered and on_fail is not None:
+    if not delivered and not kept and on_fail is not None:
         try:
             on_fail()
         except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
@@ -1624,10 +1636,14 @@ def deliver(
     text: str,
     on_fail: Callable[[], None] | None = None,
     on_ok: Callable[[], None] | None = None,
+    state_dir: Path | None = None,
 ) -> None:
     """Sends `text` to `platform` (a home channel, or one chat as `notice_target` gives it) from a worker thread with an empty context, with `hermes send` or
     the send_message tool as `send_route` chooses for the current turn (see the module note). The thread is not a daemon, so a `hermes cron run` process waits
-    for it. `on_fail` runs on that thread when the notice was not delivered, `on_ok` when it was."""
+    for it. `on_fail` runs on that thread when the notice was not delivered, `on_ok` when it was. With `state_dir`, a notice to one chat that `hermes send`
+    could not resolve is also kept and tried again (`notice_retry`), and notices kept earlier are looked at."""
+    if state_dir is not None:
+        notice_retry.resume(state_dir)
     _threads[:] = [t for t in _threads if t.is_alive()]
     t = threading.Thread(
         target=contextvars.Context().run,
@@ -1640,6 +1656,7 @@ def deliver(
             text,
             on_fail,
             on_ok,
+            state_dir,
         ),
         name="sentrook-hold-notice",
         daemon=False,
