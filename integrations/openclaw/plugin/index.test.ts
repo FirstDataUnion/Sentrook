@@ -9,6 +9,7 @@ import { ERROR_TITLE } from "./card.ts";
 import { runSentrookCommand } from "./commands.ts";
 import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
 import { execPolicy } from "./planir.ts";
+import { invalidEndpointEffect } from "./scanErrorPolicy.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -302,7 +303,28 @@ test("an endpoint outside the trusted domain fails closed without contacting it"
   const r = await h.fire("before_tool_call", call("c1", "ls"), { ...CTX, requester: undefined });
   assert.ok(r.requireApproval || r.block);
   assert.equal(h.scans.length, 0);
-  assert.ok(h.logs.some((l) => l.includes("endpoint configuration is invalid")));
+  assert.ok(
+    h.logs.some((l) =>
+      l.includes(
+        "endpoint configuration is invalid; every tool call will be held for review, or blocked on unattended runs, " +
+          "until this is fixed",
+      ),
+    ),
+  );
+});
+
+test("the invalid-endpoint log says what happens to tool calls in each mode (same words as Hermes)", () => {
+  assert.equal(
+    invalidEndpointEffect("enforce", "review"),
+    "every tool call will be held for review, or blocked on unattended runs, until this is fixed",
+  );
+  assert.equal(invalidEndpointEffect("enforce", "deny"), "every tool call will be blocked until this is fixed");
+  // A configuration error is never let through, even with onScanError=allow.
+  assert.equal(invalidEndpointEffect("enforce", "allow"), "every tool call will be blocked until this is fixed");
+  assert.equal(
+    invalidEndpointEffect("observe", "review"),
+    "no tool call is scanned until this is fixed (observe mode: nothing is blocked)",
+  );
 });
 
 test("unattended runs block on scan errors", async () => {

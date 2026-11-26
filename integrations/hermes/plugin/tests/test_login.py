@@ -16,6 +16,11 @@ FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
+CONSENT = json.loads(
+    (Path(__file__).resolve().parents[3] / "fixtures" / "consent" / "cases.json").read_text(
+        encoding="utf-8"
+    )
+)["rendered"]["hermes"]
 ISSUER = FIXTURE["issuer"]
 
 
@@ -73,6 +78,9 @@ def _expected_output(case):
             lines.append(login.RESTART_LINE)
         elif line == "{verify}":
             lines.append(FIXTURE["verify_report"])
+        elif line == "{signed_in}":
+            dated = case["expect"].get("terms") == "dated"
+            lines.extend(CONSENT["signed_in_dated" if dated else "signed_in"])
         else:
             lines.append(line.replace("{cmd}", "hermes").replace("{where}", "in Hermes"))
     return lines

@@ -70,6 +70,14 @@ JEV_CONSECUTIVE_FAILURES = Gauge(
     "Jev calls failed since the last success",
     registry=REGISTRY,
 )
+JEV_CALLS = PromCounter(
+    "sentrook_jev_calls_total",
+    "Jev calls by route (primary, secondary) and outcome: ok, provider_rejected (a 4xx other than 429: the key, "
+    "credit or account was refused), rate_limited (429), outage (5xx, timeout, connection error), context_limit, "
+    "invalid (not the typed answer asked for). One per call, after the route's own retries",
+    ["route", "outcome"],
+    registry=REGISTRY,
+)
 JEV_KEY_CONFIGURED = Gauge(
     "sentrook_jev_key_configured", "1 when a Jev API key is configured, else 0", registry=REGISTRY
 )
@@ -101,6 +109,17 @@ def record_jev(snapshot: dict[str, Any], *, key_configured: bool) -> None:
     JEV_FAILING.set(1 if snapshot.get("state") == "failing" else 0)
     JEV_CONSECUTIVE_FAILURES.set(snapshot.get("consecutive_failures") or 0)
     JEV_KEY_CONFIGURED.set(1 if key_configured else 0)
+
+
+def record_jev_call(route: str, outcome: str) -> None:
+    JEV_CALLS.labels(route=route, outcome=outcome).inc()
+
+
+def init_jev_calls(routes: tuple[str, ...], outcomes: tuple[str, ...]) -> None:
+    """Export every route and outcome at 0 from startup, so a rate over the first failures is not lost."""
+    for route in routes:
+        for outcome in outcomes:
+            JEV_CALLS.labels(route=route, outcome=outcome)
 
 
 def exposition() -> bytes:

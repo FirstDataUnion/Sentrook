@@ -43,10 +43,13 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A background-save notice.** {{background_saves}}
 - **A scan failure.** When the scan service cannot answer, the owner is asked whether to run the call unscanned where
   someone is there to answer; on an unattended run the call is blocked and the owner gets one notice. This is a
-  service problem, not a security block.
+  service problem, not a security block. If the owner withdrew consent on the FIDU portal, Sentrook cannot scan until
+  they run `{{cli login}}` again; they get one notice about it. Do not run that command yourself.
 
 Grants and channel bindings tell Sentrook what is routine (a host the agent always sends to, a folder it works in, the
-channel a daily report goes to). They never lower Sentrook's floors: reading secrets and sending them somewhere is
+channel a daily report goes to). The owner sets them, with `{{cmd setup}} apply`, `{{cmd grant}}` and `{{cmd bind}}`,
+or by {{always_answer}}; Sentrook does not add or widen them by itself, and approving the same kind of call again and
+again changes nothing unless the owner sets a grant for it. They never lower Sentrook's floors: reading secrets and sending them somewhere is
 still blocked whatever is granted.
 
 ## The owner's commands

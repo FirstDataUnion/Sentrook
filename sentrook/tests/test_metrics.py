@@ -83,7 +83,16 @@ def test_no_request_content_or_caller_identity_in_series(attack_case):
         srv.stop()
     assert API_KEY not in text and "203.0.113.9" not in text and "127.0.0.1" not in text
     labels = set(re.findall(r"(\w+)=\"", text))
-    assert labels <= {"method", "endpoint", "status", "enforced", "step", "le"}
+    assert labels <= {
+        "method",
+        "endpoint",
+        "status",
+        "enforced",
+        "step",
+        "le",
+        "route",
+        "outcome",
+    }
 
 
 def test_request_latency_buckets_reach_the_proxy_timeout():

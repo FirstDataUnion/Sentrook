@@ -2,8 +2,8 @@
 
 Every case in `fixtures/approval_loosening_probes.json` carries its expected tier (`block`,
 `review` or `quiet`), so a later rewrite of the detector cannot move one silently. The large
-inputs below are built in code; for each, the floor's own analysis must stay well under a
-second whatever the rest of the scan costs.
+inputs below are built in code; for each, the floor's own analysis must stay under a second
+whatever the rest of the scan costs, or, on a slow machine, grow linearly with the input.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from linear_time import FACTOR, assert_fast_or_linear
 from test_aira_detectors import ex, floor_reasons, planir, run
 
 from sentrook.aira import detectors
@@ -113,85 +114,105 @@ def _hw(path: str, content: str) -> dict:
     return build("hw", [path, content], {})
 
 
-LARGE: list[tuple[str, Callable[[], dict], str]] = [
+#: Each input built at 1/d of its size, for the growth check.
+LARGE: list[tuple[str, Callable[[int], dict], str]] = [
     (
         "big json",
-        lambda: _ow(
+        lambda d: _ow(
             OC,
             "{"
-            + ",".join(f'"k{i}":{{"a":1}}' for i in range(20000))
+            + ",".join(f'"k{i}":{{"a":1}}' for i in range(20000 // d))
             + ',"tools":{"exec":{"security":"full"}}}',
         ),
         "block",
     ),
-    ("many yaml", lambda: _hw(HC, "approvals:\n" + "  mode: off\n" * 3000), "block"),
+    ("many yaml", lambda d: _hw(HC, "approvals:\n" + "  mode: off\n" * (3000 // d)), "block"),
     (
         "list of exec objects",
-        lambda: _ow(OC, "[" + ",".join(['{"x":{"ask":"off"}}'] * 4000) + "]"),
+        lambda d: _ow(OC, "[" + ",".join(['{"x":{"ask":"off"}}'] * (4000 // d)) + "]"),
         "quiet",
     ),
-    ("code assignment spaces", lambda: ex('python3 -c "x=a' + " " * 20000 + 'b"'), "quiet"),
-    ("execute_code assignment spaces", lambda: _xc("x = 1" + " " * 20000 + "#\n"), "quiet"),
+    (
+        "code assignment spaces",
+        lambda d: ex('python3 -c "x=a' + " " * (20000 // d) + 'b"'),
+        "quiet",
+    ),
+    (
+        "execute_code assignment spaces",
+        lambda d: _xc("x = 1" + " " * (20000 // d) + "#\n"),
+        "quiet",
+    ),
     (
         "unclosed allowlist lists",
-        lambda: _ow("~/.openclaw/x.json", "allowlist: [" * 30000),
+        lambda d: _ow("~/.openclaw/x.json", "allowlist: [" * (30000 // d)),
         "quiet",
     ),
-    ("deep exec keys", lambda: _ow(OC, "{exec:" * 5000 + '"mode":"full",' * 5000), "block"),
-    ("deep json list", lambda: _ow(OC, "[" * 200000), "quiet"),
-    ("deep json object", lambda: _ow(OC, '{"a":' * 100000), "quiet"),
-    ("binary-ish", lambda: _ow(OC, bytes(range(256)).decode("latin-1") * 200), "quiet"),
+    (
+        "deep exec keys",
+        lambda d: _ow(OC, "{exec:" * (5000 // d) + '"mode":"full",' * (5000 // d)),
+        "block",
+    ),
+    ("deep json list", lambda d: _ow(OC, "[" * (200000 // d)), "quiet"),
+    ("deep json object", lambda d: _ow(OC, '{"a":' * (100000 // d)), "quiet"),
+    ("binary-ish", lambda d: _ow(OC, bytes(range(256)).decode("latin-1") * (200 // d)), "quiet"),
     (
         "yaml 50k lines",
-        lambda: _hw(HC, "".join(f"k{i}:\n  mode: off\n" for i in range(50000))),
+        lambda d: _hw(HC, "".join(f"k{i}:\n  mode: off\n" for i in range(50000 // d))),
         "quiet",
     ),
     (
         "yaml deep indent",
-        lambda: _hw(
-            HC, "".join(" " * i + f"k{i}:\n" for i in range(3000)) + " " * 3000 + "mode: off\n"
+        lambda d: _hw(
+            HC,
+            "".join(" " * i + f"k{i}:\n" for i in range(3000 // d))
+            + " " * (3000 // d)
+            + "mode: off\n",
         ),
         "quiet",
     ),
     (
         "many cd",
-        lambda: ex("; ".join(['cd ~/.openclaw && echo \'{"ask":"off"}\' > a.json'] * 2000)),
+        lambda d: ex(
+            "; ".join(['cd ~/.openclaw && echo \'{"ask":"off"}\' > a.json'] * (2000 // d))
+        ),
         "quiet",
     ),
     (
         "heredoc to config",
-        lambda: ex("cat > ~/.openclaw/openclaw.json <<'EOF'\n" + '{"k":"v"},\n' * 50000 + "EOF"),
+        lambda d: ex(
+            "cat > ~/.openclaw/openclaw.json <<'EOF'\n" + '{"k":"v"},\n' * (50000 // d) + "EOF"
+        ),
         "quiet",
     ),
     (
         "heredoc to scratch",
-        lambda: ex(
+        lambda d: ex(
             "cat > /tmp/x.json <<'EOF'\n"
-            + 'mode: full ask: off s/a/b/ open(x,"w")\n' * 20000
+            + 'mode: full ask: off s/a/b/ open(x,"w")\n' * (20000 // d)
             + "EOF"
         ),
         "quiet",
     ),
-    ("many open calls", lambda: _xc("open(" * 20000), "quiet"),
-    ("many nested open calls", lambda: _xc("open(a(" * 5000 + "))"), "quiet"),
+    ("many open calls", lambda d: _xc("open(" * (20000 // d)), "quiet"),
+    ("many nested open calls", lambda d: _xc("open(a(" * (5000 // d) + "))"), "quiet"),
     (
         "sed many substitutions",
-        lambda: ex("sed -i " + " s@a" * 20000 + " ~/.openclaw/openclaw.json"),
+        lambda d: ex("sed -i " + " s@a" * (20000 // d) + " ~/.openclaw/openclaw.json"),
         "quiet",
     ),
     (
         "perl many substitutions",
-        lambda: ex("perl -pi -e '" + "s/x/" * 20000 + "' ~/.openclaw/openclaw.json"),
+        lambda d: ex("perl -pi -e '" + "s/x/" * (20000 // d) + "' ~/.openclaw/openclaw.json"),
         "quiet",
     ),
     (
         "huge patch",
-        lambda: planir(
+        lambda d: planir(
             "apply_patch",
             "file_edit",
             {
                 "input": "*** Begin Patch\n*** Update File: /home/me/.openclaw/openclaw.json\n"
-                + '+  "mode": "full",\n' * 30000
+                + '+  "mode": "full",\n' * (30000 // d)
                 + "*** End Patch"
             },
         ),
@@ -199,10 +220,13 @@ LARGE: list[tuple[str, Callable[[], dict], str]] = [
     ),
     (
         "many edits",
-        lambda: planir(
+        lambda d: planir(
             "edit",
             "file_edit",
-            {"path": OC, "edits": [{"oldText": '"ask":"on"', "newText": '"ask":"off"'}] * 3000},
+            {
+                "path": OC,
+                "edits": [{"oldText": '"ask":"on"', "newText": '"ask":"off"'}] * (3000 // d),
+            },
         ),
         "block",
     ),
@@ -222,8 +246,11 @@ def test_large_input_keeps_its_tier_and_the_floor_stays_fast(name, make, expect,
             spent[0] += time.perf_counter() - start
 
     monkeypatch.setattr(detectors, "_approval_loosening", timed)
-    assert tier(make()) == expect
-    assert spent[0] < 1.0, f"{name}: {spent[0]:.2f}s"
+    assert tier(make(1)) == expect
+    # Over the bound on a slow runner, the time must grow linearly (a quarter of the input, a quarter
+    # of the time): the regression this guards against is super-linear work, not a slow machine.
+    raws = {d: make(d) for d in (1, FACTOR)}
+    assert_fast_or_linear(spent[0], 1.0, lambda d: tier(raws[d]), name)
 
 
 # --------------------------------------------------------------------------- backtracking

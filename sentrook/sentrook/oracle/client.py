@@ -16,6 +16,13 @@ Three implementations:
 - `NullOracle`: answers `unknown` for everything and reports itself unavailable, so a live `/scan`
   without a Rookery degrades safely (lower coverage) instead of inventing verdicts.
 - `HttpOracle`: `POST {base_url}/entities/lookup` with the same shapes, for when Rookery exists.
+
+The remote oracle is asked only about public names: hosts, packages, repositories, MCP servers, plugins,
+shared channels, and the mail domain of an email recipient. It never receives a person's contact details: an
+email recipient is sent as its mail domain alone, written `@domain` (`wire_query`), and a recipient without a
+mail domain (a phone number, a chat handle, a name) or a channel target that is a person (`user:` or `dm:`
+ids, a chat id carrying a phone number) is not sent at all and answers `unknown`. A recipient is still judged
+by its domain: a `known_bad` mail domain taints every address at it, as it always did.
 """
 
 from __future__ import annotations
@@ -255,6 +262,36 @@ class NullOracle:
         )
 
 
+#: A channel target that is a person, not a shared channel: a direct-message id, optionally behind a chat
+#: platform prefix (`user:<id>`, `dm:<id>`, `slack:user:<id>`).
+_PERSON_TARGET_RE = re.compile(r"(?i)^\s*(?:[a-z][a-z0-9_-]{1,20}:)?(?:user|dm):")
+
+
+def mail_domain(value: str) -> str | None:
+    """The domain of an email address, lower-cased; None for any value that is not one."""
+    local, at, domain = value.strip().rpartition("@")
+    domain = domain.strip().strip(".").lower()
+    if not at or not local or not domain or "." not in domain:
+        return None
+    return domain
+
+
+def wire_query(q: EntityQuery) -> EntityQuery | None:
+    """What the remote oracle is asked for `q`, or None when it is not asked at all.
+
+    An email recipient becomes its mail domain, `@domain` (the `@` keeps it apart from a handle; the oracle
+    matches it against the domain's verdict, so a `known_bad` domain still taints the address). Every other
+    recipient is a person's address or name and is not sent. A channel target that is a person (a direct
+    message, or a chat id with an `@`, which embeds a phone number) is not sent either. Other kinds go as
+    they are: they are public names."""
+    if q.kind == "recipient":
+        domain = mail_domain(q.value)
+        return None if domain is None else replace(q, value="@" + domain)
+    if q.kind == "channel" and ("@" in q.value or _PERSON_TARGET_RE.match(q.value)):
+        return None
+    return q
+
+
 class HttpOracle:
     """Rookery's oracle over HTTP. Wire shapes: request `{"entities": [{kind, value, roles}]}`, response
     `{"verdicts": [{kind, value, verdict, distrust?, tier?, observations?, match?, near_miss?,
@@ -269,8 +306,37 @@ class HttpOracle:
             headers["Authorization"] = f"Bearer {api_key}"
         self._http = httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_s)
 
+    @staticmethod
+    def _wire(
+        queries: list[EntityQuery],
+    ) -> tuple[dict[EntityQuery, EntityQuery], list[EntityQuery]]:
+        """Each query's wire form (absent when it is not sent) and the deduplicated request: queries that
+        share a wire value (two addresses at one domain) go once, with their roles merged."""
+        sent: dict[EntityQuery, EntityQuery] = {}
+        merged: dict[tuple[str, str], set[str]] = {}
+        for q in queries:
+            w = wire_query(q)
+            if w is None:
+                continue
+            sent[q] = w
+            merged.setdefault((w.kind, w.value), set()).update(w.roles)
+        request = [EntityQuery(k, v, tuple(sorted(roles))) for (k, v), roles in merged.items()]
+        return sent, request
+
     def lookup(self, queries: list[EntityQuery]) -> OracleResult:
-        r = self._http.post(LOOKUP_PATH, json={"entities": [q.to_wire() for q in queries]})
+        sent, request = self._wire(queries)
+        if not request:
+            return OracleResult(
+                verdicts={
+                    (q.kind, q.value): Verdict(
+                        kind=q.kind, value=q.value, source="library", match=Match.NONE
+                    )
+                    for q in queries
+                },
+                library_snapshot=None,
+                available=True,
+            )
+        r = self._http.post(LOOKUP_PATH, json={"entities": [q.to_wire() for q in request]})
         r.raise_for_status()
         data = r.json()
         out: dict[tuple[str, str], Verdict] = {}
@@ -309,7 +375,23 @@ class HttpOracle:
                 ),
             )
         for q in queries:
-            out.setdefault((q.kind, q.value), Verdict(kind=q.kind, value=q.value, source="library"))
+            w = sent.get(q)
+            if w is None:
+                # never sent: the oracle holds no contact details, so it has nothing to say
+                out[(q.kind, q.value)] = Verdict(
+                    kind=q.kind, value=q.value, source="library", match=Match.NONE
+                )
+            elif w != q:
+                answer = out.get((w.kind, w.value))
+                out[(q.kind, q.value)] = (
+                    replace(answer, value=q.value)
+                    if answer is not None
+                    else Verdict(kind=q.kind, value=q.value, source="library")
+                )
+            else:
+                out.setdefault(
+                    (q.kind, q.value), Verdict(kind=q.kind, value=q.value, source="library")
+                )
         return OracleResult(
             verdicts=out, library_snapshot=data.get("library_snapshot"), available=True
         )
