@@ -6,6 +6,10 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The local traffic log keeps records for 30 days. As it writes (at most once an hour), the plugin deletes older
+  records from `traffic.jsonl` and its rotated copy `traffic.jsonl.1`: a file holding only older records is deleted,
+  and one that holds both is rewritten without them. `/sentrook history`, `/sentrook why`, `/sentrook report` and the
+  dashboard show what is inside those 30 days.
 - `/sentrook dismiss <id>` (or `/sentrook dismiss all`) takes a held call off the waiting list without answering it,
   as if it had expired now. It works on any hold, including one that offers no answer (a run with no source, or a
   hold from an earlier version) and one you would rather not deny for 30 days. The call never runs and nothing is set:
@@ -341,6 +345,15 @@ since the version the catalog pins.
   it judged tainted carries one. The exposure scores alone no longer count, since almost any content scores a little,
   so the screen warned about nearly every proposal from the agent and left out reviews you approved in ordinary
   chats.
+
+- A Google Drive, Docs or Sheets file or folder id is no longer redacted as a secret where the call names Google.
+  Since a value that looks random under a key is redacted, an id in a Drive query (`parents='<id>'`) or in a script
+  that works on documents (`const PLAN = "<id>"` beside `documentId`, `textRun`, a Google API host or client library,
+  or a Drive or Docs tool such as `drive_files_list` or `docs_get`) became a placeholder: the scanner could not see
+  which document or folder the call reads or writes, and counted the id as a secret being sent. Such an id now stays
+  when its own text, or for a value in a call's arguments its own object, names Google. A value of that shape with
+  nothing naming Google, any value under a credential key, a key with a secret word in it (`SESSION_KEY`, `Authorization`,
+  `connect.sid`, `cookie`, `hmac`) or a custom `X-` header, and every other random value are redacted as before.
 
 ## 2.0.0-beta.17
 
