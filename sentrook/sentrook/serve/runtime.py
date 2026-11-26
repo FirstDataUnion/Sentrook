@@ -122,13 +122,14 @@ class ServeRuntime:
                 else tuple(p.value for p in ALL_PROBES),
                 default_packs=config.packs_default,
                 scanner_version=__version__,
+                context_limits=config.context_limits,
             )
         )
         return cls(config=config, scanner=scanner, jev_health=jev_health)
 
     def health_payload(self) -> dict:
         cfg = self.config
-        return {
+        payload = {
             "ok": True,
             "service": "sentrook-scan",
             "version": __version__,
@@ -164,3 +165,8 @@ class ServeRuntime:
             "convergence": self.scanner.config.params.name,
             "probes_enabled": list(self.scanner.config.probes_enabled),
         }
+        limits = self.scanner.config.context_limits
+        if not limits.unlimited:
+            # evaluation runs only (test mode): the limits the run's results were measured under
+            payload["context_limits"] = limits.label()
+        return payload

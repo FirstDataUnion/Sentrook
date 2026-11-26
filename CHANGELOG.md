@@ -1285,6 +1285,20 @@ Both plugins and the scanner's second pass took a `|` or a `$(` straight after a
 - Newly found: `open(os.path.expanduser(...), 'w')` and a pathlib path built with `/` operands, which the text match missed. The write markers gain `os.open`, `os.ftruncate`, `os.symlink`, `.truncate(`, `.chmod(`, `.touch(`, `FileIO(` and `fs.promises.*`. `guardrail.yaml` version 7.
 - Tests: block-tier and review-tier cases for each route, a relative write against its folder, a mention with no write (silent), and the existing read case.
 
+### Context limits for evaluation runs (2026-11-26)
+- `prepare.context_limits`: a scan request cut down on arrival as if the plugin had sent less, so an evaluation can
+  measure whether less context still works without a plugin release. Three limits: each new input (and each tool
+  result in a background save's conversation) cut to `SENTROOK_EVAL_INPUT_CAP_BYTES` with the plugins' own head and
+  tail cut; only the last `SENTROOK_EVAL_HISTORY_STEPS` history steps, leaving out tool results whose call falls
+  outside them as the plugins do; and with `SENTROOK_EVAL_SELF_EDIT_BODIES=drop`, a background save's user and
+  assistant messages without their text. The pending call's arguments are never cut.
+- Test mode only (refused otherwise, like probe ablation); a value that is not a whole number in range is refused,
+  never defaulted. Unset, the request is untouched, so production behaviour does not change. The health payload
+  names the limits a test-mode server runs with (`context_limits`), so a run's results record them.
+- A cut input is reported as a plugin's cut is: the scan is degraded (`input_truncated`), never an error.
+- Tests: `test_context_limits` (the cut matches the plugins', the history window keeps its results consistent, body
+  dropping keeps the conversation's shape, a limited scan sends the judge only what is left, an unlimited one is
+  unchanged, configuration is gated and validated).
 ### Entity oracle: mail domains only, never contact details; metadata-only service logs (2026-11-26)
 - `oracle.client.HttpOracle`: the remote oracle is asked about public names only. An email recipient is sent as its mail domain, written `@domain` (`wire_query`), never with its local part; addresses at one domain go once, their roles merged. A recipient without a mail domain (a phone number, a chat handle, a name) and a channel target that is a person (`user:` or `dm:` ids, with or without a platform prefix, and chat ids with an `@`, which carry a phone number) are not sent and answer `unknown`. A `known_bad` mail domain still taints every address at it. A library entry for one full address can no longer match. `SeedOracle` (test mode, nothing leaves the process) is unchanged.
 - `serve`: request logs (debug level) hold the method, the route (a known endpoint or `other`) and the status only: no client address and no raw request line, so no path or query. The stdlib's request-error lines no longer quote the request, and an unhandled handler error logs its exception type and the file and line it was raised at, not its message or the caller's address.

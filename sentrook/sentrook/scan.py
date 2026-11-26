@@ -30,6 +30,7 @@ from .jev.questions import QuestionSet, load_question_set
 from .oracle.client import NullOracle, OracleClient, SeedOracle
 from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
+from .prepare.context_limits import ContextLimits, apply_context_limits
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
 from .prepare.save_adds import UNREAD_SAVE, save_adds
@@ -114,6 +115,9 @@ class ScannerConfig:
     probes_enabled: tuple[str, ...] = tuple(p.value for p in ALL_PROBES)
     default_packs: tuple[str, ...] = ("tier1",)
     scanner_version: str = __version__
+    #: Evaluation only (test mode): each request is cut down to these limits on arrival, as if the plugin had sent
+    #: less (`prepare.context_limits`). The default limits nothing.
+    context_limits: ContextLimits = field(default_factory=ContextLimits)
     #: Extra probe factories keyed by step (AIRA is registered this way so the package can be absent).
     extra_probes: dict[ProbeStep, Callable[[Prepared, ScannerConfig], Probe]] = field(
         default_factory=dict
@@ -324,6 +328,7 @@ class Scanner:
         started = time.perf_counter()
         clock = options.clock if (options.deterministic and options.clock) else datetime.now(tz=UTC)
         salt = options.salt if options.deterministic else None
+        raw = apply_context_limits(raw, self.config.context_limits)
         try:
             prepared = prepare(
                 raw,
