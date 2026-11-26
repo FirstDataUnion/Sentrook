@@ -777,7 +777,19 @@ def test_inline_code_paths_are_found_as_the_regex_finds_them():
 
 @pytest.mark.parametrize(
     "unit",
-    ["sentrook/", "/sentrook ", "a/", "~/.hermes/plugins/sentrook/sentrook/", "'sentrook' ", "../"],
+    [
+        "sentrook/x/",
+        "x/sentrook/",
+        "sentrook/a/b/",
+        "sentrook/",
+        "/sentrook ",
+        "a/",
+        "~/.hermes/plugins/sentrook/sentrook/",
+        "sentrook/integrations/",
+        "Sentrook/",
+        "'sentrook' ",
+        "../",
+    ],
 )
 def test_inline_code_text_paths_are_read_in_linear_time(unit):
     from sentrook.aira.lists import load_lists
@@ -785,8 +797,8 @@ def test_inline_code_text_paths_are_read_in_linear_time(unit):
     lists = load_lists()
 
     def read(d: int) -> object:
-        text = "os.chdir(x)\n" + unit * (SIZE // len(unit) // d) + "sentrook"
-        return list(detectors._code_text_state_paths(text, lists, None))
+        text = "open('/tmp/o','w')\n" + unit * (SIZE // len(unit) // d) + "sentrook"
+        return list(detectors._code_text_state_paths(text, lists))
 
     start = time.perf_counter()
     read(1)

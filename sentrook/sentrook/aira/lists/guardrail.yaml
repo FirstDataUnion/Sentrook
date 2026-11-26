@@ -536,44 +536,38 @@ content_write_marker_patterns:
   - '\b(?:io\.)?FileIO\('
   - '\bfs\.promises\.\w+\('
 
-# Which paths in inline code's text count for the review floor above. Unlike a resolved write (the
-# block floor), a mention of Sentrook's own source tree (`sentrook/sentrook/jev/client.py`,
-# `deploy/sentrook-scan/`, a checkout under `~/projects/`) is not one: only Sentrook's state and
-# install folders are. Each run of path characters holding a `sentrook` component is normalised
-# (`a/../b` read as `b`) and counts when:
-# - the path up to that component, its last six components, matches a `location_patterns` entry
-#   (the plugins' state folders and the Hermes and OpenClaw plugin folders), or
+# Which paths in inline code's text count for the review floor above. The text tier fails closed:
+# any lowercase `sentrook` path component counts (`./sentrook/x`, `../plugins/sentrook`, a state
+# folder moved to `/srv/x/sentrook/`, a home name split across strings), except a mention of
+# Sentrook's own source tree. Each run of path characters holding `sentrook` is normalised
+# (`a/../b` read as `b`), then counts when:
+# - the path up to a `sentrook` component, its last six components, matches a `location_patterns`
+#   entry (the plugins' state folders, Hermes and OpenClaw profiles, the plugin and extension
+#   folders), in any case and whatever follows, or
 # - its last component is a `legacy_basenames` file, or
-# - it starts at the component, or at one of `relative_parent_segments` before it (`sentrook/x`,
-#   `../plugins/sentrook/x`, or a quoted `'sentrook'` path part), and the text names a host home
-#   (`home_patterns`) or changes folder (`chdir_patterns`): the folder it is relative to is not
-#   known, or
-# - it is the tail of a path joined at runtime, the same with a leading `/` (`d + '/sentrook/x'`,
-#   `f"{home}/sentrook"`).
-# In the last two cases the component must be lowercase and the next one must not be in
-# `source_tree_segments`; a run with nothing after the component counts only as a whole quoted
-# string, or right after an interpolation, so a slash command in prose (`/sentrook status`) does not.
-# A state folder set somewhere else (`stateDir`, `$OPENCLAW_STATE_DIR` with another path) is found
-# by the block floor's resolved writes, not here.
+# - it holds a lowercase `sentrook` component that is not a source-tree mention: the next component
+#   is not in `source_tree_segments` (the source repository's top-level folders and its Python
+#   project's folders: `<checkout>/sentrook/integrations/...`, `sentrook/sentrook/jev/client.py`),
+#   and the component before it is not `sentrook` (the inner one of `sentrook/sentrook`).
+# A run that ends at the component counts only as a whole quoted string or right after an
+# interpolation (`'./sentrook'`, `f"{home}/sentrook"`), so a slash command in prose
+# (`/sentrook status`) does not. A capitalised `Sentrook` counts only at a known location, so a
+# checkout at `~/projects/Sentrook/` or prose like `Sentrook/Hermes` does not.
 code_text_paths:
   location_patterns:
     - '(?:\A|/)\.hermes/(?:profiles/[^/]+/)?(?:plugins/)?sentrook\Z'
-    - '(?:\A|/)\.openclaw/(?:extensions/|plugins/)?sentrook\Z'
-    - '(?:\A|/)\$(?:HERMES_HOME|HERMES_STATE_DIR|OPENCLAW_STATE_DIR)/(?:plugins/|extensions/)?sentrook\Z'
-    - '\A/opt/data/(?:plugins/)?sentrook\Z'
-  home_patterns:
-    - '\.(?:hermes|openclaw)\b'
-    - '\b(?:HERMES_HOME|HERMES_STATE_DIR|OPENCLAW_STATE_DIR|OPENCLAW_HOME)\b'
-    - '/opt/data\b'
-  chdir_patterns:
-    - '\bf?chdir\b'
-    - '\bcwd\s*[=:]'
-    - '(?:\A|[\s;&|(''"`])(?:cd|pushd)\s'
-  relative_parent_segments:
-    - plugins
-    - extensions
+    - '(?:\A|/)\.openclaw(?:-[^/]+)?/(?:extensions/|plugins/)?sentrook\Z'
+    - '(?:\A|/)\$(?:HERMES_HOME|HERMES_STATE_DIR|OPENCLAW_STATE_DIR)/(?:profiles/[^/]+/)?(?:plugins/|extensions/)?sentrook\Z'
+    - '\A/opt/data/(?:profiles/[^/]+/)?(?:plugins/)?sentrook\Z'
   source_tree_segments:
     - sentrook
+    - tests
+    - integrations
+    - schema
+    - brand
+    - testnest
+    - .github
+    - .changeset
 
 # Calls in inline code that change the file their argument names (`arg`, 1-based) or, for a
 # `method`, the path they are called on (a `pathlib` path written in place only: a DataFrame or a

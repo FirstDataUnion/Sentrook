@@ -5051,28 +5051,15 @@ def _sentrook_runs(text: str) -> Iterator[tuple[int, int]]:
         pos = end
 
 
-def _code_text_state_paths(text: str, lists: Lists, cwd: str | None) -> Iterator[str]:
-    """The paths in inline code's text that name Sentrook's state or install folders, per
-    `guardrail.yaml: code_text_paths`; a mention of Sentrook's source tree is not one."""
+def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
+    """The paths in inline code's text that may name Sentrook's state or install folders, per
+    `guardrail.yaml: code_text_paths`: every lowercase `sentrook` path component unless the path is
+    a mention of Sentrook's source tree, and the known state and install folders in any case. Linear
+    in the text: each component is read with its neighbours and at most a few components before it."""
     key = ("guardrail", "code_text_paths")
     locations = lists.patterns(*key, "location_patterns")
-    parents = {s.lower() for s in lists.strings(*key, "relative_parent_segments")}
     source_tree = {s.lower() for s in lists.strings(*key, "source_tree_segments")}
     legacy = {s.lower() for s in lists.strings("guardrail", "legacy_basenames")}
-    folder: list[bool] = []
-
-    def folder_unknown() -> bool:
-        # Whether a relative path may sit under a host's home: the text (or the call's folder)
-        # names one, or the code changes folder.
-        if not folder:
-            homes = lists.patterns(*key, "home_patterns")
-            folder.append(
-                _found_any(homes, text)
-                or bool(cwd and _found_any(homes, cwd))
-                or _found_any(lists.patterns(*key, "chdir_patterns"), text)
-            )
-        return folder[0]
-
     for start, end in _sentrook_runs(text):
         run = text[start:end]
         norm = posixpath.normpath(run)
@@ -5089,11 +5076,13 @@ def _code_text_state_paths(text: str, lists: Lists, cwd: str | None) -> Iterator
             if _found_any(locations, prefix):
                 yield run
                 break
-            # A path relative to an unknown folder, or the tail of one joined at runtime.
-            if part != "sentrook" or (i + 1 < len(parts) and parts[i + 1].lower() in source_tree):
+            # Real state folders are lowercase; a capitalised one counts only at a known location.
+            if part != "sentrook":
                 continue
-            above = [p for p in parts[:i] if p != ".."]
-            if len(above) > 1 or (above and above[0].lower() not in parents):
+            # A source-tree mention: `<checkout>/sentrook/integrations/...`, `sentrook/sentrook/...`.
+            if i + 1 < len(parts) and parts[i + 1].lower() in source_tree:
+                continue
+            if i > 0 and parts[i - 1].lower() == "sentrook":
                 continue
             if i + 1 == len(parts):
                 # Nothing after it: only a whole quoted string, or the end of an interpolation, so a
@@ -5105,9 +5094,8 @@ def _code_text_state_paths(text: str, lists: Lists, cwd: str | None) -> Iterator
                     or (before == "}" and after in ("'", '"', "`"))
                 ):
                     continue
-            if absolute or folder_unknown():
-                yield run
-                break
+            yield run
+            break
 
 
 #: Guardrail reasons of the review tier: the owner is always asked, the floor never blocks.
@@ -5235,7 +5223,7 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 break
         markers = lists.patterns("guardrail", "content_write_marker_patterns")
         if not blocked and _match_any(markers, a.scan_text):
-            for path in _code_text_state_paths(a.scan_text, lists, a.cwd):
+            for path in _code_text_state_paths(a.scan_text, lists):
                 emit(
                     "guardrail.state_dir_write_review",
                     None,
