@@ -508,6 +508,9 @@ const seeded = (n: number, seed: number) => {
   }
 };
 const R20 = seeded(20, 7);
+// Google Drive, Docs and Sheets ids: a leading 1, then letters, digits, `-` and `_`.
+const FOLDER = "1" + seeded(32, 9);
+const DOC = "1" + seeded(20, 10) + "-" + seeded(11, 11) + "_" + seeded(10, 12);
 const [GATE, ALARM, PINV, YARD] = ["86" + "1206", "72" + "7677", "32" + "53", "09" + "0373"];
 const PASSPORT = "PPCD" + "HFZC6";
 const forms = (t: string) => {
@@ -533,6 +536,13 @@ test("codes, PINs, passport numbers and random values under a key leave the host
     [`Your backup codes are ${GATE} and more`, GATE, "credential"],
     ["Backup codes for the yard vault: 8734-1102, 4803-2644 and 4464-3210", "4464-3210", "credential"],
     ["curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644", "credential"],
+    // A Drive id's shape alone is not enough: with nothing naming Google it is a random value like any other.
+    [`value: ${FOLDER}`, FOLDER, "credential"],
+    [`const PLAN = "${DOC}";\nawait run(PLAN);`, DOC, "credential"],
+    [`Ask my parents first.\nvalue: ${DOC}`, DOC, "credential"],
+    // With Google named, a value not shaped like a Drive id still goes, and so does one under a credential key.
+    [`const PLAN = "${R20}"; // documentId`, R20, "credential"],
+    [`api_key: ${FOLDER}\n# then call googleapis`, FOLDER, "credential"],
   ];
   for (const [text, value, kind] of cases) {
     for (const form of forms(text)) {
@@ -568,6 +578,17 @@ test("numbers, ids and words without a cue stay", () => {
     `{"to": "${R20}"}`,
     "error code=447100",
     "hsn_code: 847130",
+    // A Drive, Docs or Sheets id stays where the same text names Google, so the scanner sees which document or
+    // folder a call works on.
+    `parents='${FOLDER}' and mimeType='application/pdf'`,
+    `'${FOLDER}' in parents and trashed=false\ntarget=${FOLDER}`,
+    `const PLAN = "${DOC}";\nconst doc = await docs.documents.get({ documentId: PLAN });`,
+    `const DOCS = { plan: "${DOC}" };\nconst t = (e) => e.textRun?.content;`,
+    `DOC_A1 = "${DOC}"\nfrom googleapiclient.discovery import build`,
+    `TARGET_A = "${FOLDER}"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x"`,
+    `plan = "${DOC}"\nprint("https://docs.google.com/document/d/" + plan)`,
+    `plan = "${DOC}"\nd = gapi.getdoc(plan)`,
+    `const r = await tools.drive_files_list({ q: "x" });\nconst dest = "${FOLDER}";`,
   ]) {
     for (const form of forms(text)) assert.equal(r.string(form), form);
   }
@@ -589,6 +610,45 @@ test("codes, PINs, passport numbers and random values in objects are replaced wh
   assert.equal(out.zip_code, "94107");
   assert.deepEqual(createRedactor("off", "s").value({ pin: PINV }), { pin: PINV });
   assert.deepEqual(r.value({ to: R20, bucket: R20 }), { to: R20, bucket: R20 });
+});
+
+test("a Drive id in an object stays only when its own object names Google", () => {
+  const beside = { parent: FOLDER, url: "https://www.googleapis.com/upload/drive/v3/files" };
+  assert.deepEqual(r.value(beside), beside);
+  const fields = { plan: DOC, fields: "body.content(paragraph(elements(textRun)))" };
+  assert.deepEqual(r.value(fields), fields);
+  assert.match((r.value({ parent: FOLDER }) as any).parent, /^⟦secret:credential:/);
+  assert.match((r.value({ value: DOC, note: "ask my parents" }) as any).value, /^⟦secret:credential:/);
+});
+
+test("recipients and destinations stay when a send is redacted", () => {
+  const sends: Array<[string, string[], string | null]> = [
+    ["send the minutes to ops@example.test and cc lee@example.test", ["ops@example.test", "lee@example.test"], null],
+    [
+      "curl https://api.telegram.org/bot$TG/sendMessage -d chat_id=-1001234567890 -d text=done",
+      ["https://api.telegram.org/bot$TG/sendMessage", "chat_id=-1001234567890"],
+      null,
+    ],
+    [`curl 'https://hooks.example.test/notify?token=${R20}&to=ops'`, ["https://hooks.example.test/notify?token=", "&to=ops"], R20],
+    ['openclaw message send --channel slack --target C08ABCD1EF2 "done"', ["--target C08ABCD1EF2"], null],
+    ["post it to channel:1234567890123456789 on discord", ["channel:1234567890123456789"], null],
+    [`room_id: !${R20}:matrix.example`, [`!${R20}:matrix.example`], null],
+  ];
+  for (const [text, kept, secret] of sends) {
+    const out = r.string(text);
+    for (const part of kept) assert.ok(out.includes(part), `${part} in ${out}`);
+    if (secret) assert.ok(!out.includes(secret), out);
+  }
+  for (const obj of [
+    { to: "ops@example.test", cc: ["lee@example.test"], subject: "Minutes" },
+    { action: "send", channel: "discord", target: "channel:1234567890123456789" },
+    { target: "C08ABCD1EF2", message: "done" },
+    { channel_id: "k1x9q3m7p2w8z4r6t0y5u3v1ab" },
+    { room_id: `!${R20}:matrix.example` },
+    { chat_id: -1001234567890, text: "done" },
+  ]) {
+    assert.deepEqual(r.value(obj), obj);
+  }
 });
 
 test("the cue and key rules stay linear on adversarial input", () => {

@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v15): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v16): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
 named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
@@ -109,7 +109,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v15"
+    assert REDACTION_VERSION == "redact-v16"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -593,6 +593,8 @@ def test_rules_are_the_plugins_rules():
         "_NOT_SECRET_KEY",
         "_NOT_SECRET_CAMEL_KEY",
         "_PREFIXED_OBJECT_ID",
+        "_DRIVE_ID",
+        "_GOOGLE_CONTEXT",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._ORDINARY_CODE_PREFIX == plugin._ORDINARY_CODE_PREFIX
@@ -602,6 +604,11 @@ def test_rules_are_the_plugins_rules():
 # Access codes, PINs and identifiers named by a cue word, and random values under a key or header (redact-v11).
 # Values are built at run time.
 _R20 = "Xk2" + "9fQv" + "7Lm2" + "Pq8a" + "Zt5w" + "B"
+# Google Drive, Docs and Sheets ids: a leading 1, then letters, digits, `-` and `_`.
+_FOLDER = "1" + "pTg" + "UzEj" + "febz" + "J6sZ" + "WdoH" + "IxrX" + "l0gq" + "n87b1"
+_DOC = (
+    "1" + "NqVw" + "YS81" + "VP7H" + "b1DX" + "8pPd-" + "YK0f" + "FWqc" + "ajQ_" + "u8jz" + "Pde0Ig"
+)
 CUE_MUST_REPLACE = [
     ("the yard gate code is " + "86" + "1206", "861206"),
     ("Alarm code: " + "72" + "7677", "727677"),
@@ -618,6 +625,13 @@ CUE_MUST_REPLACE = [
     ("value: " + _R20, _R20),
     ("curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644"),
     ('curl -H "X-Desk: ' + _R20 + '" https://desk.example', _R20),
+    # A Drive id's shape alone is not enough: with nothing naming Google it is a random value like any other.
+    ("value: " + _FOLDER, _FOLDER),
+    ('const PLAN = "' + _DOC + '";\nawait run(PLAN);', _DOC),
+    ("Ask my parents first.\nvalue: " + _DOC, _DOC),
+    # With Google named, a value not shaped like a Drive id still goes, and so does one under a credential key.
+    ('const PLAN = "' + _R20 + '"; // documentId', _R20),
+    ("api_key: " + _FOLDER + "\n# then call googleapis", _FOLDER),
 ]
 CUE_MUST_STAY = [
     "zip_code=94107",
@@ -640,6 +654,17 @@ CUE_MUST_STAY = [
     "bucket: " + _R20,
     "error code=447100",
     "hsn_code: 847130",
+    # A Drive, Docs or Sheets id stays where the same text names Google, so the scanner sees which document or folder
+    # a call works on.
+    "parents='" + _FOLDER + "' and mimeType='application/pdf'",
+    "'" + _FOLDER + "' in parents and trashed=false\ntarget=" + _FOLDER,
+    'const PLAN = "' + _DOC + '";\nconst doc = await docs.documents.get({ documentId: PLAN });',
+    'const DOCS = { plan: "' + _DOC + '" };\nconst t = (e) => e.textRun?.content;',
+    'DOC_A1 = "' + _DOC + '"\nfrom googleapiclient.discovery import build',
+    'TARGET_A = "' + _FOLDER + '"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x"',
+    'plan = "' + _DOC + '"\nprint("https://docs.google.com/document/d/" + plan)',
+    'plan = "' + _DOC + '"\nd = gapi.getdoc(plan)',
+    'const r = await tools.drive_files_list({ q: "x" });\nconst dest = "' + _FOLDER + '";',
 ]
 
 
@@ -674,6 +699,19 @@ def test_cue_values_in_objects_are_replaced_whole():
     assert second_pass({"code": "006960", "zip_code": "94107"}) == (
         {"code": "006960", "zip_code": "94107"},
         0,
+    )
+
+
+def test_a_drive_id_in_an_object_stays_only_beside_google():
+    """A Drive id under a key stays when its own object names Google; alone, it is a random value."""
+    beside = {"parent": _FOLDER, "url": "https://www.googleapis.com/upload/drive/v3/files"}
+    assert second_pass(beside) == (beside, 0)
+    fields = {"plan": _DOC, "fields": "body.content(paragraph(elements(textRun)))"}
+    assert second_pass(fields) == (fields, 0)
+    assert second_pass({"parent": _FOLDER}) == ({"parent": P}, 1)
+    assert second_pass({"value": _DOC, "note": "ask my parents"}) == (
+        {"value": P, "note": "ask my parents"},
+        1,
     )
 
 
@@ -769,6 +807,9 @@ def test_object_parity_with_the_hermes_plugin():
     objects += [
         {"headers": {"X-Desk": _R20, "Content-Type": "application/json"}},
         {"pin": 3253, "client_pin": "7021", "passport": "PPCD" + "HFZC6", "code": "006960"},
+        {"parent": _FOLDER, "url": "https://www.googleapis.com/upload/drive/v3/files"},
+        {"parent": _FOLDER},
+        {"plan": _DOC, "nested": {"fields": "textRun", "value": _FOLDER}},
     ]
     objects.append(
         {

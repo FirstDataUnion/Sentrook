@@ -626,6 +626,29 @@ const NOT_SECRET_KEY =
 const NOT_SECRET_CAMEL_KEY = /[a-z](?:Id|ID|Ids|Hash|Name|Url|Uri|Path|Version)$/;
 /** A provider's object id (`cus_…`, `pi_…`) and subresource-integrity hashes (`sha384-…`). */
 const PREFIXED_OBJECT_ID = /^(?:[a-z]{1,8}_|[Ss][Hh][Aa](?:1|256|384|512)-)/;
+/**
+ * A Google Drive, Docs or Sheets file or folder id: `0` or `1`, then 24 to 43 letters, digits, `-` and `_`. It looks
+ * random, but where Google is named (`GOOGLE_CONTEXT`) it is the document or folder a call works on, so it stays.
+ */
+const DRIVE_ID = /^[01][A-Za-z0-9_-]{24,43}$/;
+/**
+ * What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
+ * Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
+ * (`drive_files_list`, `docs_get`). A word alone ("my parents") does not.
+ */
+const GOOGLE_CONTEXT = new RegExp(
+  String.raw`googleapis|googleapiclient|google-apps|gspread|(?:drive|docs|sheets|slides|script)\.google\.com|` +
+    CUE_START +
+    String.raw`(?:(?:documentId|spreadsheetId|presentationId|fileId|folderId|driveId|textRun|batchUpdate)(?![A-Za-z0-9_])` +
+    String.raw`|gapi\.|in[ \t]{1,8}parents(?![A-Za-z0-9_])|parents\\{0,8}["']?[ \t]{0,8}=` +
+    String.raw`|g?drive_(?:files?|folders?|permissions?)(?![A-Za-z0-9])` +
+    String.raw`|(?:g?docs|sheets|slides)_(?:get|create|append|update|batch|export|insert|replace|values))`,
+);
+/** A Drive, Docs or Sheets id where Google is named: the document or folder a call works on, not a secret. */
+const googleId = (value: string, google: boolean) => google && DRIVE_ID.test(value);
+/** Whether a parsed object names Google among its own keys and string values (`GOOGLE_CONTEXT`). */
+const namesGoogle = (obj: Record<string, unknown>) =>
+  Object.entries(obj).some(([k, v]) => GOOGLE_CONTEXT.test(k) || (typeof v === "string" && GOOGLE_CONTEXT.test(v)));
 
 /** `yard_code` → [yard, code]; `gateCode` → [gate, code]; `alarmPIN` → [alarm, pin]. */
 const keyWords = (key: string) =>
@@ -733,11 +756,17 @@ function cueSpans(text: string): Array<[number, number, CueKind]> {
     const idx = m.indices?.groups?.v;
     if (kind && idx) out.push([idx[0], idx[1], kind]);
   });
+  let google: boolean | null = null; // read once, and only when a value has a Drive id's shape
   each(RANDOM_KEY, (m) => {
     const g = m.groups as Record<string, string>;
     if (g.sep === ":" && !startsEntry(text, m.index)) return;
     const idx = m.indices?.groups?.v;
-    if (idx && randomKey(g.k, g.v, afterQuery(text, m.index))) out.push([idx[0], idx[1], "random"]);
+    if (!idx || !randomKey(g.k, g.v, afterQuery(text, m.index))) return;
+    if (DRIVE_ID.test(g.v)) {
+      google ??= GOOGLE_CONTEXT.test(text);
+      if (google) return;
+    }
+    out.push([idx[0], idx[1], "random"]);
   });
   // Each further code in a list after a code or PIN the rules found, as its own value: "backup codes: A, B and C".
   const seen = new Set<number>();
@@ -759,16 +788,19 @@ function cueSpans(text: string): Array<[number, number, CueKind]> {
 
 /**
  * The kind of secret a parsed object's value is under its key, or null: a code, PIN or passport number under its key
- * (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`).
+ * (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`) unless it is a Drive,
+ * Docs or Sheets id and its object names Google (`google`, from `namesGoogle`).
  */
-function objectKind(key: string, value: unknown): CueKind | null {
+function objectKind(key: string, value: unknown, google = false): CueKind | null {
   if (typeof value !== "string" && !(typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) return null;
   const text = String(value);
   if (/^(?:[A-Za-z0-9]{4,12}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})$/.test(text)) {
     const kind = keyKind(key, text, ":", false);
     if (kind) return kind;
   }
-  if (typeof value === "string" && RANDOM_VALUE.test(value) && randomKey(key, value, false)) return "random";
+  if (typeof value === "string" && RANDOM_VALUE.test(value) && randomKey(key, value, false) && !googleId(value, google)) {
+    return "random";
+  }
   return null;
 }
 
@@ -838,12 +870,15 @@ export function createRedactor(level: RedactionLevel, salt: string): Redactor {
     if (!value || typeof value !== "object" || depth > 32) return value;
     if (Array.isArray(value)) return value.map((v) => walk(v, depth + 1));
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const obj = value as Record<string, unknown>;
+    // Read only when one of its values has a Drive id's shape.
+    const google = Object.values(obj).some((v) => typeof v === "string" && DRIVE_ID.test(v)) && namesGoogle(obj);
+    for (const [k, v] of Object.entries(obj)) {
       // A URL under a credential key (`forgotPassword`) goes through the text rules, which keep its host.
       if (level !== "off" && CREDENTIAL_FIELD.test(k) && typeof v === "string" && v && !v.startsWith("⟦") && keyValue(v)) {
         out[k] = placeholder("credential", v);
       } else {
-        const kind = level !== "off" ? objectKind(k, v) : null;
+        const kind = level !== "off" ? objectKind(k, v, google) : null;
         out[k] = kind ? placeholder(PLACEHOLDER_KIND[kind], String(v)) : walk(v, depth + 1);
       }
     }
