@@ -46,6 +46,9 @@
  *   its line when the job's next run makes its first hold (`staleGroups`).
  * - After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next changed
  *   (a new hold or an answer).
+ * - `/sentrook-dismiss <id>` (or `all`) takes waiting holds off the list as if they had expired now (`dismiss`), on any
+ *   hold, whatever answers it offers: nothing is set and the session history is left as an expiry leaves it, so a call
+ *   like it is held again.
  *
  * `holds.json` is version 2. Its entries keep no raw arguments: the match key is a hash (`passes.matchOf`). Holds
  * from before (no `v`) stay answerable as before until they expire: allow or approve sets the suggested grant (if
@@ -56,7 +59,7 @@
  * approval prompt. OpenClaw's own background saves are held here too when nothing better applies (backgroundSave.ts).
  *
  * The traffic log gets the scan with decision `held` and, later, a `resolution` record with resolution
- * `hold_allowed`, `hold_allowed_always`, `hold_denied` (`hold_approved` for an older hold) or `hold_expired`, joined
+ * `hold_allowed`, `hold_allowed_always`, `hold_denied` (`hold_approved` for an older hold), `hold_dismissed` or `hold_expired`, joined
  * by `request_id` as review answers are; a call a pass or denial settles is logged with decision `allowed_by_pass`
  * or `denied_by_owner`. Holds are kept in `<state>/sentrook/holds.json` and the notice target in `notify.json`; the
  * Hermes plugin keeps the same holds file and prints the same notice text.
@@ -698,6 +701,78 @@ function parseAnswer(verb: string, rest: string): [string, string, string] | nul
   return [words[0]!, passes.ALLOW, mode === "once" ? "" : mode];
 }
 
+/** The reply for an id no hold waits under: expired (it went in this sweep, `gone`), or unknown. */
+function notWaiting(id: string, gone: Entry[]): string {
+  const old = gone.find((h) => h.id === id);
+  if (old) {
+    const span = old.v === 2 ? "7 days" : "24 hours";
+    return `Held call ${id} expired: a hold can be answered for ${span}. Nothing was set; the next run is scanned as before.`;
+  }
+  return `No held call ${clean(id, 40)}: the id is unknown, already answered or expired.`;
+}
+
+/** The replies to `dismiss`; the shared fixture's `dismiss` (shared with the Hermes plugin). */
+export const DISMISS_TEXT: Record<string, string> = {
+  one: "Dismissed {id}: the held call does not run and nothing was set. A call like it is held again next time.",
+  all: "Dismissed {n} held call(s): {ids}. None of them runs and nothing was set. Calls like them are held again next time.",
+  none: "No held calls are waiting.",
+  usage: "usage: {dismiss} <id>|all, with the id from Sentrook's notice (h- and 6 hex digits)",
+};
+
+/**
+ * `dismiss <id>` or `dismiss all`: takes waiting holds off the list as if they had expired now, whatever answers they
+ * offer (an older hold, one that offers nothing, one on a run with no source). The held call never runs and nothing
+ * is set: no pass, denial or grant, and the held calls' history is left as an expiry leaves it, so a call like it is
+ * held again, with a notice. Each held call gets a `hold_dismissed` resolution.
+ */
+export function dismiss(
+  stateDir: string,
+  rest: string,
+  by: Entry,
+  now: Date,
+  cmd: grants.Cmd,
+  record: RecordFn,
+  beforeWrite: () => void,
+): string {
+  const words = rest.trim().split(/\s+/).filter(Boolean);
+  const all = words.length === 1 && words[0]!.toLowerCase() === "all";
+  if (words.length !== 1 || (!all && !ID.test(words[0]!))) return passes.fill(DISMISS_TEXT.usage!, { dismiss: cmd("dismiss") });
+  const id = words[0]!;
+  const store = new Store(stateDir);
+  const outcome = withFileLock(holdsFile(stateDir), (): { done: string } | { taken: Entry[] } => {
+    const data = store.loadHolds();
+    if (data === null) return { done: `The holds file ${holdsFile(stateDir)} could not be read; fix or remove it first.` };
+    const { changed, gone } = sweepData(data, now, record);
+    // after the sweep every entry is a live hold
+    const taken = (data.holds as Entry[]).filter((h) => all || h.id === id);
+    if (!taken.length) {
+      if (changed) {
+        beforeWrite();
+        store.saveHolds(data);
+      }
+      return { done: all ? DISMISS_TEXT.none! : notWaiting(id, gone) };
+    }
+    beforeWrite();
+    data.holds = data.holds.filter((h) => !taken.includes(h as Entry));
+    try {
+      store.saveHolds(data);
+    } catch (err) {
+      return { done: `Not dismissed: the holds file could not be written (${clean(String(err), 160)}); nothing changed.` };
+    }
+    return { taken };
+  });
+  if ("done" in outcome) return outcome.done;
+  for (const h of outcome.taken) {
+    const held: Entry[] = Array.isArray(h.held) && h.held.length ? h.held : [{ request_id: h.request_id }];
+    for (const x of held) {
+      if (typeof x?.request_id !== "string") continue;
+      record({ kind: "resolution", request_id: x.request_id, resolution: "hold_dismissed", decision: "held", hold_id: h.id ?? null, by });
+    }
+  }
+  if (!all) return passes.fill(DISMISS_TEXT.one!, { id });
+  return passes.fill(DISMISS_TEXT.all!, { n: String(outcome.taken.length), ids: outcome.taken.map((h) => String(h.id)).join(", ") });
+}
+
 /** A held call to set in its session's history once answered. */
 export interface HeldCall {
   sid: string;
@@ -803,12 +878,7 @@ export async function answer(
     const found = data.holds.find((h) => (h as Entry)?.id === id) as Entry | undefined;
     if (!found) {
       save();
-      const old = gone.find((h) => h.id === id);
-      if (old) {
-        const span = old.v === 2 ? "7 days" : "24 hours";
-        return { done: `Held call ${id} expired: a hold can be answered for ${span}. Nothing was set; the next run is scanned as before.` };
-      }
-      return { done: `No held call ${clean(id, 40)}: the id is unknown, already answered or expired.` };
+      return { done: notWaiting(id, gone) };
     }
     if (found.v !== 2) {
       if (want !== passes.ALLOW) {

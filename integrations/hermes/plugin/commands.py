@@ -6,7 +6,8 @@ CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are b
 
 `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
 grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`, the
-same as `allow`) answer a call held on an unattended run (see `hold`), `passes` lists and revokes what those
+same as `allow`) answer a call held on an unattended run (see `hold`), `dismiss` takes held calls off the list
+unanswered, `passes` lists and revokes what those
 answers set (see `passes`), `notify` and `attended` set where notices go and which extra platforms have a person
 answering approvals (see `owner_settings`), and `setup` shows what would stop Sentrook asking about routine work and
 sets it with the screen's code (see `setup`), so only the owner may run them: both forms go through the owner check
@@ -299,6 +300,16 @@ run_deny = _answer("deny")
 run_approve = _answer("approve")
 
 
+def run_dismiss(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env)
+    if who is None:
+        return refusal("dismiss")
+    log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
+    return hold.dismiss(cfg.state_dir, rest, who, datetime.now(UTC), CMD, log.write)
+
+
 def run_passes(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
@@ -463,6 +474,14 @@ COMMANDS: dict[str, Subcommand] = {
         "call for 30 days, with no more notices",
         run_deny,
         args="<id>",
+        owner_only=True,
+        cli_rest=True,
+    ),
+    "dismiss": Subcommand(
+        "take a held call (or all of them) off the waiting list without answering it, as if it had expired now: "
+        "the call never runs and nothing is set, so a call like it is held again",
+        run_dismiss,
+        args="<id>|all",
         owner_only=True,
         cli_rest=True,
     ),

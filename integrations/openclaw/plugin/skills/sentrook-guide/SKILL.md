@@ -30,7 +30,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `/sentrook-allow <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
   next scheduled run instead; when the held run had already sent or written something, only `now` runs it again);
-  `/sentrook-allow <id> always` lets the job make it for 30 days; `/sentrook-deny <id>` refuses the job the same call for 30 days. Off a cron job, the answers bind to where the run came from (a heartbeat's agent, a subagent's parent session) and nothing is started; a run with no such source (a webhook) offers only `/sentrook-allow`, for the exact call. "The same call" is the same tool
+  `/sentrook-allow <id> always` lets the job make it for 30 days; `/sentrook-deny <id>` refuses the job the same call for 30 days; `/sentrook-dismiss <id>` (or `all`) only takes it off the list, as if it had expired, on any hold. Off a cron job, the answers bind to where the run came from (a heartbeat's agent, a subagent's parent session) and nothing is started; a run with no such source (a webhook) offers only `/sentrook-allow`, for the exact call. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `/sentrook-why <id>` shows the grant Sentrook suggests, and `/sentrook-passes` lists what the answers set. A hold nobody
   answers expires after 7 days. A cron job's sub-agents belong to the job: their held calls are the job's, and the
@@ -66,6 +66,7 @@ owner type it.
 - `/sentrook-snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook enforces or unattended runs; `off` ends it.
 - `/sentrook-allow <id> [now|later|always|all]`: answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: runs the cron job again now and lets the call through once in that run (`now`: even when the held run had already sent or written something; `later`: on the job's next scheduled run instead), or with `always` for 30 days on that job, where the notice offers it; `all`, on the id a run's end line names, also lets the calls that line listed through once in that run; Sentrook never runs the held call itself.
 - `/sentrook-deny <id>`: refuses a call held on a cron job, or on another run with a source, by the id in Sentrook's notice: that job or source is refused the same call for 30 days, with no more notices.
+- `/sentrook-dismiss <id>|all`: takes a held call (or all of them) off the waiting list without answering it, as if it had expired now: the call never runs and nothing is set, so a call like it is held again.
 - `/sentrook-approve <id>`: the same as allow (kept for one release).
 - `/sentrook-passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
 - `/sentrook-notify here|off|status`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat; `off` stops them.
@@ -102,7 +103,7 @@ never about getting past a check: a call that needs the owner's review should st
 
 ## What you never do
 
-- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
+- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-dismiss`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and

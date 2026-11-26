@@ -204,6 +204,7 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
       "sentrook-snooze",
       "sentrook-allow",
       "sentrook-deny",
+      "sentrook-dismiss",
       "sentrook-approve",
       "sentrook-passes",
       "sentrook-notify",

@@ -800,6 +800,13 @@
       "review": "denied"
     },
     {
+      "name": "held, dismissed",
+      "decision": "held",
+      "resolution": "hold_dismissed",
+      "action": "held",
+      "review": "dismissed"
+    },
+    {
       "name": "let through by the owner's pass",
       "decision": "allowed_by_pass",
       "resolution": null,
@@ -2651,5 +2658,12 @@
     "job_name": "daily-brief",
     "session_ref": "s_0a1b2c3d4e5f",
     "text": "a sub-agent of cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f"
+  },
+  "dismiss": {
+    "_comment": "dismiss <id> or dismiss all (both plugins): takes waiting holds off the list as if they had expired now, on any hold, whatever answers it offers. The held call never runs and nothing is set: no pass, denial or grant, and the session history is left as an expiry leaves it; a later call like it is held again. Each held call gets a resolution record hold_dismissed. {dismiss} is the host's command (/sentrook-dismiss on OpenClaw, /sentrook dismiss on Hermes).",
+    "one": "Dismissed {id}: the held call does not run and nothing was set. A call like it is held again next time.",
+    "all": "Dismissed {n} held call(s): {ids}. None of them runs and nothing was set. Calls like them are held again next time.",
+    "none": "No held calls are waiting.",
+    "usage": "usage: {dismiss} <id>|all, with the id from Sentrook's notice (h- and 6 hex digits)"
   }
 }

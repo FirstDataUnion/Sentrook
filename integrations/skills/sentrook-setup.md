@@ -89,7 +89,8 @@ approved.
 4. **For a tool reviewed again and again with no suggestion**, ask the owner to find one of those calls in
    `{{cmd history}} 50` and run `{{cmd why}} <id>`; explain what it shows, and if they think Sentrook got it wrong,
    suggest `{{cmd report}} <id>`. A held call is answered with `{{cmd allow}} <id>` (once, or `always` where the
-   notice offers it) or `{{cmd deny}} <id>`; `{{cmd passes}}` lists what those answers set.
+   notice offers it) or `{{cmd deny}} <id>`, or taken off the list unanswered with `{{cmd dismiss}} <id>`;
+   `{{cmd passes}}` lists what those answers set.
 5. **For a key sent to its own service**, nothing is needed: Sentrook already lets it through. If the owner mentions a
    key the report does not list, add a credential item with `sentrook_propose_setup` (see "Hand over").
 

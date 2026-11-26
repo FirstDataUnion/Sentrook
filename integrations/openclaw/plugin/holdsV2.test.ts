@@ -398,7 +398,7 @@ test("a denied call is sent to the scanner as a denial by the owner", async () =
   assert.equal(scans.at(-1).history[0].decision, "denied_by_user");
 });
 
-for (const name of ["sentrook-allow", "sentrook-deny", "sentrook-approve", "sentrook-passes"]) {
+for (const name of ["sentrook-allow", "sentrook-deny", "sentrook-approve", "sentrook-passes", "sentrook-dismiss"]) {
   test(`${name} is refused to a non-owner`, async () => {
     const r = registered();
     const { rec } = await r.run(1);
@@ -418,6 +418,10 @@ for (const [name, args, want] of [
   ["sentrook-deny", "p-1a2b3c", "usage: /sentrook-deny <id>"],
   ["sentrook-allow", "h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."],
   ["sentrook-deny", "h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."],
+  ["sentrook-dismiss", "", "usage: /sentrook-dismiss <id>|all"],
+  ["sentrook-dismiss", "h-zzzzzz", "usage: /sentrook-dismiss <id>|all"],
+  ["sentrook-dismiss", "h-1a2b3c now", "usage: /sentrook-dismiss <id>|all"],
+  ["sentrook-dismiss", "h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."],
   ["sentrook-passes", "revoke p-abcdef", "No pass or denial p-abcdef: the id is unknown, used up or expired."],
   ["sentrook-passes", "revoke h-abcdef", "usage: passes revoke <id>"],
   ["sentrook-passes", "frobnicate", "usage: /sentrook-passes [revoke <id>]"],
@@ -498,6 +502,100 @@ test("an unreadable passes file holds as before, and verify fails", async () => 
   const checks = await runVerify({}, { env: process.env });
   const found = checks.find((c: any) => c.name === "held-call passes");
   assert.deepEqual([found?.ok, found?.detail], [false, "passes file unreadable"]);
+});
+
+// ---- dismiss ----------------------------------------------------------------------------------------------
+
+const DISMISS = Object.fromEntries(Object.entries(FIXTURES.dismiss as Record<string, string>).filter(([k]) => !k.startsWith("_")));
+const fill = passes.fill;
+
+test("the dismiss replies are the shared fixtures", () => {
+  assert.deepEqual(hold.DISMISS_TEXT, DISMISS);
+});
+
+test("dismiss takes a job's hold off the list with nothing set; the next run is held again", async () => {
+  const r = await withNotify();
+  const { rec, ctx } = await r.run(1);
+  const id = rec.hold.id;
+  assert.equal(await r.command("sentrook-dismiss", id), fill(DISMISS.one!, { id }));
+  assert.deepEqual(holds(), []);
+  assert.deepEqual(stored(), [], "no pass, no denial");
+  assert.deepEqual(
+    r.records("resolution").map((x) => [x.request_id, x.resolution, x.decision, x.hold_id]),
+    [[rec.request_id, "hold_dismissed", "held", id]],
+  );
+  assert.deepEqual(r.records("resolution")[0].by.channel, "telegram");
+  assert.equal(r.records("passes").length, 0);
+  // the session history is left as an expiry leaves it
+  const session = JSON.parse(readFileSync(path.join(stateDir, "sessions", `${ctx.sessionId}.json`), "utf8"));
+  assert.equal(session.history.at(-1).decision, "held");
+  const before = r.sent.length;
+  const { out, rec: again } = await r.run(2);
+  assert.deepEqual(out, HELD);
+  assert.notEqual(again.hold.id, id, "a new hold, not a repeat of the dismissed one");
+  assert.equal(r.sent.length, before + 1, "with its own notice");
+  assert.ok((await r.command("sentrook-dismiss", id)).startsWith(`No held call ${id}:`));
+});
+
+test("dismiss works on a hold that offers no answer, and on one from before version 2", async () => {
+  reply = { ...MISSING };
+  const r = registered();
+  const { rec } = await r.run(1, null);
+  assert.deepEqual(rec.hold.offers, []);
+  assert.equal(await r.command("sentrook-dismiss", rec.hold.id), fill(DISMISS.one!, { id: rec.hold.id }));
+  assert.deepEqual(holds(), []);
+  reply = { ...NAMED };
+  const { rec: old } = await r.run(2, "job-k");
+  const file = path.join(stateDir, "holds.json");
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  delete data.holds[0].v;
+  delete data.holds[0].offers;
+  writeFileSync(file, JSON.stringify(data));
+  assert.equal(await r.command("sentrook-dismiss", old.hold.id), fill(DISMISS.one!, { id: old.hold.id }));
+  assert.deepEqual(holds(), []);
+  assert.deepEqual(stored(), []);
+  assert.deepEqual(r.records("grants"), []);
+});
+
+test("dismiss records every held call of a repeated hold", async () => {
+  const r = registered();
+  const { rec: first } = await r.run(1);
+  const { rec: second } = await r.run(2);
+  assert.equal(second.hold.id, first.hold.id);
+  await r.command("sentrook-dismiss", first.hold.id);
+  assert.deepEqual(r.records("resolution").map((x) => [x.request_id, x.resolution]), [
+    [first.request_id, "hold_dismissed"],
+    [second.request_id, "hold_dismissed"],
+  ]);
+});
+
+test("dismiss all takes every waiting hold off the list, and says when there are none", async () => {
+  const r = registered();
+  const a = (await r.run(1, "job-j")).rec.hold.id;
+  const b = (await r.run(1, "job-k")).rec.hold.id;
+  const c = (await r.run(1, null)).rec.hold.id;
+  assert.equal(holds().length, 3);
+  assert.equal(await r.command("sentrook-dismiss", "all"), fill(DISMISS.all!, { n: "3", ids: [a, b, c].join(", ") }));
+  assert.deepEqual(holds(), []);
+  assert.deepEqual(stored(), []);
+  assert.deepEqual(r.records("resolution").map((x) => [x.hold_id, x.resolution]), [
+    [a, "hold_dismissed"],
+    [b, "hold_dismissed"],
+    [c, "hold_dismissed"],
+  ]);
+  assert.equal(await r.command("sentrook-dismiss", "ALL"), DISMISS.none);
+});
+
+test("dismiss on an expired hold says so and records only the expiry", async () => {
+  const r = registered();
+  const { rec } = await r.run(1);
+  const file = path.join(stateDir, "holds.json");
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  data.holds[0].expires_at = "2020-01-01T00:00:00Z";
+  writeFileSync(file, JSON.stringify(data));
+  assert.ok((await r.command("sentrook-dismiss", rec.hold.id)).startsWith(`Held call ${rec.hold.id} expired: a hold can be answered for 7 days.`));
+  assert.deepEqual(r.records("resolution").map((x) => x.resolution), ["hold_expired"]);
+  assert.equal(await r.command("sentrook-dismiss", "all"), DISMISS.none);
 });
 
 // ---- must stay the same ------------------------------------------------------------------------------------

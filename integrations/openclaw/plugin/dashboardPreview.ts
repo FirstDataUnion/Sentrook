@@ -7,7 +7,7 @@
  *   /        the page as the OpenClaw Control UI tab shows it (follows the system light or dark setting)
  *   /hermes  the view on Hermes's default dark theme (Hermes Teal), with the theme's colour variables
  * Example pending items (an open review, a held call) are added; PREVIEW_PENDING=0 leaves them out.
- * `?report=<id>` adds that scan's report panel, as the plugins do. `?calls=1` shows each scan's call, as the
+ * `?holds=N` shows N held calls, the extra ones offering no answer. `?report=<id>` adds that scan's report panel, as the plugins do. `?calls=1` shows each scan's call, as the
  * dashboardShowCalls setting does (SENTROOK_PREVIEW_LOG=.../dashboard/calls.jsonl has calls worth showing).
  * Binds 127.0.0.1 only; PORT overrides the port.
  */
@@ -41,8 +41,11 @@ const HERMES_COMMANDS = {
   review_answer: ["Answer in the chat where it was asked, with Hermes's own commands:", "/approve", "/approve session", "/approve always", "/deny"],
 };
 
-/** Example pending items (PREVIEW_PENDING=0 leaves them out): a recent open prompt and one held call, with scans. */
-async function pending(calls: boolean): Promise<unknown> {
+/**
+ * Example pending items (PREVIEW_PENDING=0 leaves them out): a recent open prompt and one held call, with scans.
+ * `holds` (from `?holds=N`, 1 to 20) adds held calls from a run with no source, which offer no answer.
+ */
+async function pending(calls: boolean, holds = 1): Promise<unknown> {
   const empty = { reviews: [], holds: [], holds_readable: true, review_window_s: 300 };
   if (process.env.PREVIEW_PENDING === "0") return empty;
   const recent = await queryScans(LOG, { ...queryOf(new URLSearchParams()), limit: 50 }, undefined, calls);
@@ -61,6 +64,18 @@ async function pending(calls: boolean): Promise<unknown> {
         grant: "destination channel:1234567890",
         scan: held,
       },
+      ...Array.from({ length: Math.min(Math.max(holds, 1), 20) - 1 }, (_, i) => ({
+        id: `h-${(0xa00000 + i).toString(16)}`,
+        request_id: null,
+        tool: "terminal",
+        where: "a webhook run",
+        held_at: new Date(Date.now() - (5 + i) * 3600_000).toISOString(),
+        expires_at: new Date(Date.now() + (6 * 24 - i) * 3600_000).toISOString(),
+        grant: null,
+        scan: null,
+        offers: [],
+        count: 1,
+      })),
     ],
     holds_readable: true,
     review_window_s: 300,
@@ -84,7 +99,7 @@ async function model(params: URLSearchParams, hermes: boolean): Promise<unknown>
     limit: q.limit,
     ...(await queryScans(LOG, q, undefined, params.get("calls") === "1")),
     show_calls: params.get("calls") === "1",
-    pending: await pending(params.get("calls") === "1"),
+    pending: await pending(params.get("calls") === "1", Number(params.get("holds") || 1)),
     commands: hermes ? HERMES_COMMANDS : COMMANDS,
     host: "preview",
     lines: { review_at: 45, block_at: 80 },

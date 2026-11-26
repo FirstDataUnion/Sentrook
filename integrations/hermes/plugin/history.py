@@ -43,6 +43,7 @@ _REVIEW = {
     "hold_allowed": "allowed once",
     "hold_allowed_always": "allowed always",
     "hold_denied": "denied",
+    "hold_dismissed": "dismissed",
     "hold_expired": "expired",
     "host_not_saved": "not saved",
 }

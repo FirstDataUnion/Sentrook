@@ -50,6 +50,10 @@
   };
 
   var TAINT = ["untrusted_origin", "exposure", "session_exposure"];
+  /** How many waiting items show before "Show N more"; the rest are drawn hidden. */
+  var PENDING_SHOWN = 3;
+  /** Where this browser keeps the time of the newest waiting item when the owner folded the list away. */
+  var PENDING_FOLDED_KEY = "sentrook.pending.folded";
 
   var HINTS = {
     risk: "Overall risk from 0 to 100: consequence × the larger of suspicion and uncertainty (uncertainty grows as confidence falls). A floor can raise it; a grant can lower a signal.",
@@ -123,6 +127,11 @@
     ".srk-section{display:flex;align-items:center;gap:8px;font-size:17px;margin:24px 0 10px}",
     ".srk-section-count{font-size:12px;font-weight:600;padding:1px 8px;border-radius:999px;background:var(--srk-soft);color:var(--srk-muted)}",
     ".srk-pending-section .srk-section-count{background:var(--srk-mid);color:var(--srk-card)}",
+    ".srk-pending-section>summary{cursor:pointer;list-style:none;user-select:none}",
+    ".srk-pending-section>summary::-webkit-details-marker{display:none}",
+    ".srk-pending-section>summary>.srk-section::after{content:'▾';color:var(--srk-muted);font-size:13px}",
+    ".srk-pending-section:not([open])>summary>.srk-section::after{content:'▸'}",
+    ".srk-pending-show{margin:0 0 12px}",
     ".srk-pending-item{border:2px solid var(--srk-mid);border-radius:var(--srk-radius);background:var(--srk-card);padding:12px 14px;margin:0 0 12px}",
     ".srk-pending-detail{border:1px solid var(--srk-border);border-radius:var(--srk-radius);margin:10px 0 6px;overflow:hidden}",
     ".srk-pending-detail>.srk-detail{border-top:0}",
@@ -811,7 +820,7 @@
       var help = offers
         ? offers.length
           ? "Answer within 7 days of the hold. Sentrook never runs the held call itself: allow runs the job again. " + cmd("passes") + " lists what your answers set."
-          : "Sentrook offers no way to let this call through. Leave it and it expires; the call never runs."
+          : "Sentrook offers no way to let this call through. Leave it and it expires, or dismiss it; the call never runs."
         : h.grant
           ? "Approving sets this grant for 30 days, so the next run is allowed: " + h.grant + ". The held call itself does not run again."
           : "There is no suggested grant: approving records your answer and sets nothing.";
@@ -820,22 +829,70 @@
         el("div", { class: "srk-pending-meta", text: (h.where || "an unattended run") + " · held " + when(h.held_at) + (h.count > 1 ? " · held " + h.count + " times" : "") + (h.expires_at ? " · expires " + until(h.expires_at) : "") }),
         el("div", { class: "srk-help", text: help }),
         el("div", { class: "srk-cmds" }, answers.concat([
+          command(cmd("dismiss") + " " + h.id, "Take it off this list without answering: the call never runs, nothing is set, and a call like it is held again."),
           command(cmd("why") + " " + h.id, offers ? "The held call's scan, the answers it offers and any grant Sentrook suggests." : "The held call's scan and what approving would set."),
         ])),
-        offers && onJob ? null : el("div", { class: "srk-help", text: "To refuse it, do nothing: the hold expires and the call never runs." }),
+        // a hold that offers nothing already says so in its help line
+        offers && (onJob || !offers.length) ? null : el("div", { class: "srk-help", text: "To refuse it, do nothing: the hold expires and the call never runs; or dismiss it to take it off this list now." }),
         h.scan
           ? el("div", { class: "srk-pending-detail" }, [detail(h.scan, model, open, { noCommands: true })])
           : el("div", { class: "srk-help", text: "Its scan is no longer in the traffic log; " + cmd("why") + " " + h.id + " shows it." }),
       ]));
     });
-    if (p.holds_readable === false) items.push(el("div", { class: "srk-help", text: "The holds file could not be read, so held calls may be missing here." }));
-    return el("section", { class: "srk-pending-section", "aria-label": "Waiting for you" }, [
-      el("h2", { class: "srk-section" }, [
-        el("span", { class: "srk-dot", style: "background:var(--srk-mid);width:10px;height:10px" }),
-        hinted("span", "Waiting for you", "Approval prompts still open and calls held for your answer. Each shows how to answer it."),
-        el("span", { class: "srk-section-count", text: String(reviews.length + holds.length) }),
+    var body = [];
+    if (holds.length > 1) {
+      body.push(el("div", { class: "srk-cmds" }, [
+        command(cmd("dismiss") + " all", "Take every held call off this list without answering: none of them runs and nothing is set. Open approval prompts stay."),
+      ]));
+    }
+    body = body.concat(items.slice(0, PENDING_SHOWN));
+    if (items.length > PENDING_SHOWN) {
+      var more = el("div", { class: "srk-pending-more", hidden: "" }, items.slice(PENDING_SHOWN));
+      var show = el("button", {
+        class: "srk-btn srk-pending-show",
+        type: "button",
+        text: "Show " + (items.length - PENDING_SHOWN) + " more",
+        onclick: function () {
+          more.removeAttribute("hidden");
+          if (show.parentNode) show.parentNode.removeChild(show);
+        },
+      });
+      body.push(more, show);
+    }
+    if (p.holds_readable === false) body.push(el("div", { class: "srk-help", text: "The holds file could not be read, so held calls may be missing here." }));
+    // Folded away until something newer than what was waiting when it was folded comes in; kept in this browser only.
+    var newest = 0;
+    reviews.forEach(function (s) {
+      newest = Math.max(newest, Date.parse(s.ts) || 0);
+    });
+    holds.forEach(function (h) {
+      newest = Math.max(newest, Date.parse(h.held_at) || 0);
+    });
+    var folded = false;
+    try {
+      var through = Number(window.localStorage.getItem(PENDING_FOLDED_KEY));
+      folded = through > 0 && newest <= through;
+    } catch (e) {
+      folded = false;
+    }
+    var section = el("details", { class: "srk-pending-section", "aria-label": "Waiting for you", open: folded ? null : "" }, [
+      el("summary", null, [
+        el("h2", { class: "srk-section" }, [
+          el("span", { class: "srk-dot", style: "background:var(--srk-mid);width:10px;height:10px" }),
+          hinted("span", "Waiting for you", "Approval prompts still open and calls held for your answer. Each shows how to answer it. Click to fold the list away."),
+          el("span", { class: "srk-section-count", text: String(reviews.length + holds.length) }),
+        ]),
       ]),
-    ].concat(items));
+    ].concat(body));
+    section.addEventListener("toggle", function () {
+      try {
+        if (section.open) window.localStorage.removeItem(PENDING_FOLDED_KEY);
+        else window.localStorage.setItem(PENDING_FOLDED_KEY, String(newest || Date.now()));
+      } catch (e) {
+        // this browser keeps no storage for the page: the fold lasts until the page is drawn again
+      }
+    });
+    return section;
   }
 
   function howto(title, state, body) {

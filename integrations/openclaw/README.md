@@ -339,6 +339,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-notify here\|off\|status` | Where notices go (held calls, scan failures on unattended runs, [background saves](#background-skill-and-memory-saves)): `here`, sent as a direct message to the agent, sends notices to you in that chat |
 | `/sentrook-allow <id> [now\|later\|always]` | Answer a held call by the id in its notice, within 7 days: run the cron job again now and let the call through once in that run (`later`: on the job's next scheduled run instead), or with `always` for 30 days on that job (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
 | `/sentrook-deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
+| `/sentrook-dismiss <id>\|all` | Take a held call (or all of them) off the waiting list without answering it, as if it had expired now: nothing is set, so a call like it is held again |
 | `/sentrook-approve <id>` | The same as `/sentrook-allow <id>`, kept for one release |
 | `/sentrook-passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
 | `/sentrook-setup [apply <code> [1,3] \| discard <id>]` | What would stop Sentrook asking about routine work, each item described by Sentrook; `apply` with the code the list ends with sets them, `--expires 90d` or `--until-revoked` changes how long the grants last (see [Set up with /sentrook-setup](#set-up-with-sentrook-setup)) |
@@ -468,7 +469,7 @@ risk broken down: the three scores the scanner combines (suspicion, consequence 
 each one with the reasons that raised it, and any floor or grant that changed the result. Grants and snooze are shown
 as they stand.
 
-Anything waiting for you comes first: an approval prompt still open, or a call held for your approval, each with the command that answers it. Below, the history shows 10, 25 or 50 scans a page; **Older** pages back. Search by tool name, outcome, time window or minimum risk. The traffic log has no index, so a search reads it backwards from the newest line, skipping lines outside the time window without parsing them; a time window makes searches faster. A search reads at most the whole log at its configured size (twice `trafficLog.maxBytes`, up to 256 MB) and says when it stopped early.
+Anything waiting for you comes first: an approval prompt still open, or a call held for your approval, each with the command that answers it. The first three show, with the rest behind **Show more**; `/sentrook-dismiss <id>` (or `/sentrook-dismiss all`) takes held calls off the list without answering them. Click the heading to fold the list away: the tab remembers that in your browser until something newer is waiting. Below, the history shows 10, 25 or 50 scans a page; **Older** pages back. Search by tool name, outcome, time window or minimum risk. The traffic log has no index, so a search reads it backwards from the newest line, skipping lines outside the time window without parsing them; a time window makes searches faster. A search reads at most the whole log at its configured size (twice `trafficLog.maxBytes`, up to 256 MB) and says when it stopped early.
 
 The tab only reads. To change a grant or a snooze, use the commands above. It shows the same records as
 `/sentrook-history` and `/sentrook-why`, and nothing when the traffic log is off.
@@ -589,6 +590,9 @@ would only block the call, with no hold and no notice.
     call safe to let through on every run and the call names who or what it acts on.
   - `/sentrook-deny <id>`: the job is refused the same call for 30 days. The agent is told you declined it and to go
     on without it, and you get no more notices about it.
+  - `/sentrook-dismiss <id>` (or `/sentrook-dismiss all`): takes the hold off the list without answering it, on any
+    hold, as if it had expired now. The call never runs and nothing is set: the next call like it is held again, with
+    a notice. Use it to clear holds you do not want to answer, such as ones that offer no answer.
   - `/sentrook-approve <id>` still works, as `/sentrook-allow`.
 - "The same call" means: the same tool, about the same parties (the destination, file or account the hold named),
   scoring no higher, with no warning the held call did not have, and nothing Sentrook enforces or floors. A send to
