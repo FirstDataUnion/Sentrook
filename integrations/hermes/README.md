@@ -846,7 +846,9 @@ next parameter is kept, and a command piped from, substituted or run after a val
 would be. So are access codes and PINs named as such ("the gate code is …", `client_pin=…`), passport numbers
 (`⟦secret:identifier:…⟧`) and random-looking values under a key or header (`X-Desk: …`); a number with no such cue
 word, such as an order number or a status code, is kept. Recipients, hosts and email addresses are kept, because
-Sentrook needs them to judge where data is going. So is code that only reads a secret from where it is kept, such as
+Sentrook needs them to judge where data is going, and so is a Google Drive, Docs or Sheets file or folder id where the
+call names Google (a Google API host or library, `documentId`, a Drive query, a Drive or Docs tool), as it says which
+document or folder the call works on. So is code that only reads a secret from where it is kept, such as
 `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a
 credential field, such as `api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too,
 and so is a quoted example value that only stands in for one, such as `"access_token": "ya29.a0..."` or
