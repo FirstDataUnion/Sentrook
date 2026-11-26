@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import time
+import traceback
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from ..enums import ScanStatus
@@ -73,8 +76,21 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
         server_version = "sentrook-scan/2.0"
         protocol_version = "HTTP/1.1"
 
+        # Logs hold metadata only: the method, the route (a known endpoint or `other`) and the status. Never
+        # the client's address, the raw request line (its path or query may carry anything), headers or body.
+        def _route(self) -> str:
+            path = getattr(self, "path", "") or ""
+            return endpoint_label(path.split("?", 1)[0].rstrip("/") or "/")
+
+        def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+            method = getattr(self, "command", None) or "-"
+            logger.debug("%s %s %s", method, self._route(), getattr(code, "value", code))
+
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002 (stdlib signature)
-            logger.debug("%s - %s", self.address_string(), format % args)
+            # The stdlib's error lines quote the raw request; keep only that there was one.
+            logger.debug(
+                "%s %s request error", getattr(self, "command", None) or "-", self._route()
+            )
 
         # ---------------------------------------------------------------- plumbing
         def _write(
@@ -236,12 +252,27 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+class _MetadataOnlyHTTPServer(ThreadingHTTPServer):
+    """The stdlib prints an unhandled handler error with the client's address and the exception's message,
+    which may quote request content. Log the exception's type and where it was raised, nothing else."""
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        exc = sys.exc_info()[1]
+        frames = traceback.extract_tb(exc.__traceback__) if exc is not None else []
+        where = " < ".join(f"{Path(f.filename).name}:{f.lineno}" for f in reversed(frames[-5:]))
+        logger.error(
+            "unhandled error serving a request: %s at %s",
+            type(exc).__name__ if exc else "-",
+            where or "-",
+        )
+
+
 class ScanServer:
     """A bound server; `start()` serves on a background thread, `serve_forever()` in the foreground."""
 
     def __init__(self, runtime: ServeRuntime, host: str | None = None, port: int | None = None):
         self.runtime = runtime
-        self._httpd = ThreadingHTTPServer(
+        self._httpd = _MetadataOnlyHTTPServer(
             (host or runtime.config.host, runtime.config.port if port is None else port),
             make_handler(runtime),
         )
