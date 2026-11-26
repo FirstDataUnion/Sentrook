@@ -676,3 +676,153 @@ def test_the_plain_gate_grows_linearly():
     assert plain_mentions(texts[FACTOR], frozenset({APP}))
     _, large = assert_linear(lambda d: plain_mentions(texts[d], frozenset({APP})), unit)
     assert large < 3.0
+
+
+# ------------------------------------------------------------------ links filled in or laundered (round three)
+
+#: The key read through a name for the env file path, so the credential is not followed: the link's own
+#: shape must keep the floor.
+UNTRACKED_KEY = (
+    "import os, sys, json, urllib.request\n"
+    "ENVP = os.path.expanduser('~/.agent/.env')\n"
+    "key = [l.split('=',1)[1].strip() for l in open(ENVP) if l.startswith('SERVICE_API_KEY=')][0]\n"
+)
+#: Ways the key reaches the link: each is a template, a rewrite or a value read back from somewhere.
+FILLED = {
+    "a percent template": f"'https://{APP}/c?k=%s now' % key",
+    "a format template in a markdown link": f"'[docs](https://{APP}/c?k={{}})'.format(key)",
+    "a format_map template": f"'see https://{APP}/c?k={{k}} now'.format_map({{'k': key}})",
+    "an f-string placeholder in the link": f"f'see https://{APP}/c?k={{key}} now'",
+    "a replace in a closed link": f"'see https://{APP}/c?k=XX now'.replace('XX', key)",
+    "a closed link stripped": f"'see https://{APP}/c?k= '.strip() + key",
+    "a closed link sliced": f"'see https://{APP}/c?k= now'[:-4] + key",
+    "a closed link cut by a format width": "f'{L5:.22}' + key",
+    "a link closed by a bar": f"'see https://{APP}/c?k=|' + key",
+    "a link closed by an angle bracket": f"'<https://{APP}/c?k=>' + key",
+    "a link closed by a bare paren": f"'(https://{APP}/c?k=)' + key",
+    "a link closed by a quote": f"'\"https://{APP}/c?k=\"' + key",
+}
+_FILLED_SETUP = {
+    "a closed link cut by a format width": f"L5 = 'see https://{APP}/c?k= now'\n",
+}
+
+
+def _untracked(expr: str, setup: str = "") -> str:
+    return (
+        UNTRACKED_KEY
+        + REQ_HEAD
+        + REQ_BODY.format(url=f"'https://{API}/v1/' + p")
+        + setup
+        + f"req('pages', {{'children': [{{'text': {expr}}}]}}, 'POST')\n"
+    )
+
+
+@pytest.mark.parametrize("name", FILLED, ids=FILLED.keys())
+def test_a_link_filled_with_a_value_keeps_the_floor(name):
+    code = _untracked(FILLED[name], _FILLED_SETUP.get(name, ""))
+    assert python_reach(code) == CodeReach(network=True, targets=frozenset({API}))
+    assert not plain_mentions(code, frozenset({APP}))
+    assert_floor_holds(code)
+
+
+#: The key laundered so key tracking loses it, then put into an open link.
+LAUNDERED = {
+    "a helper reading the env file": (
+        "def load():\n    return [l.split('=',1)[1].strip() for l in open(os.path.expanduser(ENVP))"
+        " if l.startswith('SERVICE_API_KEY=')][0]\nk2 = load()\n"
+    ),
+    "an exception": (
+        "def wash(v):\n    try:\n        raise ValueError(v)\n    except ValueError as e:\n"
+        "        return str(e)\nk2 = wash(key)\n"
+    ),
+    "sys.argv": "sys.argv.append(key)\nk2 = sys.argv[-1]\n",
+    "the API's reply": "k2 = req('echo', {'v': key}, 'POST')['v']\n",
+}
+
+
+@pytest.mark.parametrize("setup", LAUNDERED.values(), ids=LAUNDERED.keys())
+def test_a_laundered_key_in_an_open_link_keeps_the_floor(setup):
+    code = _untracked(f"'see https://{APP}/c?k=%s now' % k2", setup)
+    reach = python_reach(code)
+    assert reach is not None and reach.targets in (None, frozenset({API}))
+    assert not plain_mentions(code, frozenset({APP}))
+    assert_floor_holds(code)
+
+
+#: A value naming a mentioned host sent somewhere it could come back from unseen.
+SENT_AWAY = {
+    "kept in module state": "sys.argv.append(RL)\n",
+    "raised": "def f():\n    raise ValueError(RL)\n",
+    "written to a file": "open('/tmp/scratch/link.txt', 'w').write(RL)\n",
+    "given to a builtin that keeps it": "next(iter([RL]))\nsetvalue = sorted([RL])\nsys.path.insert(0, RL)\n",
+}
+
+
+@pytest.mark.parametrize("setup", SENT_AWAY.values(), ids=SENT_AWAY.keys())
+def test_a_link_sent_where_it_could_come_back_is_not_plain(setup):
+    code = _untracked("RL", f"RL = '[docs](https://{APP}/p/1)'\n" + setup)
+    assert not plain_mentions(code, frozenset({APP}))
+
+
+#: A template whose link is closed before the placeholder, filled with a computed value that is not the key.
+CLOSED_TEMPLATES = {
+    "a markdown link, then a format field": f"'[docs](https://{APP}/p/1) for {{}}'.format(ds)",
+    "a link closed by a space, then percent": f"'see https://{APP}/p/1 for %s' % ds",
+    "an f-string after a markdown link": f"f'[docs](https://{APP}/p/1) for {{ds}}'",
+    "a markdown link name in an f-string": "f'{RL} for {ds}'",
+}
+#: The same with the placeholder inside the link.
+OPEN_TEMPLATES = {
+    "a format field in the link": f"'[docs](https://{APP}/p/{{}})'.format(ds)",
+    "percent in the link": f"'see https://{APP}/p/%s now' % ds",
+    "an f-string field in the link": f"f'see https://{APP}/p/{{ds}} now'",
+}
+
+
+@pytest.mark.parametrize("expr", CLOSED_TEMPLATES.values(), ids=CLOSED_TEMPLATES.keys())
+def test_a_value_filled_after_a_closed_link_is_plain(expr):
+    setup = f"RL = '[docs](https://{APP}/p/1)'\nds = req('databases/abc')['id']\n"
+    assert plain_mentions(_untracked(expr, setup), frozenset({APP}))
+
+
+@pytest.mark.parametrize("expr", OPEN_TEMPLATES.values(), ids=OPEN_TEMPLATES.keys())
+def test_a_value_filled_inside_a_link_is_not_plain(expr):
+    setup = "ds = req('databases/abc')['id']\n"
+    assert not plain_mentions(_untracked(expr, setup), frozenset({APP}))
+
+
+def test_an_unpacked_call_grows_linearly():
+    """A call that unpacks its arguments into a function of many parameters (see linear_time.py)."""
+
+    def program(d: int) -> str:
+        params = ", ".join(f"p{i}" for i in range(8000 // d))
+        return (
+            HELPER
+            + f"def wide({params}):\n    return p0\n"
+            + f"x = ['[d](https://{APP}/p/1)'] * 3\n"
+            + "print(wide(*x, 'tail'))\n"
+        )
+
+    texts = {d: program(d) for d in (1, FACTOR)}
+    assert plain_mentions(texts[1], frozenset({APP}))
+    _, large = assert_linear(lambda d: plain_mentions(texts[d], frozenset({APP})), "wide call")
+    assert large < 3.0
+
+
+def test_deeply_nested_helper_calls_grow_linearly():
+    """Helper calls nested 180 deep, many of them (see linear_time.py)."""
+    depth = 180
+    unit = "y{i} = " + "h(" * depth + f"'[d](https://{APP}/p/{{i}})'" + ")" * depth + "\n"
+
+    def program(d: int) -> str:
+        return (
+            HELPER
+            + "def h(a):\n    return a\n"
+            + "".join(unit.format(i=i) for i in range(320 // d))
+        )
+
+    texts = {d: program(d) for d in (1, FACTOR)}
+    assert len(texts[1]) > 150_000
+    assert plain_mentions(texts[1], frozenset({APP}))
+    _, large = assert_linear(lambda d: plain_mentions(texts[d], frozenset({APP})), "nested calls")
+    assert large < 5.0
