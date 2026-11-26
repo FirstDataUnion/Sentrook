@@ -298,6 +298,11 @@ since the version the catalog pins.
   address such as `192.168.1.*` is refused too, and one already in the config is listed as too broad and never sent:
   write the exact hosts instead. A bare name with a wildcard such as `daily-*` is refused as a destination, as it
   would match hosts too: write `#daily-*` or `discord:#daily-*` for channel names.
+- `/sentrook setup` and the setup report count a chat as having read content that tried to steer the agent only
+  when one of its scans gave an `exposure.*` reason: the scanner's own line for it, and every later call of a chat
+  it judged tainted carries one. The exposure scores alone no longer count, since almost any content scores a little,
+  so the screen warned about nearly every proposal from the agent and left out reviews you approved in ordinary
+  chats.
 
 ## 2.0.0-beta.17
 

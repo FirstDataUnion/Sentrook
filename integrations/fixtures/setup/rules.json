@@ -1,5 +1,5 @@
 {
-  "_comment": "The setup screen's rules, shared by both plugins. `delivery`: a cron job's delivery target as a channel binding pattern (Hermes `deliver: \"<platform>:<to>\"`, OpenClaw an announce delivery with that channel and to), null for a person, a phone number, a thread or anything not a room. `covers`: whether a grant in force (existing) already covers an item (candidate): the same kind, the same pattern (case ignored except for files) or `*.` over the domain and every name under it, or a file folder's `/*` over a file directly in it, and allows no narrower. `warnings`: the warnings an item carries from its own kind, pattern and allows. `registrable`: the registrable domain of a host, in ASCII. `describe`: the item's first line, in the plugin's words (lifetime in minutes, null for until revoked or removed). `last`: how long ago the last approved review was, by UTC calendar day. `exposure`: whether a scan response flags exposure (an `exposure.*` reason, or exposure or session_exposure above 0). `notes`: the agent's reason as the screen shows it, inside a code span so links, mentions and emphasis do nothing (null: no note line). `mcp_order`: MCP servers are listed by name in code point order. `grant_labels`: how the id of a grant in force that covers an item is shown (a plugin-made id as it is; any other string neutralised in a code span; anything not a string as `?`). Every code span's text has no backtick and no backslash (a chat format may read one as an escape).",
+  "_comment": "The setup screen's rules, shared by both plugins. `delivery`: a cron job's delivery target as a channel binding pattern (Hermes `deliver: \"<platform>:<to>\"`, OpenClaw an announce delivery with that channel and to), null for a person, a phone number, a thread or anything not a room. `covers`: whether a grant in force (existing) already covers an item (candidate): the same kind, the same pattern (case ignored except for files) or `*.` over the domain and every name under it, or a file folder's `/*` over a file directly in it, and allows no narrower. `warnings`: the warnings an item carries from its own kind, pattern and allows. `registrable`: the registrable domain of a host, in ASCII. `describe`: the item's first line, in the plugin's words (lifetime in minutes, null for until revoked or removed). `last`: how long ago the last approved review was, by UTC calendar day. `exposure`: whether a scan response flags exposure: only an `exposure.*` reason, which the scanner gives when this call's check scores at its reason line or above and on every later call of a session it judged tainted; the exposure and session_exposure scores alone never do, as almost any content scores a little. `notes`: the agent's reason as the screen shows it, inside a code span so links, mentions and emphasis do nothing (null: no note line). `mcp_order`: MCP servers are listed by name in code point order. `grant_labels`: how the id of a grant in force that covers an item is shown (a plugin-made id as it is; any other string neutralised in a code span; anything not a string as `?`). Every code span's text has no backtick and no backslash (a chat format may read one as an escape).",
   "delivery": [
     [
       "discord",
@@ -713,9 +713,14 @@
       "response": {
         "tree": {
           "suspicion": {
-            "session_exposure": 0.4
+            "exposure": 0.7
           }
-        }
+        },
+        "reasons": [
+          {
+            "code": "exposure.instructions"
+          }
+        ]
       },
       "flagged": true
     },
@@ -723,11 +728,82 @@
       "response": {
         "tree": {
           "suspicion": {
-            "exposure": 0.2
+            "exposure": 0.04,
+            "session_exposure": 0.7
+          }
+        },
+        "reasons": [
+          {
+            "code": "egress.new_host"
+          },
+          {
+            "code": "exposure.session_tainted"
+          }
+        ]
+      },
+      "flagged": true
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "exposure": 0.04
           }
         }
       },
-      "flagged": true
+      "flagged": false
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "session_exposure": 0.1
+          }
+        }
+      },
+      "flagged": false
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "exposure": 0.04,
+            "session_exposure": 0.1
+          }
+        }
+      },
+      "flagged": false
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "exposure": 0.7
+          }
+        }
+      },
+      "flagged": false
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "session_exposure": 0.6
+          }
+        }
+      },
+      "flagged": false
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "score": 0.5
+          }
+        },
+        "reasons": []
+      },
+      "flagged": false
     },
     {
       "response": {
@@ -741,6 +817,20 @@
           {
             "code": "egress.new_host"
           }
+        ]
+      },
+      "flagged": false
+    },
+    {
+      "response": {
+        "reasons": [
+          {
+            "code": "exposure"
+          },
+          {
+            "code": 7
+          },
+          "exposure.instructions"
         ]
       },
       "flagged": false

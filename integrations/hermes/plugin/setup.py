@@ -129,19 +129,14 @@ def minutes_of(text: Any) -> int | None:
 
 
 def exposure_flagged(resp: Any) -> bool:
-    """The scan response says the agent had read content aimed at steering it: an `exposure.*` reason, or the
-    exposure or session_exposure score above 0."""
+    """The scan response says the agent had read content aimed at steering it: an `exposure.*` reason. The scanner
+    gives one when this call's check scores at its reason line or above, and on every later call of a session it
+    judged tainted. The exposure and session_exposure scores alone say nothing: almost any content scores a little."""
     if not isinstance(resp, dict):
         return False
     for r in resp.get("reasons") or []:
         code = r.get("code") if isinstance(r, dict) else None
         if isinstance(code, str) and code.startswith("exposure."):
-            return True
-    tree = resp.get("tree") if isinstance(resp.get("tree"), dict) else {}
-    suspicion = tree.get("suspicion") if isinstance(tree.get("suspicion"), dict) else {}
-    for k in ("exposure", "session_exposure"):
-        v = suspicion.get(k)
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
             return True
     return False
 
