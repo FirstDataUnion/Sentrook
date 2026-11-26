@@ -164,6 +164,7 @@ REASONS: dict[str, ReasonText | None] = {
         "it does not follow from what you asked for",
     ),
     "cap.attended_owner": None,
+    "cap.local_code": None,
     "cap.unanswered_retry": None,
     "code.decode_to_shell": ReasonText(
         "it decodes hidden code and runs it",

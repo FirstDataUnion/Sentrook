@@ -20,9 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from plugin import planir as plugin_planir
 from plugin.redact import Redactor
 
-from .test_plugin import SID, call, result
+from .test_plugin import SID, call, result, without_generated_ids
 
 _ALPHABET = string.ascii_letters + string.digits
 
@@ -209,10 +210,16 @@ def test_one_value_one_placeholder_whichever_rule_found_it():
     )
 
 
-def test_cue_values_leave_no_planir_field_raw(harness):
+def test_cue_values_leave_no_planir_field_raw(harness, monkeypatch):
     """Request text, narration, arguments and results: the same redactor covers every field that leaves the
-    host."""
+    host. The request ids are forced to contain the short values, as a random one sometimes does."""
     h = harness
+    n = iter(range(1, 1000))
+    monkeypatch.setattr(
+        plugin_planir.uuid,
+        "uuid4",
+        lambda: uuid.UUID(f"{COLLECT}{CURLPIN}-0000-4000-8000-{next(n):012d}"),
+    )
     h.ctx.hooks["pre_llm_call"](
         turn_id="t1",
         user_message=f"Send Sam the side gate code, it is {GATE}",
@@ -235,7 +242,7 @@ def test_cue_values_leave_no_planir_field_raw(harness):
     call(h, "c1", f"curl https://desk.example/api -H 'X-Desk: {R20}' -d 'pin={CURLPIN}'")
     result(h, "c1", f"Booking ok. Passport {PASS2}.\nyard_code={YARD}")
     call(h, "c2", "ls")
-    dumped = json.dumps(h.scans, ensure_ascii=False)
+    dumped = json.dumps(without_generated_ids(h.scans), ensure_ascii=False)
     for value in (GATE, COLLECT, R20, CURLPIN, PASS2, YARD):
         assert value not in dumped, value
     assert "⟦secret:identifier:" in dumped
