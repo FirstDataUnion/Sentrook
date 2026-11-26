@@ -25,11 +25,11 @@ from test_approval_loosening import fires, h_ex, reviews, stays_silent
 from test_approval_loosening_probes import padded_before
 from test_approval_loosening_unparsed import (
     _CLI_WORD,
-    SIZES,
     ZSH,
     _parametrized_cases,
     _probe_cases,
     _tier,
+    sized,
 )
 
 from sentrook.aira import detectors
@@ -98,8 +98,7 @@ WRITES = [
 ]
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize("command, expect", WRITES, ids=[c for c, _ in WRITES])
+@sized("command, expect", WRITES, ids=[c for c, _ in WRITES])
 def test_a_host_file_write_after_padding_keeps_its_tier(command, expect, size):
     assert _tier(call(command)) == expect, "the short command"
     assert _tier(call(before(command, size))) == expect
@@ -112,8 +111,7 @@ def test_a_host_file_write_with_a_syntax_error_keeps_its_tier(command, expect):
     assert _tier(call(text)) == expect
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "command",
     [
         f"printf '{{P}}\\napprovals:\\n  mode: off\\n' > {HC}",
@@ -130,8 +128,7 @@ def test_a_padded_loosening_written_into_a_host_file_takes_the_floor(command, si
 # --------------------------------------------------------------------------- must stay silent
 
 
-@pytest.mark.parametrize("size", SIZES)
-@pytest.mark.parametrize(
+@sized(
     "command",
     [
         "printf 'approvals:\\n  mode: off\\n' > /tmp/notes.yaml",
