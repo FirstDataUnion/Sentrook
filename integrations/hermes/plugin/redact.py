@@ -52,18 +52,42 @@ _SEPARATOR_ENDS = (
     r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
     r"|\$[(A-Za-z_{]|[({]|\.\.?/|/[A-Za-z]|~/|(?<=;)#"
 )
+# What ends an unquoted value at `|`, a pipe into a command: a word with more after it on its line (`|curl …`,
+# `|curl${IFS}…`, `|curl$IFS…`, `|base64|sh`), a word with quotes or an escape inside it (`|cu''rl`), or a command led
+# by a symbol (`|$(…)`, `|$SHELL`, `|(…)`, `|{ …; }`, `|./run.sh`, `|/bin/sh`, `|~/x.sh`). Narrower than
+# `_SEPARATOR_ENDS` (no keys, no `(`, `)` or `{` straight after a word, no `{` without a space after it), as `|` is
+# common in generated passwords. A tail that runs to the end of the line, a lone word included (`TOKEN=<value>|sh`), is
+# part of the value.
+_PIPE_ENDS = (
+    r"[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|<>`]|\\t|\$[{(A-Za-z_])"
+    r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
+    r"|\$[(A-Za-z_{]|\(|\{[ \t]|\.\.?/|/[A-Za-z]|~/"
+)
+# `|` inside an unquoted value: part of it (`password=<value>|<rest>`) unless what follows is a space, the end, a quote
+# or `_PIPE_ENDS`. A value never ends in `|`, so `||` or `|&` before a command ends it too (`TOKEN=<value>||curl …`).
+_PIPE_CHAR = r"\|(?=[^\s\"'<>`\\])(?!" + _PIPE_ENDS + ")"
 # A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, `&&`
 # or `;;`, or `_SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
-# (`password=<value>&<rest>`, `password=<value>,;<rest>`).
+# (`password=<value>&<rest>`, `password=<value>,;<rest>`). `|` ends it where `_PIPE_CHAR` says, and a command
+# substitution `$(` always does (`TOKEN=<value>$(…)`); a `$` before anything else is part of it (`pa$sword`).
 _VALUE_CHAR = (
-    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[&,;](?=[^\s\"'<>`\\])(?!(?<=&)&|(?<=;);|"
+    r"(?:[^\s\"'&,;<>`\\|$]|\$(?!\()|"
+    + _PIPE_CHAR
+    + r"|(?<![)\]])[&,;](?=[^\s\"'<>`\\])(?!(?<=&)&|(?<=;);|"
     + _SEPARATOR_ENDS
     + "))"
 )
+# The last character of an unquoted value: not a pipe and not the `$` of a command substitution, so the
+# command after the value is whole (`TOKEN=<value>$(…)`).
+_UNQUOTED_END = r"(?!\||\$\()" + _VALUE_END
 # In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
 # there, from its first character.
 _QUERY_VALUE_CHAR = (
-    r"(?:[^\s\"'&,;<>`\\]|(?<![)\]])[,;](?=[^\s\"'&<>`\\])(?!(?<=;);|" + _SEPARATOR_ENDS + "))"
+    r"(?:[^\s\"'&,;<>`\\|$]|\$(?!\()|"
+    + _PIPE_CHAR
+    + r"|(?<![)\]])[,;](?=[^\s\"'&<>`\\])(?!(?<=;);|"
+    + _SEPARATOR_ENDS
+    + "))"
 )
 # The rest of a quoted value after its first character: in single quotes anything up to the closing quote; in double
 # quotes, where a shell runs a command substitution, not `$(` (`password="<value>;$(…)"` keeps the command visible).
@@ -75,17 +99,18 @@ _QUERY_VALUE = re.compile(
     r"[\s\S](?:"
     + _QUERY_VALUE_CHAR
     + "{6,}"
-    + _VALUE_END
+    + _UNQUOTED_END
     + "|"
     + _QUERY_VALUE_CHAR
     + "{5}"
-    + _VALUE_END
+    + _UNQUOTED_END
     + r"(?=[.:!?)\]]))"
 )
-# A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
+# A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it, and `|`
+# ends it where `_PIPE_CHAR` says (`token: <value>|curl …`).
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
-    r"(?P<v>[^\s\"'`⟦⟧$<>\\]{5,199}[^\s\"'`⟦⟧$<>\\.,;:!?)\]])"
+    r"(?P<v>(?:[^\s\"'`⟦⟧$<>\\|]|" + _PIPE_CHAR + r"){5,199}[^\s\"'`⟦⟧$<>\\.,;:!?)\]|])"
 )
 # Words, not secrets: one or more words with at most a capital first letter, maybe hyphenated (`required`,
 # `Read-only`, `ENABLED`), an identifier (`accessToken`, `GITHUB_TOKEN`), or a hyphenated name with two or
@@ -527,21 +552,24 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
         # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
         # escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside, and
-        # `&`, `,` and `;` end the value only where `_VALUE_CHAR` says (`password=<value>&3` is one value).
+        # `&`, `,` and `;` end the value only where `_VALUE_CHAR` says (`password=<value>&3` is one value), and so do
+        # `|` and `$(`.
         "credential",
         re.compile(
             r"(?i)"
             + _CREDENTIAL_KEY
             + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
             + _NOT_A_PORT
-            + r"(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:"
+            + r"(?P<v>(?:[^\s\"'⟦$*{\[<%&,;`\\|]|"
+            + _PIPE_CHAR
+            + ")(?:"
             + _VALUE_CHAR
             + "{6,}"
-            + _VALUE_END
+            + _UNQUOTED_END
             + "|"
             + _VALUE_CHAR
             + "{5}"
-            + _VALUE_END
+            + _UNQUOTED_END
             + r"(?=[.:!?)\]])))"
         ),
         "v",
@@ -584,10 +612,12 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.]"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>(?:[^\s\"'⟦$*{<%&,;`\\/~.|]|"
+            + _PIPE_CHAR
+            + ")"
             + _VALUE_CHAR
             + "{6,}"
-            + _VALUE_END
+            + _UNQUOTED_END
             + r")"
         ),
         "v",

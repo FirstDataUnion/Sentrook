@@ -806,7 +806,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
-`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept. So are access codes and PINs named as such ("the
+`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept, and a command
+piped from or substituted after a value (`TOKEN=…|curl …`, `TOKEN=…$(…)`) is kept outside it. So are access codes and PINs named as such ("the
 gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
 header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
 hosts and email addresses are kept,
