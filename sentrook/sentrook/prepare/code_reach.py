@@ -309,6 +309,9 @@ _DENIED_WORDS = (
 )
 #: Calls that write a file at their path argument.
 _WRITE_CALLS = frozenset({"write_text", "write_bytes", "write_file", "patch"})
+#: Names that open or write a file: followed only where the program calls them directly, so the path and mode
+#: are seen (`o = open; o(p, "a")`, `partial(open, mode="a")`, `wt = Path(p).write_text` are not followed).
+_WRITERS = frozenset({"open"}) | _FILE_CLASSES | _FILE_FACTORIES | _WRITE_CALLS
 #: Extensions of files a write may create: data, never read as code or configuration.
 _DATA_EXTENSIONS = (".json", ".jsonl", ".txt", ".md", ".csv", ".tsv")
 #: Dunder attributes that do not lead out of the object (`super().__init__()`); any other one can walk to
@@ -578,6 +581,8 @@ class _Reader:
         #: Names bound by an import of a local or restricted module, with the object each names.
         self.objects: dict[str, object] = {}
         self.http = False
+        #: The program imports from `xml` (an `ElementTree` writes a file at a path).
+        self.xml = False
         #: A function that sets where requests go was imported under another name.
         self.targets_off = False
         #: What each name resolves to, once worked out, so many calls on one name stay linear.
@@ -621,6 +626,8 @@ class _Reader:
             self._bind(a.asname or a.name)
             if a.name in _ATTR_CALLERS or a.name in _ATTR_BY_NAME or a.name in _OPAQUE_BUILTINS:
                 raise _Unfollowed  # `from operator import attrgetter as ag`
+            if a.name in _WRITERS and a.asname and a.asname != a.name:
+                raise _Unfollowed  # `from hermes_tools import write_file as w`: the call is not seen as a write
         if "*" in names and module not in _LOCAL_MODULES:
             raise _Unfollowed
         if module in _HTTP_MODULES or (module == "urllib" and "request" in names):
@@ -681,8 +688,10 @@ class _Reader:
         imported: list[tuple[ast.Call, str]] = []
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Import):
+                self.xml = self.xml or any(a.name.split(".")[0] == "xml" for a in node.names)
                 self._import(node)
             elif isinstance(node, ast.ImportFrom):
+                self.xml = self.xml or (node.module or "").split(".")[0] == "xml"
                 self._import_from(node)
             elif isinstance(node, ast.Name):
                 harmless = _harmless_opaque(node, self.parents)
@@ -768,11 +777,13 @@ class _Reader:
             attr = node.args[1] if len(node.args) > 1 else None
             if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)):
                 raise _Unfollowed
-            if attr.value.startswith("_") or attr.value in _REQUEST_CALLS:
+            if attr.value.startswith("_") or attr.value in _REQUEST_CALLS or attr.value in _WRITERS:
                 raise _Unfollowed
             obj = node.args[0]
             if isinstance(obj, ast.Name) and (obj.id in self.restricted or obj.id in self.objects):
                 raise _Unfollowed  # `getattr(glob, "os")`
+        if name == "write" and node.args and self.xml:
+            raise _Unfollowed  # `ElementTree.write(path)` writes a file at its argument
         self._check_write(node, name)
 
     def _check_write(self, node: ast.Call, name: str | None) -> None:
@@ -998,6 +1009,8 @@ class _Reader:
 
     def _check_name(self, node: ast.Name) -> None:
         parent = self.parents.get(node)
+        if node.id in _WRITERS and not (isinstance(parent, ast.Call) and parent.func is node):
+            raise _Unfollowed  # a writer passed around or bound to another name: its writes are not seen
         if node.id not in self.bindings and node.id not in _BUILTINS and not self.tolerant:
             # A name the program never binds: a function the host provides (a tool, called or passed
             # around), or one this reading cannot see.
@@ -1071,6 +1084,10 @@ class _Reader:
             child = parent
 
     def _check_attribute(self, node: ast.Attribute) -> None:
+        if node.attr in _WRITERS and isinstance(node.ctx, ast.Load):
+            parent = self.parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                raise _Unfollowed  # `wt = Path(p).write_text`, `partial(gzip.open, …)`
         if not self.http or node.attr not in _REQUEST_CALLS:
             return
         if (

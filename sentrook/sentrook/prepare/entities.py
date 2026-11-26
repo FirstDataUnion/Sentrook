@@ -2308,28 +2308,35 @@ def is_code_call(call: CanonicalCall) -> bool:
     )
 
 
-def call_code_reach(call: CanonicalCall) -> CodeReach | None:
+def call_code_reach(call: CanonicalCall, *, local: bool = False) -> CodeReach | None:
     """What a code tool's program can reach (`code_reach.python_reach`), for the Python of Hermes
     `execute_code`, whose output goes back to the agent; None for a shell command, another language, a
-    program that does not parse, or a script a shell command runs (its output may feed a shell)."""
+    program that does not parse, or a script a shell command runs (its output may feed a shell).
+
+    A program that reaches no network sink is None too unless `local`: its URLs and quoted commands keep
+    the text reading's findings, and only the local reading (`local=True`, which can only cap the verdict
+    at a review) treats them as mentions."""
     if not is_code_call(call) or not call.kernel_clear:
         return None
-    return python_reach(call.command or "")
+    reach = python_reach(call.command or "")
+    if reach is not None and not reach.network and not local:
+        return None
+    return reach
 
 
 def extract_call(
-    call: CanonicalCall, *, home: str | None, workspace_root: str | None
+    call: CanonicalCall, *, home: str | None, workspace_root: str | None, local: bool = False
 ) -> list[Found]:
     """Entities of a canonical call with roles by tool kind. A host the call sets as a package
     registry is a code source as well as whatever else the call makes of it."""
-    found = _extract_call(call, home=home, workspace_root=workspace_root)
+    found = _extract_call(call, home=home, workspace_root=workspace_root, local=local)
     for h in registry_hosts(call):
         found.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
     return found
 
 
 def _extract_call(
-    call: CanonicalCall, *, home: str | None, workspace_root: str | None
+    call: CanonicalCall, *, home: str | None, workspace_root: str | None, local: bool = False
 ) -> list[Found]:
     found: list[Found] = []
     cwd = call.get("cwd")
@@ -2338,7 +2345,7 @@ def _extract_call(
     if kind is ToolKind.EXEC:
         cmd = call.command or ""
         inline = bool(call.get("interpreter"))
-        reach = call_code_reach(call)
+        reach = call_code_reach(call, local=local)
         found.extend(
             extract_exec(
                 cmd,

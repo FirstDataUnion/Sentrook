@@ -168,8 +168,11 @@ def _resolve(path: str, prepared: Prepared, cwd: str | None) -> str:
     return normalise_path(path, home=prepared.home, workspace_root=prepared.workspace_root, cwd=cwd)
 
 
-def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalysis:
-    """Build the shared analysis of one canonical call."""
+def analyse(
+    call: CanonicalCall, prepared: Prepared, lists: Lists, *, local: bool = False
+) -> CallAnalysis:
+    """Build the shared analysis of one canonical call. `local`: read a code tool's program that reaches no
+    network sink as local, so the URLs and commands in its strings are mentions (`call_code_reach`)."""
     home, ws = prepared.home, prepared.workspace_root
     groups = lists.path_groups
     cwd_raw = call.get("cwd")
@@ -195,8 +198,8 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
             heads.update(s.heads)
 
     # Entities with roles, from the same extractor preparation used (so values match the table).
-    found: list[Found] = list(extract_call(call, home=home, workspace_root=ws))
-    code_reach = call_code_reach(call) if inline_code else None
+    found: list[Found] = list(extract_call(call, home=home, workspace_root=ws, local=local))
+    code_reach = call_code_reach(call, local=local) if inline_code else None
     if command and normalised != text:
         decoded_cmd = normalise_text(command)
         if decoded_cmd != command:
