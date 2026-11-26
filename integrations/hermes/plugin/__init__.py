@@ -29,6 +29,7 @@ from . import (
     history,
     hold,
     host_turns,
+    notice_retry,
     owner,
     owner_settings,
     passes,
@@ -324,6 +325,8 @@ def on_pre_llm_call(**kw: Any) -> None:
     try:
         cfg, env = _load()
         store, _t = _state(cfg)
+        # Notices another process kept to send again are sent by a process that keeps running (`notice_retry`).
+        notice_retry.resume(cfg.state_dir)
         turn_id = kw.get("turn_id")
         # The curator's prompt (a fresh agent under the background-review origin) is neither a message, a
         # request nor a turn of the owner's session: its calls carry the owner's last request (`_scan_one`).
@@ -1633,7 +1636,8 @@ def _deliver(
     cfg: PluginConfig, target: str, text: str, on_fail: Callable[[], None] | None = None
 ) -> None:
     """Sends one of the owner's notices (`hold.deliver`); one that gets through clears a failed test notice to the
-    same target (`owner_settings.notice_delivered`)."""
+    same target (`owner_settings.notice_delivered`). A notice to a chat Hermes cannot address yet is tried again
+    (`notice_retry`)."""
     state_dir = cfg.state_dir
     hold.deliver(
         _ctx,
@@ -1641,6 +1645,7 @@ def _deliver(
         text,
         on_fail=on_fail,
         on_ok=lambda: owner_settings.notice_delivered(state_dir, target),
+        state_dir=state_dir,
     )
 
 
@@ -2312,6 +2317,7 @@ def register(ctx: Any) -> None:
         return e.url if e.ok else f"INVALID ({e.reason})"
 
     route, no_route = hold.send_route(callable(getattr(ctx, "dispatch_tool", None)))
+    notice_retry.resume(cfg.state_dir)
 
     logger.info(
         "sentrook %s registered: scan=%s issuer=%s%s mode=%s review>=%s block>=%s on_scan_error=%s "

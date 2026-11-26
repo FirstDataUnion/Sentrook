@@ -4,9 +4,11 @@
 background saves). `here` stores the chat the command was sent in (its platform, chat id and thread), and notices
 are sent there with `hermes send --to <platform>:<chat id>[:<thread>]`. The chat must be the one the owner check
 judged (same platform, same chat id when the check had one, a direct message). Each new target gets a test notice,
-sent like any other notice; when it is not delivered (on some platforms Hermes reaches a new chat only once it has
-listed it), `notify status`, `status` and `verify` say so (`failed_line`) until a later notice gets through or the
-target changes. When Hermes does not say which chat it was,
+sent like any other notice; when it is not delivered, `notify status`, `status` and `verify` say so (`failed_line`)
+until a later notice gets through or the target changes. On some platforms Hermes reaches a new chat only once it has
+listed it, a few minutes after the chat starts: a notice to the chat that fails that way is tried again for up to 10
+minutes and then sent to the platform's home channel when it has one (`notice_retry`), and the reply to `here` says
+the first notice may take a few minutes. When Hermes does not say which chat it was,
 `here` stores the platform and notices go to its home channel (`/sethome`), and the reply says so and names that
 channel. `notify <platform>` (the form for the terminal, which has no chat) stores a platform with a home channel.
 A target set by command wins over `owner_channel` in the config; `off` removes it, so `owner_channel` applies again.
@@ -37,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import notice_retry
 from .config import PluginConfig
 from .intent import (
     APP_PLATFORMS,
@@ -74,16 +77,36 @@ TERMINAL = LOCAL_PLATFORMS - APP_PLATFORMS
 #: Front ends that can put a person in front of Hermes's approval prompts: the only platforms `attended add` takes.
 CONFIRMABLE = KNOWN_PLATFORMS - ATTENDED_BY_DEFAULT - SELF_STARTED - TERMINAL
 
-#: Where a test notice that was not delivered is remembered: {"to": the target, "at": when}.
+#: Where a notice to the target set by command that was not delivered is remembered: {"to": the target, "at": when,
+#: "home": the platform whose home channel got it instead, when one did}. The key's name dates from when only the
+#: test notice was recorded.
 FAILED_KEY = "test_notice_failed"
-#: The reply's line about the test notice; `where` is "this chat" or "the <platform> home channel".
+#: The reply's line about the test notice to a home channel; `where` is "the <platform> home channel".
 TEST_SENT = (
     "A test notice was sent to {where}. If it does not arrive within a minute, see /sentrook notify status, "
     "which says whether it was delivered."
 )
+_RETRY_MINUTES = int(notice_retry.WINDOW // 60)
+#: The reply's line about the test notice to this chat (`notice_retry`).
+TEST_SENT_CHAT = (
+    "A test notice was sent to this chat. The first notice may take a few minutes to arrive: on some platforms "
+    f"Hermes reaches a new chat only once it has listed it, and Sentrook tries again for up to {_RETRY_MINUTES} "
+    "minutes. If none arrives, see /sentrook notify status, which says whether it was delivered."
+)
 FAILED_TEXT = (
-    "The last test notice to the {where} was not delivered: check the Hermes log for why, then send "
-    "/sentrook notify here again (on some platforms Hermes reaches a new chat only after a few minutes)."
+    "The last notice to the {where} was not delivered: check the Hermes log for why, then send "
+    "/sentrook notify here again."
+)
+#: While a notice Hermes could not address yet waits to be tried again; `then` names the home channel used after.
+RETRYING_TEXT = (
+    "The last notice to the {where} has not been delivered yet: on some platforms Hermes reaches a new chat only "
+    "once it has listed it, which can take a few minutes. Sentrook tries it again for up to {minutes} "
+    "minutes{then}."
+)
+#: After the retries, when the notice went to the home channel instead.
+FELL_BACK_TEXT = (
+    "The last notice could not reach the {platform} chat where you sent /sentrook notify here, so it went to the "
+    "{platform} home channel instead. Check the Hermes log for why; this clears once a notice reaches the chat."
 )
 
 #: Sent once where notices now go, so the owner sees they arrive.
@@ -303,7 +326,7 @@ def run_notify(
     where = (
         "this chat" if target.chat_id and op == "here" else f"the {target.platform} home channel"
     )
-    reached = TEST_SENT.format(where=where)
+    reached = TEST_SENT_CHAT if where == "this chat" else TEST_SENT.format(where=where)
     stored.update(set_at=_show(now), set_by=by)
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
@@ -339,20 +362,26 @@ def run_notify(
         send(
             to,
             TEST_NOTICE,
-            on_fail=lambda: test_notice_failed(state_dir, to),
+            on_fail=lambda: notice_failed(state_dir, to),
             on_ok=lambda: notice_delivered(state_dir, to),
+            state_dir=state_dir,
         )
     return reply, record
 
 
-def test_notice_failed(state_dir: Path, to: str) -> None:
-    """Remembers that the test notice to `to` was not delivered, while `to` is still the target set by command."""
+def notice_failed(state_dir: Path, to: str, home: str | None = None) -> None:
+    """Remembers that a notice to `to` was not delivered (`home`: it went to that platform's home channel instead),
+    while `to` is still the target set by command."""
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         current = _stored_notify(data)
         if current is None or Notify(**current).to != to:
             return "", None
-        data[FAILED_KEY] = {"to": to, "at": _show(datetime.now(UTC))}
+        data[FAILED_KEY] = {
+            "to": to,
+            "at": _show(datetime.now(UTC)),
+            **({"home": home} if home else {}),
+        }
         return "", {}
 
     _change(state_dir, fn)
@@ -376,13 +405,24 @@ def notice_delivered(state_dir: Path, to: str) -> None:
 
 
 def failed_line(cfg: PluginConfig) -> str:
-    """The warning that the last test notice to the target in force was not delivered; "" when there is none. It
-    names the platform, never the chat id."""
+    """The warning that the last notice to the target in force was not delivered, is waiting to be tried again or
+    went to the home channel instead; "" when there is none. It names the platform, never the chat id."""
+    from .hold import home_platforms
+
     failed = (load(cfg.state_dir) or {}).get(FAILED_KEY)
     n = notify_of(cfg)
     if not isinstance(failed, dict) or n.source != "command" or failed.get("to") != n.to:
         return ""
     where = f"{n.platform} chat" if n.chat_id else f"{n.platform} home channel"
+    if n.chat_id and notice_retry.pending(cfg.state_dir, n.to):
+        then = (
+            f", then sends it to the {n.platform} home channel"
+            if n.platform in home_platforms()
+            else ""
+        )
+        return RETRYING_TEXT.format(where=where, minutes=_RETRY_MINUTES, then=then)
+    if failed.get("home") == n.platform:
+        return FELL_BACK_TEXT.format(platform=n.platform)
     return FAILED_TEXT.format(where=where)
 
 
