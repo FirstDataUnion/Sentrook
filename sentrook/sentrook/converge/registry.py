@@ -164,6 +164,7 @@ REASONS: dict[str, ReasonText | None] = {
         "it does not follow from what you asked for",
     ),
     "cap.attended_owner": None,
+    "cap.local_code": None,
     "cap.unanswered_retry": None,
     "code.decode_to_shell": ReasonText(
         "it decodes hidden code and runs it",
@@ -375,6 +376,10 @@ REASONS: dict[str, ReasonText | None] = {
     "guardrail.plugin_disable": ReasonText(
         "it turns off or removes Sentrook",
         "it turns off or removes Sentrook",
+    ),
+    "guardrail.tampering_review": ReasonText(
+        "it may turn off or get around the agent's safety controls",
+        "it may turn off or get around the agent's safety controls",
     ),
     "guardrail.state_dir_write": ReasonText(
         "it writes into Sentrook's own files",

@@ -18,6 +18,7 @@ import pytest
 from test_aira_detectors import ex, floor_reasons, planir, run
 
 from sentrook.aira import detectors
+from sentrook.aira.exec_shape import derive_exec_shape
 from sentrook.aira.lists import load_lists
 
 BLOCK = "guardrail.approval_loosening"
@@ -74,7 +75,19 @@ def test_probe_keeps_its_tier(case):
         raw["host"]["workspace_root"] = case["workspace_root"]
     if "cwd" in case:
         raw["pending_call"]["arguments"]["cwd"] = case["cwd"]
+    if "pad" in case:
+        args = raw["pending_call"]["arguments"]
+        args["command"] = padded_before(args["command"], case["pad"])
     assert tier(raw) == case["expect"]
+
+
+def padded_before(command: str, size: int) -> str:
+    """`command` after a line of harmless padding, `size` characters long: past the parse limit, so
+    the command is read without the parser."""
+    room = size - len(command) - len("true\n")
+    out = "true" + " -x" * (room // 3) + " " * (room % 3) + "\n" + command
+    assert len(out) == size and not derive_exec_shape(out).parse_ok
+    return out
 
 
 def test_probe_names_are_unique():

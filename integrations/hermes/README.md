@@ -571,7 +571,7 @@ Where nobody can answer a review (the runs above), the call is **held**:
   and `why` say how many times it was held.
 - A hold nobody answers expires after 7 days, and nothing runs.
 
-A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
+A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. There are two exceptions, both held as a review would be: a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block, and an `execute_code` program that calls nothing on the network when only the URLs or commands written in its strings take it to a block. The traffic log records
 the scan with decision `held`, then your answer or the expiry; a call a pass let through is recorded as
 `allowed_by_pass`, and one a denial refused as `denied_by_owner`. `/sentrook history` shows them.
 
@@ -584,10 +584,15 @@ In the chat where you want Sentrook's notices (a direct message with the agent),
 ```
 
 From then on the notices of held calls, of scan failures on unattended runs and of Hermes's background saves go to
-that chat, and Sentrook sends a test notice there straight away. If it does not arrive, `/sentrook notify status`
-(and `status` and `verify`) says the last test notice was not delivered until a later notice gets through: check the
-Hermes log, and send `/sentrook notify here` again a few minutes later (on some platforms Hermes can reach a new chat
-only once it has listed it). On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
+that chat, and Sentrook sends a test notice there straight away. The first notice may take a few minutes to arrive:
+on some platforms (Mattermost, for one) Hermes can reach a new chat only once it has listed it, which it does every
+few minutes. The gateway (or the app's `hermes serve`) tries such a notice again for up to 10 minutes, including one a
+scheduled job's own process could not send; if it still cannot reach the chat, it sends
+the notice to the platform's home channel when there is one (set with `/sethome`), with a line saying why. A notice
+waiting to be tried again is dropped if you send `notify off` or set another target first. Until a notice
+gets through, `/sentrook notify status` (and `status` and `verify`) says whether it is still being tried, went to the
+home channel instead, or was not delivered; for the last, check the Hermes log and send `/sentrook notify here`
+again. On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
 them to that platform's home channel (set with `/sethome` in the chat you want). If Hermes does not say which chat a
 command came from, `notify here` uses the platform's home channel and the reply names it, so you can tell when that
 is not the chat you are in. A platform with no home channel is refused, with what to set.

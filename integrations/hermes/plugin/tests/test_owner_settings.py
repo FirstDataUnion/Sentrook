@@ -8,15 +8,16 @@ platforms added by command join `attended_platforms`. `status`, `verify`, `help`
 
 import json
 import types
+import uuid
 
 import pytest
 
 import plugin
-from plugin import cli, commands, hold, owner_settings
+from plugin import cli, commands, hold, owner_settings, planir
 
 from . import test_hold
 from .test_hold import _cron, send, slash, turn
-from .test_plugin import call
+from .test_plugin import call, without_generated_ids
 from .test_plugin import turn as chat_turn
 
 DM_USER = "u1"
@@ -100,6 +101,15 @@ def verify(h):
 
 
 def test_notify_here_in_a_telegram_dm_sends_the_next_held_call_notice_to_that_dm(h, monkeypatch):
+    # The hold and request ids contain the chat id, as random ones sometimes do: only the ids may.
+    real_hex, k = hold.secrets.token_hex, iter(range(256))
+    monkeypatch.setattr(
+        hold.secrets, "token_hex", lambda n: f"4242{next(k):02x}" if n == 3 else real_hex(n)
+    )
+    n = iter(range(1, 1000))
+    monkeypatch.setattr(
+        planir.uuid, "uuid4", lambda: uuid.UUID(f"42424242-0000-4000-8000-{next(n):012d}")
+    )
     del h.ctx.settings["owner_channel"]
     reply = from_chat(h, monkeypatch, "notify here")
     hold.wait_for_notices()
@@ -120,7 +130,7 @@ def test_notify_here_in_a_telegram_dm_sends_the_next_held_call_notice_to_that_dm
     assert rec["hold"]["notice"] == {"status": "queued", "target": "telegram chat"}
     assert line in status_lines(h)
     assert "set by command" in slash(h, "status")
-    assert "4242" not in json.dumps(h.traffic())
+    assert "4242" not in json.dumps(without_generated_ids(h.traffic()))
 
 
 def test_notify_here_sends_with_hermes_send_to_that_chat_and_thread(h, hermes_send, monkeypatch):
@@ -368,7 +378,7 @@ def test_notify_here_says_a_test_notice_was_sent_and_what_to_do_if_it_does_not_a
     reply = from_chat(h, monkeypatch, "notify here")
     hold.wait_for_notices()
     assert sent_test_notices(h) == ["telegram:4242"]
-    assert owner_settings.TEST_SENT.format(where="this chat") in reply
+    assert owner_settings.TEST_SENT_CHAT in reply
     assert "/sentrook notify status" in reply
     assert owner_settings.FAILED_TEXT[:20] not in slash(h, "notify status")
 
@@ -382,7 +392,7 @@ def test_a_test_notice_that_was_not_delivered_is_reported_until_a_notice_gets_th
     from_chat(h, monkeypatch, "notify here")
     hold.wait_for_notices()
     warning = owner_settings.failed_line(plugin._load()[0])
-    assert warning.startswith("The last test notice to the telegram chat was not delivered:")
+    assert warning.startswith("The last notice to the telegram chat was not delivered:")
     assert warning in slash(h, "notify status")
     assert warning in status_lines(h)
     assert warning in verify(h)["notice target"][1]

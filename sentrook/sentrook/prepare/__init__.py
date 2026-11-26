@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -58,6 +59,7 @@ from ..planir.models import (
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import (
     SessionState,
+    TokenStatus,
     decode_state,
     entity_hash,
     new_salt,
@@ -65,6 +67,7 @@ from ..state.token import (
     settle_pending,
 )
 from . import views
+from .code_reach import KernelEffects, kernel_effects, kernel_reads
 from .copies import CopyHistory, copy_history
 from .entities import (
     Entity,
@@ -80,6 +83,7 @@ from .entities import (
     extract_mentions,
     host_of_url,
     install_walk,
+    is_code_call,
     is_computed_package,
     is_under,
     normalise_host,
@@ -1346,6 +1350,79 @@ def _as_analysed(
     return out
 
 
+def kernel_hashes(state: SessionState, names: Iterable[str]) -> set[str]:
+    return {entity_hash(state.salt, "kernel", n) for n in names}
+
+
+def kernel_effects_of(state: SessionState, call: CanonicalCall) -> KernelEffects | None:
+    """What a code tool's call leaves in the conversation's interpreter (`code_reach.kernel_effects`); None
+    for any other call. A call cut to its head and tail (`too_large`) may leave anything."""
+    if not is_code_call(call):
+        return None
+    if call.too_large:
+        return KernelEffects(frozenset(), True)
+    return kernel_effects(call.command or "")
+
+
+#: The name before a `.py` (or `/__init__.py`) a call writes or names: `csv.py` next to a program loads
+#: instead of the library's `csv`. Read backwards from each `.py`, at most this many characters.
+_MODULE_NAME_BACK = 64
+_MODULE_NAME_TAIL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _module_files(text: str) -> set[str]:
+    """Module names whose file `text` names (`csv.py`, `csv/__init__.py`). Linear: one scan for `.py`, and a
+    bounded look back from each."""
+    out: set[str] = set()
+    at = text.find(".py")
+    while at >= 0:
+        end = at + 3
+        if end >= len(text) or not (text[end].isalnum() or text[end] == "_"):
+            stem_end = at - len("/__init__") if text[:at].endswith("/__init__") else at
+            m = _MODULE_NAME_TAIL.search(text[max(0, stem_end - _MODULE_NAME_BACK) : stem_end])
+            if m:
+                out.add(m.group(0))
+        at = text.find(".py", at + 3)
+    return out
+
+
+def mark_kernel_clear(
+    state: SessionState,
+    calls: list[CanonicalCall],
+    history: list[CanonicalCall] = (),  # type: ignore[assignment]
+) -> None:
+    """Mark the code-tool calls whose program may be read as code: the token is this session's (or the session
+    is new), nothing has changed the interpreter in a way that cannot be listed, the program reads no builtin
+    that an earlier call (or another call of this batch) rebound, and it imports no module whose file a call in
+    the request wrote or named (a `csv.py` next to the program would load instead of the library's)."""
+    tracked, unknown = state.kernel_marks()
+    if state.status not in (TokenStatus.VALID, TokenStatus.FIRST_STEP, TokenStatus.SEEDED):
+        return  # what earlier calls left in the interpreter is not known
+    code = [c for c in calls if is_code_call(c)]
+    if not code:
+        return
+    effects = {id(c): kernel_effects_of(state, c) for c in code}
+    written = [(c, _module_files(c.text or "")) for c in [*history, *calls]]
+    for c in code:
+        reads = kernel_reads(c.command or "")
+        if unknown or reads is None:
+            continue
+        others = set(tracked)
+        batch_unknown = False
+        for o in code:
+            eff = effects[id(o)]
+            if o is c or eff is None:
+                continue
+            others |= kernel_hashes(state, eff.names)
+            batch_unknown = batch_unknown or eff.unknown
+        if batch_unknown or kernel_hashes(state, reads) & others:
+            continue
+        module_files = set().union(*(names for o, names in written if o is not c))
+        if any(r.startswith("m:") and r[2:] in module_files for r in reads):
+            continue
+        c.kernel_clear = True
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -1404,6 +1481,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for s in (planir.pending_call.batch.siblings if planir.pending_call.batch else [])
     ]
     history = [canonical_history(platform, h) for h in planir.history]
+    mark_kernel_clear(state, [pending, *siblings], history)
     # An OpenClaw background run's exec comes with the run's `self_edit` block: a self-edit only when it is a plain
     # save into the declared store (`own_store.exec_store_writes`). Otherwise the block is dropped here, before
     # anything reads it, and the command is scored as the ordinary command it is.
@@ -1459,6 +1537,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
         resolution = resolve_pending(platform, pending, writes, home=home, workspace_root=ws)
         resolved = resolution.calls
+        for call in resolved:
+            call.kernel_clear = pending.kernel_clear and is_code_call(call)
         if resolution.truncated:
             coverage.append(
                 CoverageNote("sibling_join_truncated", f"first {len(resolved)} resolved commands")

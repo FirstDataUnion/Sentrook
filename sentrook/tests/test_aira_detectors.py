@@ -993,9 +993,9 @@ def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
         hx("python3 -m pytest tests/plugins"),
         hx("hermes -p work plugins disable other-plugin"),
         ex("npx openclaw plugins enable sentrook-openclaw"),
-        # Quoted text is one argument, not a subcommand.
+        # Quoted text is one argument, not a subcommand (asked when the command cannot be parsed:
+        # test_guardrail_unparsed.py).
         hx('hermes -q "plugins disable sentrook: what does that do?"'),
-        hx("hermes -q 'plugins disable sentrook' $(("),
         # After `-c <code>` the interpreter's options are over; `-m` is the script's.
         hx("python3 -c 'import sys' -m hermes_cli.main gateway stop"),
         hx('hermes chat -q "run hermes plugins disable sentrook"'),

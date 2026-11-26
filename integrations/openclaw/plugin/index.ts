@@ -1013,8 +1013,9 @@ const plugin = {
         if (!bgSave && runKind && execStore && selfEdit.scannedAsSelfEdit(resp)) {
           bgSave = { kind: runKind, store: execStore };
         }
-        // A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
-        // retry is held for the owner. The attended-owner ceiling is dropped there (`unattendedView`).
+        // A run nobody can answer lowers a block to a review only for a retry of a review nobody answered or code
+        // that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
+        // (`unattendedView`).
         verdict = decide(unattended ? unattendedView(resp) : resp, cfg);
         if (
           // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
