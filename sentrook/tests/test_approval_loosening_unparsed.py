@@ -356,7 +356,6 @@ def test_a_short_command_with_a_syntax_error_still_blocks_a_real_loosening():
         "echo $[ 1 << 2 ]\n:|openclaw config set tools.exec.security full\n2",
         "echo ${x:- <<EOF }\nopenclaw config set tools.exec.security full\nEOF",
         "echo ${x:- <<EOF }\ntrue;openclaw config set tools.exec.security full\nEOF",
-        "cat <<EOF\nopenclaw config set tools.exec.security full",
         'echo "<<EOF"\nopenclaw config set tools.exec.security full\nEOF',
         "echo '<<EOF'\nopenclaw config set tools.exec.security full\nEOF",
         'echo "$(echo \'"\')" ;openclaw config set tools.exec.security full',
@@ -374,7 +373,6 @@ def test_a_short_command_with_a_syntax_error_still_blocks_a_real_loosening():
         "old arithmetic, then after a pipe",
         "parameter default",
         "parameter default, then after ;",
-        "unclosed heredoc",
         "double-quoted heredoc marker",
         "single-quoted heredoc marker",
         "quote inside a substitution",
@@ -386,6 +384,27 @@ def test_a_command_after_a_shift_or_quote_is_not_taken_for_a_heredoc_body(comman
     """No heredoc and no quote is open where the command starts, so it is blocked (a misread could
     only move it to the whitespace reading, the review tier)."""
     fires(ex(padded(command, MAX_PARSE_CHARS + 1)))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash <<EOF\nhermes config set approvals.mode off\n",
+        "sh -s <<'EOF'\nhermes config set approvals.mode off\n",
+        "sudo bash <<EOF\nhermes config set approvals.mode off\n",
+    ],
+)
+def test_a_shell_fed_a_heredoc_with_no_closing_line_still_blocks(command):
+    """A shell reading its commands from the heredoc runs the body, closed or not."""
+    fires(h_ex(command))
+    fires(h_ex(padded(command, MAX_PARSE_CHARS + 1)))
+
+
+def test_the_body_of_a_heredoc_with_no_closing_line_is_asked_not_blocked():
+    """The shell runs nothing of such a body (it reads it as the heredoc up to the end)."""
+    reviews(
+        ex(padded("cat <<EOF\nopenclaw config set tools.exec.security full", MAX_PARSE_CHARS + 1))
+    )
 
 
 # --------------------------------------------------------------------------- every parsed form
