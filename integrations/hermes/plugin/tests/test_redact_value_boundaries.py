@@ -250,6 +250,11 @@ PIPE_LONG_INPUTS = [
     ("the password is ", "|ab", ""),
     ("", "token=ab|cd ", ""),
     ("TOKEN=abcdefg", "|cu''x", ""),
+    ("TOKEN=abcdefg", "|" + "x" * 79, ""),
+    ("TOKEN=abcdefg", "|a;b", ""),
+    ("TOKEN=abcdefg", ";ab&", ""),
+    ("the password is ", ";ab&", ""),
+    ("token: ", "a|{b", ""),
 ]
 
 

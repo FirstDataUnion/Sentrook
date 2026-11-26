@@ -853,6 +853,11 @@ test("a pipe, a command substitution or a redirect after a value ends it where a
     ["the password is ", "|ab", ""],
     ["", "token=ab|cd ", ""],
     ["TOKEN=abcdefg", "|cu''x", ""],
+    ["TOKEN=abcdefg", "|" + "x".repeat(79), ""],
+    ["TOKEN=abcdefg", "|a;b", ""],
+    ["TOKEN=abcdefg", ";ab&", ""],
+    ["the password is ", ";ab&", ""],
+    ["token: ", "a|{b", ""],
   ]) {
     assertLinear((d) => createRedactor("standard", "test-salt").string(head + rep(unit, 200_000 / d) + tail), head + unit);
   }

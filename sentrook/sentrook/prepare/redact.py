@@ -1,6 +1,6 @@
 """The scanner's second redaction pass over the v2 Jev views (`redact-v15`; `redact-v14` took a pipe or a command
-substitution straight after an unquoted value into it (`TOKEN=<value>|curl …|sh`, `TOKEN=<value>$(…)`), so the
-command after it was hidden, `redact-v13` ended an unquoted key's value at `&`, `,` or `;` and a quoted one too
+substitution straight after an unquoted value into it (`TOKEN=<value>|curl …|sh`, `TOKEN=<value>$(…)`), and a
+sentence's value ran on through `&`, `,`, `;` and `|`, so the command after it was hidden, `redact-v13` ended an unquoted key's value at `&`, `,` or `;` and a quoted one too
 (`password=<value>&<rest>`), so the rest of it stayed raw, `redact-v12`
 replaced a quoted key's value that stands in for a secret as if it were one (`"access_token": "ya29.a0..."`,
 `"token": "REDACTED"`), `redact-v11` replaced a key's value
@@ -85,34 +85,38 @@ _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
 #: The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
 #: `(token=X)`).
 _VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
+#: What a command after a value looks like, after `&`, `,`, `;` or `|`: a word with more after it on its line (`curl …`,
+#: `w x`), maybe straight after it (`curl${IFS}…`, `curl$IFS…`, `reboot)`, `base64|sh`, `sort<x`); a word before `;`,
+#: `&`, `&&` or `;;` that ends its line or has a command after it (`reboot;`, `reboot;echo …`, `reboot&&echo …`); a word
+#: with quotes or an escape inside it (`cu''rl`, `c\url`); or a command led by a symbol: a substitution or a variable
+#: (`$(…)`, `$SHELL`, `${IFS}`, `$'…'`), a subshell or a group (`(…)`, `{ …; }`) or a path (`./run.sh`, `../bin/x`,
+#: `/bin/sh`, `~/x.sh`). A tail that runs to the end of the line, a lone word included (`TOKEN=<value>|sh`,
+#: `TOKEN=<value>;make`), is part of the value, as a password's tail would be.
+_COMMAND_ENDS = (
+    r"[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|<>`)]|\\t|\$[{(A-Za-z_]"
+    r"|[;&]{1,2}(?:[ \t]|(?![^\n])|[A-Za-z_][A-Za-z0-9_.-]{0,40}[ \t]))"
+    r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
+    r"|[A-Za-z_](?:[ \t]|\\t)|\$[(A-Za-z_{'\"]|\(|\{[ \t]|\.\.?/|/[A-Za-z]|~/"
+)
+#: What ends an unquoted value at `|`: a command (`_COMMAND_ENDS`), a run of anything but spaces and quotes with more
+#: after it on its line (`|7z x`, `|[c]url …`, `|c*rl …`, `|cu$@rl …`, `|/??n/?h -c …`), which a shell runs as a
+#: command, or a brace list (`|{curl,…}`).
+_PIPE_ENDS = _COMMAND_ENDS + r"|[^\s|\"'\\]{1,80}(?:[ \t]|\\t)+[^\s\"'\\]|\{[^\s,{}|]{1,40},"
 #: What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
 #: maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
-#: `&9x=1`), a word with more after it on its line, which is a command or a statement (`;curl${IFS}…`, `;npm publish`, `;next()`),
-#: a word with quotes or an escape inside it (`;cu''rl`, `;c\url`), or a command led by a symbol: a substitution or a
-#: variable (`;$(…)`, `;$SHELL`, `;${IFS}`), a subshell or a group (`;(…)`, `;{…}`), a path (`;./run.sh`, `;../bin/x`,
-#: `;/bin/sh`, `;~/x.sh`) or a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a
-#: digit, is part of the value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
+#: `&9x=1`), a command (`_COMMAND_ENDS`), a word straight before `(` or `{` (`;next()`), `(` or `{` (`;(…)`, `;{…}`), or
+#: a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a digit, is part of the
+#: value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
 _SEPARATOR_ENDS = (
     r"(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});"
     r"|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]"
     r"|[0-9][A-Za-z0-9_.\[\]%-]{0,40}="
-    r"|[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|()<>`{]|\\t|\$[{(])"
-    r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
-    r"|\$[(A-Za-z_{]|[({]|\.\.?/|/[A-Za-z]|~/|(?<=;)#"
-)
-#: What ends an unquoted value at `|`, a pipe into a command: a word with more after it on its line (`|curl …`,
-#: `|curl${IFS}…`, `|curl$IFS…`, `|base64|sh`), a word with quotes or an escape inside it (`|cu''rl`), or a command led
-#: by a symbol (`|$(…)`, `|$SHELL`, `|(…)`, `|{ …; }`, `|./run.sh`, `|/bin/sh`, `|~/x.sh`). Narrower than
-#: `_SEPARATOR_ENDS` (no keys, no `(`, `)` or `{` straight after a word, no `{` without a space after it), as `|` is
-#: common in generated passwords. A tail that runs to the end of the line, a lone word included (`TOKEN=<value>|sh`), is
-#: part of the value.
-_PIPE_ENDS = (
-    r"[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|<>`]|\\t|\$[{(A-Za-z_])"
-    r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
-    r"|\$[(A-Za-z_{]|\(|\{[ \t]|\.\.?/|/[A-Za-z]|~/"
+    r"|[A-Za-z_][A-Za-z0-9_.-]{1,40}[({]|[({]|(?<=;)#|" + _COMMAND_ENDS
 )
 #: `|` inside an unquoted value: part of it (`password=<value>|<rest>`) unless what follows is a space, the end, a quote
-#: or `_PIPE_ENDS`. A value never ends in `|`, so `||` or `|&` before a command ends it too (`TOKEN=<value>||curl …`).
+#: or `_PIPE_ENDS`, so a pipe into a command stays visible (`TOKEN=<value>|curl …|sh`). Unlike after `&`, `,` or `;`, a
+#: key or a word straight before `(` or `{` does not end it, as `|` is common in generated passwords. A value never ends
+#: in `|`, so `||` or `|&` before a command ends it too (`TOKEN=<value>||curl …`).
 _PIPE_CHAR = r"\|(?=[^\s\"'<>`\\])(?!" + _PIPE_ENDS + ")"
 #: A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, `&&`
 #: or `;;`, or `_SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
@@ -125,9 +129,17 @@ _VALUE_CHAR = (
     + _SEPARATOR_ENDS
     + "))"
 )
-#: The last character of an unquoted value: not a pipe and not the `$` of a command substitution, so the
-#: command after the value is whole (`TOKEN=<value>$(…)`).
+#: The last character of an unquoted value: not a pipe and not the `$` of a command substitution, so the command after
+#: the value is whole (`TOKEN=<value>$(…)`).
 _UNQUOTED_END = r"(?!\||\$\()" + _VALUE_END
+#: After an opening quote that does not close before a space (`password='<value>|<rest> …`), where a shell reads `|` as
+#: a character: `|` is part of the value, the rest as in `_VALUE_CHAR`.
+_QUOTED_RUN_CHAR = (
+    r"(?:[^\s\"'&,;<>`\\$]|\$(?!\()|(?<![)\]])[&,;](?=[^\s\"'<>`\\])(?!(?<=&)&|(?<=;);|"
+    + _SEPARATOR_ENDS
+    + "))"
+)
+_QUOTED_RUN_END = r"(?!\$\()" + _VALUE_END
 #: In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
 #: there, from its first character.
 _QUERY_VALUE_CHAR = (
@@ -154,11 +166,21 @@ _QUERY_VALUE = re.compile(
     + _UNQUOTED_END
     + r"(?=[.:!?)\]]))"
 )
-#: A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it, and `|`
-#: ends it where `_PIPE_CHAR` says (`token: <value>|curl …`).
+#: A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. Unquoted, it
+#: ends at `&`, `,`, `;` and `|` where an unquoted value after a key does (`token: <value>|curl …`, `password:
+#: <value>;curl …`); after a quote, they are part of it.
+_PROSE_CHAR = (
+    r"(?:[^\s\"'`⟦⟧$<>\\|&,;]|"
+    + _PIPE_CHAR
+    + r"|(?<![)\]])[&,;](?=[^\s\"'<>`\\])(?!(?<=&)&|(?<=;);|"
+    + _SEPARATOR_ENDS
+    + "))"
+)
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
-    r"(?P<v>(?:[^\s\"'`⟦⟧$<>\\|]|" + _PIPE_CHAR + r"){5,199}[^\s\"'`⟦⟧$<>\\.,;:!?)\]|])"
+    r"(?P<v>(?<=[\"'`])[^\s\"'`⟦⟧$<>\\]{5,199}[^\s\"'`⟦⟧$<>\\.,;:!?)\]]|(?<![\"'`])"
+    + _PROSE_CHAR
+    + r"{5,199}[^\s\"'`⟦⟧$<>\\.,;:!?)\]|&])"
 )
 #: Words, not secrets: one or more words with at most a capital first letter, maybe hyphenated
 #: (`required`, `Read-only`, `ENABLED`), an identifier (`accessToken`, `GITHUB_TOKEN`), or a hyphenated
@@ -507,7 +529,15 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
             + _CREDENTIAL_KEY
             + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
             + _NOT_A_PORT
-            + r"(?P<v>(?:[^\s\"'⟦$*{\[<%&,;`\\|]|"
+            + r"(?P<v>(?<=[\"'])[^\s\"'⟦$*{\[<%&,;`\\](?:"
+            + _QUOTED_RUN_CHAR
+            + "{6,}"
+            + _QUOTED_RUN_END
+            + "|"
+            + _QUOTED_RUN_CHAR
+            + "{5}"
+            + _QUOTED_RUN_END
+            + r"(?=[.:!?)\]]))|(?<![\"'])(?:[^\s\"'⟦$*{\[<%&,;`\\|]|"
             + _PIPE_CHAR
             + ")(?:"
             + _VALUE_CHAR
