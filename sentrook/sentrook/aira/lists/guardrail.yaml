@@ -21,7 +21,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 6
+version: 7
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -511,8 +511,12 @@ destination_heads:
   - rsync
   - install
   - ln
-# Hermes `execute_code` and inline interpreter code: a guardrail path in the text plus one of these
-# markers is a write. The script reaches no file hook, so its text is checked instead.
+# Hermes `execute_code` and inline interpreter code. The script reaches no file hook, so its text is
+# read instead. A file it writes, deletes, moves or changes whose path the scan resolves into
+# Sentrook's state (`approval_loosening.code_sinks` and `code_change_calls` below) takes the block
+# floor. Otherwise a guardrail path anywhere in the text plus one of these markers takes the review
+# floor (`guardrail.state_dir_write_review`): the path may only be mentioned (a note, a message, data
+# written elsewhere) or reached in a way the scan cannot follow, so the owner is asked.
 content_write_marker_patterns:
   - 'open\s*\([^)]*["''][wax]\+?["'']'
   - '\.write_text\('
@@ -524,3 +528,28 @@ content_write_marker_patterns:
   - '\.rmdir\('
   - '\bfs\.(?:writeFile|appendFile|unlink|rm|rmdir|rename|truncate|chmod)\w*\('
   - '\bsubprocess\.\w+\([^)]*\b(?:rm|mv|tee|truncate)\b'
+  # Opened with a write mode after a nested call (`open(os.path.expanduser(...), 'w')`), or `r+`.
+  - '(?<![\w.])open\s*\([^\n]{0,300}?["''][rbt]*[wax+][bt+]*["'']'
+  - '\bos\.(?:open|ftruncate|symlink|link|chown|utime|removedirs)\('
+  - '\.(?:truncate|chmod|touch|symlink_to|hardlink_to)\('
+  - '\b(?:io\.)?FileIO\('
+  - '\bfs\.promises\.\w+\('
+
+# Calls in inline code that change the file their argument names (`arg`, 1-based) or, for a
+# `method`, the path they are called on (a `pathlib` path written in place only: a DataFrame or a
+# buffer truncates too). Read with `approval_loosening.code_sinks` for the block tier above.
+# `str.replace` shares the name of `Path.replace`, so `replace` is not a method here.
+code_change_calls:
+  - call: '\bos\.(?:remove|unlink|rmdir|removedirs|truncate|chmod|chown|rename|replace)'
+    arg: 1
+  # A link is made at its second argument; the file it points to is not changed.
+  - call: '\bos\.(?:symlink|link)'
+    arg: 2
+  - call: '\bshutil\.(?:rmtree|move|chown)'
+    arg: 1
+  - call: '(?<![\w.])(?:io\.)?FileIO'
+    arg: 1
+    mode: true
+  - call: '\bfs(?:\.promises)?\.(?:writeFile|appendFile|unlink|rm|rmdir|rename|truncate|chmod)\w*'
+    arg: 1
+  - method: 'unlink|rmdir|chmod|truncate|touch|symlink_to|hardlink_to|rename'

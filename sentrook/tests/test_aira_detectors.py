@@ -1274,7 +1274,7 @@ def test_c4star_execute_code_content_is_checked():
     )
     _floor(env, "guardrail.state_dir_write")
     finding = next(f for f in env.evidence["findings"] if f["class"] == "C4*")
-    assert finding["mechanism"] == "content_match"
+    assert finding["mechanism"] == "inline_code"
     _, env = run(
         planir(
             "execute_code",
@@ -1284,6 +1284,118 @@ def test_c4star_execute_code_content_is_checked():
         )
     )
     assert env.floors == []  # a read
+
+
+def _code(code: str) -> dict:
+    return planir("execute_code", "exec", {"code": code}, platform="hermes")
+
+
+_NOTES = "import os\nOUT=os.path.expanduser('~/.hermes/attachments/drafts/')\n"
+_STATE = "import os\nS=os.path.expanduser('~/.hermes/sentrook/grants.json')\n"
+_REVIEW = "guardrail.state_dir_write_review"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nopen(os.path.expanduser('~/.hermes/sentrook/grants.json'),'w').write('{}')",
+        "import os\nP=os.path.expanduser('~/.hermes')\nopen(P+'/sentrook/grants.json','w').write('{}')",
+        "from pathlib import Path\n(Path.home()/'.openclaw'/'sentrook'/'grants.json').write_text('{}')",
+        "import shutil\nshutil.move('/home/u/.hermes/sentrook/grants.json', '/tmp/g.json')",
+        _NOTES + "open(OUT+'a.md','w').write('x')\n"
+        "os.remove(os.path.expanduser('~/.hermes/sentrook/grants.json'))",
+        _STATE + "os.symlink('/tmp/evil.json', S)",
+        _STATE + "from pathlib import Path\nPath(S).chmod(0)",
+        _STATE + "import io\nio.FileIO(S,'w').write(b'{}')",
+        "const fs=require('fs');fs.promises.writeFile('/home/u/.openclaw/sentrook/grants.json','{}')",
+    ],
+    ids=[
+        "literal",
+        "variable",
+        "pathlib",
+        "move-out",
+        "placed-plus-remove",
+        "symlink-at-state",
+        "chmod",
+        "fileio",
+        "fs-promises",
+    ],
+)
+def test_c4star_inline_code_changing_state_takes_the_block_floor(code):
+    _, env = run(_code(code))
+    _floor(env, "guardrail.state_dir_write")
+
+
+def test_c4star_inline_code_relative_write_resolves_against_its_folder():
+    raw = planir(
+        "execute_code",
+        "exec",
+        {"code": "open('grants.json','w').write('{}')", "cwd": "~/.hermes/sentrook"},
+        platform="hermes",
+    )
+    _, env = run(raw)
+    _floor(env, "guardrail.state_dir_write")
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # Mentions only: the files written are elsewhere.
+        _NOTES
+        + "T='The fallback lives in sentrook/sentrook/jev/client.py and the probe prompts.'\n"
+        "open(OUT+'Ticket drafts.md','w',encoding='utf-8').write(T)",
+        _NOTES + "p=OUT+'notes.md'\n"
+        "t=open(p,encoding='utf-8').read().replace('old','new')\n"
+        "open(p,'w',encoding='utf-8').write(t + '\\nGrants live in ~/.hermes/sentrook/grants.json.')",
+        "from pathlib import Path\n"
+        "(Path.home()/'notes'/'sentrook.md').write_text('see sentrook/sentrook/aira/detectors.py')",
+        # Reaching the state in ways the scan does not follow: asked, not passed.
+        "d=find_home()\nopen(d+'/sentrook/grants.json','w').write('{}')",
+        _STATE + "p=S\nopen(p,'w').write('{}')\np='/tmp/done'",
+        _STATE + "p='/tmp/x'\nfor p in [S]:\n    open(p,'w').write('{}')",
+        "import os\nos.chdir(os.path.expanduser('~/.hermes/sentrook'))\nopen('grants.json','w').write('{}')",
+        _STATE + "open('/tmp/x','w',opener=lambda p,f: os.open(S, f|os.O_TRUNC))",
+        _STATE + "M='w'\nopen('/tmp/a.md','w').write('x')\nopen(S, M).write('{}')",
+        _STATE + "os.ftruncate(os.open(S, os.O_WRONLY), 0)",
+        _STATE + "open(S,'r+').truncate(0)",
+        _STATE + "os.symlink(S,'/tmp/l')\nopen('/tmp/l','w').write('{}')",
+        # Not changes to the state at all, but read so: asked, never blocked.
+        _STATE + "import pandas as pd\ndf = pd.read_json(S)\ndf.truncate(after=5)",
+        _STATE + "import io\nbuf = io.StringIO(S)\nbuf.truncate(0)",
+        _STATE + "os.remove('/tmp/backup/' + os.path.basename(S))",
+        "import tempfile, shutil\nd = tempfile.mkdtemp(prefix='sentrook')\nshutil.rmtree(d)\n"
+        "print('cleaned ~/.hermes/sentrook/ scratch copy')",
+    ],
+    ids=[
+        "ticket-draft",
+        "content-names-state-file",
+        "pathlib-elsewhere",
+        "unresolved",
+        "reassigned",
+        "loop",
+        "chdir",
+        "opener",
+        "mode-variable",
+        "os-open",
+        "truncate-file-object",
+        "symlink-from-state",
+        "dataframe-truncate",
+        "buffer-truncate",
+        "basename-of-state",
+        "temp-dir-prefix",
+    ],
+)
+def test_c4star_inline_code_naming_a_sentrook_path_is_asked_not_blocked(code):
+    _, env = run(_code(code))
+    assert "guardrail.state_dir_write" not in floor_reasons(env), env.evidence["findings"]
+    (floor,) = [f for f in env.floors if f.reason == _REVIEW]
+    assert floor.enforce is Enforce.REVIEW and floor.min_risk == 0.5
+    assert not of(env, SELF, _REVIEW)  # the review tier adds no score
+
+
+def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
+    _, env = run(_code("print('Grants live in ~/.hermes/sentrook/grants.json')"))
+    assert env.floors == []
 
 
 @pytest.mark.parametrize(

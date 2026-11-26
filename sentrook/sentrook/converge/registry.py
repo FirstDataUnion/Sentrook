@@ -385,6 +385,10 @@ REASONS: dict[str, ReasonText | None] = {
         "it writes into Sentrook's own files",
         "it writes into Sentrook's own files",
     ),
+    "guardrail.state_dir_write_review": ReasonText(
+        "it may change Sentrook's own files",
+        "it may change Sentrook's own files",
+    ),
     "jev.concealment": ReasonText(
         "it seems to hide what it does",
         "it seems to hide what it does",

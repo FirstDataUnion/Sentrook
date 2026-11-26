@@ -19,6 +19,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import posixpath
 import re
 import shlex
 from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
@@ -2772,6 +2773,10 @@ class _Tree:
     root: str  # regex source with `{home}`
 
 
+#: A code call naming the file it changes: (regex up to its `(`, call|method, argument, needs a write mode).
+_CodeSink = tuple[re.Pattern[str], str, int, bool]
+
+
 @dataclass(frozen=True)
 class _LooseningRules:
     """`guardrail.approval_loosening`, compiled."""
@@ -2792,9 +2797,7 @@ class _LooseningRules:
     loose_values: tuple[re.Pattern[str], ...]
     approval_keys: tuple[re.Pattern[str], ...]
     inplace_heads: frozenset[str]
-    code_sinks: tuple[
-        tuple[re.Pattern[str], str, int, bool], ...
-    ]  # (regex, call|method, arg, mode)
+    code_sinks: tuple[_CodeSink, ...]
     code_commands: tuple[re.Pattern[str], ...]
     replace_heads: frozenset[str]
     cd_heads: frozenset[str]
@@ -2810,6 +2813,37 @@ class _LooseningRules:
 
 
 _LOOSENING_CACHE: dict[int, tuple[Any, _LooseningRules]] = {}
+
+
+def _compile_code_sinks(entries: Any) -> tuple[_CodeSink, ...]:
+    """`code_sinks`-shaped list entries (`call` or `method`, `arg`, `mode`), compiled."""
+    return tuple(
+        (
+            re.compile(
+                r"(?:" + str(c["call"]) + r")\s*\("
+                if c.get("call")
+                else r"\.(?:" + str(c["method"]) + r")\s*\("
+            ),
+            "call" if c.get("call") else "method",
+            int(c.get("arg", 1)),
+            bool(c.get("mode")),
+        )
+        for c in entries or ()
+    )
+
+
+_CODE_CHANGE_CACHE: dict[int, tuple[Any, tuple[_CodeSink, ...]]] = {}
+
+
+def _code_change_calls(lists: Lists) -> tuple[_CodeSink, ...]:
+    raw = lists.get("guardrail", "code_change_calls", default=[]) or []
+    cached = _CODE_CHANGE_CACHE.get(id(raw))
+    if cached is None or cached[0] is not raw:
+        cached = (raw, _compile_code_sinks(raw))
+        _CODE_CHANGE_CACHE[id(raw)] = cached
+    return cached[1]
+
+
 _VALUE = r"""[ \t]*[:=][ \t]*(?:&\w+[ \t]+|!!?\w+[ \t]+)*["']?(?P<v>[^\s"',;}\]#)/\\<]+)"""
 
 
@@ -2882,19 +2916,7 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
         loose_values=pats("loosening_value_patterns"),
         approval_keys=pats("approval_key_patterns"),
         inplace_heads=frozenset(str(h) for h in raw.get("inplace_heads") or ()),
-        code_sinks=tuple(
-            (
-                re.compile(
-                    r"(?:" + str(c["call"]) + r")\s*\("
-                    if c.get("call")
-                    else r"\.(?:" + str(c["method"]) + r")\s*\("
-                ),
-                "call" if c.get("call") else "method",
-                int(c.get("arg", 1)),
-                bool(c.get("mode")),
-            )
-            for c in raw.get("code_sinks") or ()
-        ),
+        code_sinks=_compile_code_sinks(raw.get("code_sinks")),
         code_commands=pats("code_command_patterns"),
         replace_heads=frozenset(str(h) for h in raw.get("replace_heads") or ()),
         cd_heads=frozenset(str(h) for h in raw.get("cd_heads") or ()),
@@ -3786,8 +3808,13 @@ def _receiver(text: str, end: int) -> str:
 
 def _code_sink_targets(text: str, rules: _LooseningRules) -> list[str]:
     """The expression each write sink in inline code names as its file."""
+    return _code_targets(text, rules.code_sinks)
+
+
+def _code_targets(text: str, sinks: Sequence[_CodeSink]) -> list[str]:
+    """The expression each of `sinks` in inline code names as its file."""
     out: list[str] = []
-    for rx, kind, argn, needs_mode in rules.code_sinks:
+    for rx, kind, argn, needs_mode in sinks:
         for n, m in enumerate(rx.finditer(text)):
             if n >= _SINK_MATCHES:
                 break
@@ -3803,6 +3830,50 @@ def _code_sink_targets(text: str, rules: _LooseningRules) -> list[str]:
                 receiver = _receiver(text, m.start())
                 if receiver:
                     out.append(receiver)
+    return out
+
+
+#: Calls a path expression may hold and still be read as a path: the home directory, joining, `Path`.
+_PATH_HELPER = re.compile(
+    r"(?:os\.path\.(?:join|expanduser)|(?:pathlib\.)?(?:Pure)?(?:Posix)?Path(?:\.home)?|"
+    r"os\.getenv|os\.environ\.get|(?:os\.)?homedir|require|path\.join|str)\Z"
+)
+_CALL_NAME = re.compile(r"([A-Za-z_$][\w$.]*)\s*\(")
+#: A method's receiver read as a path: a `pathlib` path written in place.
+_PATH_RECEIVER = re.compile(r"\A\(?\s*(?:pathlib\.)?(?:Pure)?(?:Posix)?Path\b")
+
+
+def _only_path_calls(expr: str) -> bool:
+    """Whether every call in `expr` (outside its string literals) is a path helper (`_PATH_HELPER`).
+    `_code_path` reads the literals inside any call, so `os.path.basename(S)` or `mkdtemp(prefix='x')`
+    would otherwise read as the path in their arguments."""
+    bare = _CODE_TOKEN.sub(lambda m: "''" if m.group("lit") else m.group(0), expr)
+    return all(_PATH_HELPER.match(m.group(1)) for m in _CALL_NAME.finditer(bare))
+
+
+def _code_changed_paths(text: str, lists: Lists, cwd: str | None) -> list[str]:
+    """The files inline code writes, deletes, moves or changes, where the scan resolves the path: the
+    approval-loosening write sinks and `guardrail.yaml: code_change_calls`. A path is resolved only
+    from literals, variables and path helpers; a method counts only on a `pathlib` path written in
+    place; a relative path only against a known `cwd`. What the code changes some other way, or
+    through a path it computes, is not here."""
+    variables = _code_variables(text, only_paths=True)
+    out: list[str] = []
+    for sinks in (_loosening_rules(lists).code_sinks, _code_change_calls(lists)):
+        for kind in ("call", "method"):
+            for target in _code_targets(text, [s for s in sinks if s[1] == kind]):
+                if not _only_path_calls(target):
+                    continue
+                if kind == "method" and not _PATH_RECEIVER.match(target):
+                    continue
+                path = _code_path(target, variables)
+                if path is None:
+                    continue
+                if not path.startswith(("/", "~")):
+                    if not cwd:
+                        continue
+                    path = posixpath.join(cwd, path)
+                out.append(path)
     return out
 
 
@@ -3845,11 +3916,16 @@ def _code_path(expr: str, variables: dict[str, str]) -> str | None:
     return joined.replace(_HOME_MARK, "~") or None
 
 
-def _code_variables(code: str) -> dict[str, str]:
-    """Variables the code assigns a path, a path part or the home directory."""
+def _code_variables(code: str, *, only_paths: bool = False) -> dict[str, str]:
+    """Variables the code assigns a path, a path part or the home directory. `only_paths`: a value
+    built through a call other than a path helper (`_only_path_calls`) is one the scan cannot read,
+    and the variable is left unknown."""
     variables: dict[str, str] = {}
     for m in _CODE_ASSIGN.finditer(code):
         expr = m.group("expr").strip()
+        if only_paths and not _only_path_calls(expr):
+            variables.pop(m.group("name"), None)
+            continue
         if not expr:
             continue
         home = _CODE_HOME.fullmatch(expr)
@@ -4982,7 +5058,11 @@ def _sentrook_paths(text: str) -> Iterator[re.Match[str]]:
 
 #: Guardrail reasons of the review tier: the owner is always asked, the floor never blocks.
 _GUARDRAIL_REVIEW_REASONS = frozenset(
-    {"guardrail.approval_loosening_review", "guardrail.tampering_review"}
+    {
+        "guardrail.approval_loosening_review",
+        "guardrail.tampering_review",
+        "guardrail.state_dir_write_review",
+    }
 )
 
 
@@ -5085,15 +5165,28 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     if a.kind is not ToolKind.EXEC:
         return out
 
-    # 2. Inline interpreter code (Hermes `execute_code`, `python -c`): a guardrail path plus a
-    #    write marker in the same text.
+    # 2. Inline interpreter code (Hermes `execute_code`, `python -c`). A file the code writes, deletes,
+    #    moves or changes whose path the scan resolves into Sentrook's state takes the block floor.
+    #    Otherwise a guardrail path anywhere in the text plus a write marker takes the review floor:
+    #    the text may only mention the path (a note, a message, data the code writes elsewhere), or
+    #    reach it in a way the scan cannot follow, so the owner is asked.
     if a.inline_code or (a.shape is not None and a.shape.inline_eval):
+        blocked = False
+        for path in _code_changed_paths(a.scan_text, lists, a.cwd):
+            reason = _guardrail_path_reason(path, None, ctx)
+            if reason:
+                emit(reason, None, {"path": path, "mechanism": "inline_code"})
+                blocked = True
+                break
         markers = lists.patterns("guardrail", "content_write_marker_patterns")
-        if _match_any(markers, a.scan_text):
+        if not blocked and _match_any(markers, a.scan_text):
             for m in _sentrook_paths(a.scan_text):
-                reason = _guardrail_path_reason(m.group(0), None, ctx)
-                if reason:
-                    emit(reason, None, {"path": m.group(0), "mechanism": "content_match"})
+                if _guardrail_path_reason(m.group(0), None, ctx):
+                    emit(
+                        "guardrail.state_dir_write_review",
+                        None,
+                        {"path": m.group(0), "mechanism": "content_match"},
+                    )
                     break
 
     # 3. CLI forms: plugin disable/remove, the plugin's own commands, config entry, gateway stop,
