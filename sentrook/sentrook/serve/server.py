@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import time
+import traceback
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from ..enums import ScanStatus
@@ -39,6 +42,9 @@ from .runtime import ServeRuntime
 logger = logging.getLogger("sentrook.serve")
 MAX_BODY_BYTES = 4 * 1024 * 1024
 TESTNEST_PATH = "/testnest/scan"
+# What a log line may name: fixed strings from code, never the client's own text.
+_LOG_METHODS = ("GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "PATCH")
+_LOG_ROUTES = ("/health", "/healthz", "/metrics", "/scan", TESTNEST_PATH)
 
 
 def _parse_clock(value: Any) -> datetime | None:
@@ -73,8 +79,33 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
         server_version = "sentrook-scan/2.0"
         protocol_version = "HTTP/1.1"
 
+        # Logs hold metadata only: the method, the route (a known endpoint or `other`) and the status. Never
+        # the client's address, the raw request line (its path or query may carry anything), headers or body.
+        # Method and route are matched against fixed sets and the constant from code is logged, so no
+        # client-supplied text (CR/LF included) reaches a log line.
+        def _log_method(self) -> str:
+            raw = getattr(self, "command", None)
+            for method in _LOG_METHODS:
+                if raw == method:
+                    return method
+            return "other"
+
+        def _route(self) -> str:
+            path = (getattr(self, "path", "") or "").split("?", 1)[0].rstrip("/") or "/"
+            for route in _LOG_ROUTES:
+                if path == route:
+                    return route
+            return "other"
+
+        def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+            if isinstance(code, int):
+                logger.debug("%s %s %d", self._log_method(), self._route(), int(code))
+            else:
+                logger.debug("%s %s -", self._log_method(), self._route())
+
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002 (stdlib signature)
-            logger.debug("%s - %s", self.address_string(), format % args)
+            # The stdlib's error lines quote the raw request; keep only that there was one.
+            logger.debug("%s %s request error", self._log_method(), self._route())
 
         # ---------------------------------------------------------------- plumbing
         def _write(
@@ -236,12 +267,27 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+class _MetadataOnlyHTTPServer(ThreadingHTTPServer):
+    """The stdlib prints an unhandled handler error with the client's address and the exception's message,
+    which may quote request content. Log the exception's type and where it was raised, nothing else."""
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        exc = sys.exc_info()[1]
+        frames = traceback.extract_tb(exc.__traceback__) if exc is not None else []
+        where = " < ".join(f"{Path(f.filename).name}:{f.lineno}" for f in reversed(frames[-5:]))
+        logger.error(
+            "unhandled error serving a request: %s at %s",
+            type(exc).__name__ if exc else "-",
+            where or "-",
+        )
+
+
 class ScanServer:
     """A bound server; `start()` serves on a background thread, `serve_forever()` in the foreground."""
 
     def __init__(self, runtime: ServeRuntime, host: str | None = None, port: int | None = None):
         self.runtime = runtime
-        self._httpd = ThreadingHTTPServer(
+        self._httpd = _MetadataOnlyHTTPServer(
             (host or runtime.config.host, runtime.config.port if port is None else port),
             make_handler(runtime),
         )
