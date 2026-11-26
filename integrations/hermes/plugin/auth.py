@@ -38,6 +38,27 @@ class OidcCredentials:
     scope: str
 
 
+class ConsentWithdrawn(RuntimeError):
+    """The identity service refused the scan credentials because the owner withdrew consent on the FIDU portal
+    (`error_reason: consent_withdrawn`). Like any refused credential, scans stop until the owner signs in again."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"client_credentials token mint failed: HTTP {status}: consent withdrawn")
+        self.status = status
+
+
+CONSENT_WITHDRAWN = "consent_withdrawn"
+
+
+def consent_withdrawn(status: int, payload: Any) -> bool:
+    """A token answer that says consent was withdrawn: a 4xx whose JSON `error_reason` is `consent_withdrawn`."""
+    return (
+        400 <= status < 500
+        and isinstance(payload, dict)
+        and payload.get("error_reason") == CONSENT_WITHDRAWN
+    )
+
+
 _cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
 
@@ -174,6 +195,8 @@ def get_scan_access_token(oidc: OidcCredentials, timeout: float = DEFAULT_AUTH_T
         headers={"content-type": "application/x-www-form-urlencoded"},
         timeout=timeout,
     )
+    if consent_withdrawn(status, payload):
+        raise ConsentWithdrawn(status)
     if status != 200:
         hint = (json.dumps(payload) if not isinstance(payload, str) else payload)[:200]
         raise RuntimeError(f"client_credentials token mint failed: HTTP {status}: {hint}")

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import consent
 from .auth import CLIENT_ID_VAR, CLIENT_SECRET_VAR, get_secret, http_json
 from .config import resolve_config
 
@@ -163,8 +164,11 @@ def _usable(body: Any) -> dict[str, str] | None:
     return {CLIENT_ID_VAR: cid, CLIENT_SECRET_VAR: secret}
 
 
-def _sign_in(issuer: str, name: str, dev_id: str, deps: LoginDeps) -> dict[str, str]:
-    """The device flow up to the credentials; raises LoginError with the line to print."""
+def _sign_in(
+    issuer: str, name: str, dev_id: str, deps: LoginDeps
+) -> tuple[dict[str, str], tuple[str, str | None] | None]:
+    """The device flow up to the credentials and the accepted terms (when the identity service names them);
+    raises LoginError with the line to print."""
     status, doc, _ = deps.http(f"{issuer}/.well-known/openid-configuration", timeout=deps.timeout)
     endpoint = doc.get("device_authorization_endpoint") if isinstance(doc, dict) else None
     if status != 200 or not isinstance(endpoint, str) or not endpoint:
@@ -238,7 +242,7 @@ def _sign_in(issuer: str, name: str, dev_id: str, deps: LoginDeps) -> dict[str, 
                     "Sign-in failed: the identity service's answer could not be used. "
                     "Run hermes sentrook login again."
                 )
-            return values
+            return values, consent.accepted_terms(body)
         error = body.get("error") if isinstance(body, dict) else None
         if error == "authorization_pending":
             continue
@@ -287,7 +291,7 @@ def run_login(
     issuer_url = issuer.url.rstrip("/")
     device_name = clean_device_name(name, deps.hostname())
     try:
-        values = _sign_in(issuer_url, device_name, device_id(cfg.state_dir), deps)
+        values, terms = _sign_in(issuer_url, device_name, device_id(cfg.state_dir), deps)
     except LoginError as exc:
         deps.out(str(exc))
         return EXIT_FAILED
@@ -305,8 +309,13 @@ def run_login(
     except SaveFailed as exc:
         deps.out(str(exc))
         return EXIT_FAILED
+    # New credentials: a later withdrawal of consent is announced again.
+    consent.reset(cfg.state_dir)
     deps.out(f'Connected as "{device_name}". Credentials saved {where}.')
     deps.out(RESTART_LINE)
+    deps.out("")
+    for line in consent.signed_in_lines(terms):
+        deps.out(line)
     deps.out("")
     if deps.verify is None:
         return EXIT_OK

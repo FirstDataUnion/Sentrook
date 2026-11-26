@@ -17,6 +17,7 @@ from typing import Any
 
 from . import hold, login, owner_settings, passes, skill_review
 from .auth import (
+    ConsentWithdrawn,
     clear_scan_token_cache,
     get_scan_access_token,
     http_json,
@@ -66,6 +67,14 @@ def run_verify(
         try:
             get_scan_access_token(oidc, timeout=timeout)
             checks.append(("token mint", True, f"issued by {oidc.issuer}"))
+        except ConsentWithdrawn:
+            checks.append(
+                (
+                    "token mint",
+                    False,
+                    "consent for Sentrook was withdrawn on the FIDU portal; run hermes sentrook login to reconnect",
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             detail = str(exc)[:200]
             if "invalid_client" in detail:
