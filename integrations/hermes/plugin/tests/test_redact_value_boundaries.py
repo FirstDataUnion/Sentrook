@@ -1,7 +1,9 @@
 """Where a key's value ends. `&`, `,` and `;` end a link's query value (`?password=X&page=2`), a list item (`a=1,b=2`)
 and a shell command (`cmd; next`, `&&`), but inside an assignment, an `.env` line or a quoted value they are part of
 the value (`password=<value>&<rest>`), so no part of it leaves the host, and one value gets one placeholder however it
-is written. The OpenClaw plugin's `redact.ts` gives the same output.
+is written. A pipe, a command substitution or a redirect straight after a value ends it where a command follows
+(`TOKEN=<value>|curl …|sh`, `TOKEN=<value>$(…)`), so the scanner still sees the command. The OpenClaw plugin's
+`redact.ts` gives the same output.
 
 Values are built at run time, so no literal here looks like a credential to a secret scanner."""
 
@@ -10,11 +12,17 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from plugin.redact import Redactor
+
+# The scanner's timing check (tests are not published with the plugin).
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "sentrook" / "tests"))
+from linear_time import assert_linear  # noqa: E402
 
 from .test_redact_cues import _REDACT_TS, _forms, _node_major, _random_value
 
@@ -26,6 +34,18 @@ DIGIT_HEAD = "12" + "&Tr0ub4dor"
 P9 = "Tr0ub4" + "dor"
 R = _random_value(11, 31)
 PH = r"⟦secret:credential:[0-9a-f]{4}⟧"
+# Cases both plugins and the scanner share: `{v}` is filled with a value built here.
+PIPE_V = "Xk29fQ" + "v7Lm2Pq8"
+# `known_hidden`: command words a value still takes in by design, pinned so a change is seen.
+_PIPE_FIXTURE = json.loads(
+    (
+        Path(__file__).resolve().parents[3] / "fixtures" / "redact-boundaries" / "cases.json"
+    ).read_text()
+)
+PIPE_CASES = [
+    (c["text"].replace("{v}", PIPE_V), c["value"].replace("{v}", PIPE_V))
+    for c in _PIPE_FIXTURE["cases"] + _PIPE_FIXTURE["known_hidden"]
+]
 
 # (text, the value that must be replaced whole: nothing of it left, one placeholder in its place).
 WHOLE = [
@@ -133,7 +153,7 @@ def _replaced(text: str, value: str) -> re.Pattern[str]:
     return re.compile(re.escape(head) + PH + re.escape(tail))
 
 
-@pytest.mark.parametrize(("text", "value"), WHOLE + BOUNDED)
+@pytest.mark.parametrize(("text", "value"), WHOLE + BOUNDED + PIPE_CASES)
 def test_the_value_is_replaced_whole_and_only_the_value(text, value):
     r = Redactor("standard", "test-salt")
     out = r.string(text)
@@ -153,7 +173,7 @@ def test_nothing_of_the_value_leaves_in_a_tool_result(text, value):
 
 def test_one_value_gets_one_placeholder_however_it_is_written():
     r = Redactor("standard", "test-salt")
-    for value in (AMP, SEMI, COMMA, SHORT_HEAD):
+    for value in (AMP, SEMI, COMMA, SHORT_HEAD, PIPE_V + "|Kq4z!x"):
         outs = {
             re.search(PH, r.string(text)).group()
             for text in (
@@ -214,9 +234,44 @@ def test_separators_in_values_stay_linear_on_adversarial_input():
         assert time.perf_counter() - start < 3.0, text[:30]
 
 
+def _rep(unit: str, n: int) -> str:
+    return (unit * (n // len(unit) + 1))[:n]
+
+
+#: (head, repeated unit, tail) at 200,000 characters of unit, or 1/d of it for the growth check.
+PIPE_LONG_INPUTS = [
+    ("TOKEN=abcdefg", "|a", ""),
+    ("TOKEN=abcdefg", "|ab|", ""),
+    ("TOKEN=abcdefg", "|" + "w" * 40 + "X", ""),
+    ("TOKEN=abcdefg", "|w$x", ""),
+    ("TOKEN=abcdefg", "$(", ""),
+    ("TOKEN=abcdefg", "$a", ""),
+    ("TOKEN=", "|", "x"),
+    ("MY_SECRET_TOKEN=abcdefg", "|ab", ""),
+    ("?token=abcdefg", "|a&", ""),
+    ("the password is ", "|ab", ""),
+    ("", "token=ab|cd ", ""),
+    ("TOKEN=abcdefg", "|cu''x", ""),
+    ("TOKEN=abcdefg", "|" + "x" * 79, ""),
+    ("TOKEN=abcdefg", "|a;b", ""),
+    ("TOKEN=abcdefg", ";ab&", ""),
+    ("the password is ", ";ab&", ""),
+    ("token: ", "a|{b", ""),
+]
+
+
+@pytest.mark.parametrize("case", PIPE_LONG_INPUTS, ids=lambda case: repr(case[0] + case[1])[:24])
+def test_pipes_and_substitutions_in_values_take_linear_time(case):
+    head, unit, tail = case
+    assert_linear(
+        lambda d: Redactor("standard", "test-salt").string(head + _rep(unit, 200_000 // d) + tail),
+        what=repr(head + unit),
+    )
+
+
 @pytest.mark.skipif(_node_major() < 2206, reason="needs node 22.6+ to run redact.ts")
 def test_parity_with_the_openclaw_plugin():
-    texts = [f for t, _ in WHOLE + BOUNDED for f in _forms(t)]
+    texts = [f for t, _ in WHOLE + BOUNDED + PIPE_CASES for f in _forms(t)]
     js = (
         f"import {{ createRedactor }} from {json.dumps(_REDACT_TS.as_uri())};"
         "const input = JSON.parse((await import('node:fs')).readFileSync(0, 'utf8'));"
