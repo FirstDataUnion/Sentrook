@@ -1,5 +1,5 @@
 {
-  "_comment": "`openclaw sentrook login` and `hermes sentrook login` against a fake identity service. Each case drives the device sign-in: discovery, the device-code request, then one answer per poll of the credential endpoint, in order. A poll answer is {status, body} or {network_error: true}. Both plugins must send `code_request` (with `device_name` from `name_arg`, cleaned) and, on every poll, `client_id` and the device code; sleep exactly `sleeps` (seconds, on a fake clock that each sleep advances); store `saved` (null: nothing stored); exit with `exit`; and print `output`, line by line, where {cmd} is `openclaw` or `hermes`, {where} is where that host stored the credentials, {restart} is that host's restart line (or nothing), and {verify} is the verify report (tests stub it as `verify_report`, failing when `verify_ok` is false). `requests` lists which endpoints were called, in order. The plugin prints no text the identity service chose, and never the secret.",
+  "_comment": "`openclaw sentrook login` and `hermes sentrook login` against a fake identity service. Each case drives the device sign-in: discovery, the device-code request, then one answer per poll of the credential endpoint, in order. A poll answer is {status, body} or {network_error: true}. Both plugins must send `code_request` (with `device_name` from `name_arg`, cleaned) and, on every poll, `client_id` and the device code; sleep exactly `sleeps` (seconds, on a fake clock that each sleep advances); store `saved` (null: nothing stored); exit with `exit`; and print `output`, line by line, where {cmd} is `openclaw` or `hermes`, {where} is where that host stored the credentials, {restart} is that host's restart line (or nothing), {signed_in} is the text printed after sign-in (`integrations/fixtures/consent`: `rendered` `signed_in` for that host, or `signed_in_dated` when `expect.terms` is `dated`), and {verify} is the verify report (tests stub it as `verify_report`, failing when `verify_ok` is false). `requests` lists which endpoints were called, in order. The plugin prints no text the identity service chose, and never the secret.",
   "issuer": "https://identity.firstdataunion.org",
   "discovery": {
     "issuer": "https://identity.firstdataunion.org",
@@ -81,6 +81,8 @@
           "{start}",
           "Connected as \"test box\". Credentials saved {where}.",
           "{restart}",
+          "",
+          "{signed_in}",
           "",
           "{verify}"
         ]
@@ -267,6 +269,8 @@
           "Connected as \"test box\". Credentials saved {where}.",
           "{restart}",
           "",
+          "{signed_in}",
+          "",
           "{verify}"
         ]
       }
@@ -304,6 +308,8 @@
           "{start}",
           "Connected as \"test box\". Credentials saved {where}.",
           "{restart}",
+          "",
+          "{signed_in}",
           "",
           "{verify}",
           "Signed in, but a check above failed. Fix it, then run {cmd} sentrook verify."
@@ -477,7 +483,7 @@
     },
     {
       "name": "the device name is cleaned before it is sent",
-      "name_arg": "  my\tbox\u202e\u0007 ",
+      "name_arg": "  my\tbox‮\u0007 ",
       "code_request": {
         "client_id": "sentrook-plugin",
         "scope": "sentrook.scan",
@@ -540,6 +546,90 @@
         "output": [
           "{start}",
           "Sign-in was denied in the browser. Nothing was changed."
+        ]
+      }
+    },
+    {
+      "name": "the accepted terms version and date are printed",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 200,
+          "body": {
+            "client_id": "sentrook-scan-abc-0009",
+            "client_secret": "not-a-real-secret-iiiiiiiiiiiiiiii",
+            "name": "test box",
+            "replaced": false,
+            "terms_version": "1",
+            "terms_accepted_at": "2026-11-26T09:30:00Z"
+          }
+        }
+      ],
+      "verify_ok": true,
+      "expect": {
+        "exit": 0,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": {
+          "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0009",
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-iiiiiiiiiiiiiiii"
+        },
+        "output": [
+          "{start}",
+          "Connected as \"test box\". Credentials saved {where}.",
+          "{restart}",
+          "",
+          "{signed_in}",
+          "",
+          "{verify}"
+        ],
+        "terms": "dated"
+      }
+    },
+    {
+      "name": "a terms version a terminal would act on is not printed",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 200,
+          "body": {
+            "client_id": "sentrook-scan-abc-0010",
+            "client_secret": "not-a-real-secret-iiiiiiiiiiiiiiii",
+            "name": "test box",
+            "replaced": false,
+            "terms_version": "1\u001b[2J"
+          }
+        }
+      ],
+      "verify_ok": true,
+      "expect": {
+        "exit": 0,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": {
+          "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0010",
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-iiiiiiiiiiiiiiii"
+        },
+        "output": [
+          "{start}",
+          "Connected as \"test box\". Credentials saved {where}.",
+          "{restart}",
+          "",
+          "{signed_in}",
+          "",
+          "{verify}"
         ]
       }
     }

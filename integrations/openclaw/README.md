@@ -58,9 +58,11 @@ openclaw sentrook login
 ```
 
 It prints a link and a code. Open the link on any device (your phone is fine), sign in to your FIDU account or
-create a free one, check that the code on the page matches the one in your terminal, and click **Approve**. The
-command then saves this machine's scan credentials to `~/.openclaw/.env` (readable only by you) and runs the checks
-from step 4. There is nothing to copy.
+create a free one, check that the code on the page matches the one in your terminal, accept the terms and what is
+sent (see [What is sent](#what-is-sent)), and click **Approve**. No credentials are issued until you accept. The
+command then saves this machine's scan credentials to `~/.openclaw/.env` (readable only by you), prints what is sent,
+the privacy policy, the terms and how to stop (with the terms version you accepted, when the identity service gives it), and
+runs the checks from step 4. There is nothing to copy.
 
 - If OpenClaw runs in Docker, run it inside the container: `docker compose exec <service> openclaw sentrook login`.
 - The machine is listed in your account as `OpenClaw on <hostname>`; `--name <label>` picks another name.
@@ -70,6 +72,10 @@ from step 4. There is nothing to copy.
   afterwards (`openclaw gateway restart`) so it uses them; the command says so when it is needed.
 - Your account can have 5 Sentrook connections. To remove one, use the **Sentrook** tab at
   <https://identity.firstdataunion.org/dashboard>.
+- If you withdraw consent on the FIDU portal, the identity service stops accepting this machine's credentials. A token
+  already issued keeps working until it expires; after that no call is scanned, and you get one
+  notice saying so (see [When the scan service fails](#when-the-scan-service-fails)). Run `openclaw sentrook login`
+  again to reconnect.
 
 ### Set the credentials by hand instead
 
@@ -763,6 +769,18 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
 - **Anywhere else**, such as a chat, you are asked whether to run the call without a scan. It runs only if you
   approve; a prompt nobody answers denies the call after 5 minutes (`approval.interactiveTimeoutMs`).
 
+**No credentials** (you have not signed in, or a setting is missing) means no scan request is sent at all, not even
+one without a token: the calls are handled as above, and the prompt and the agent's message say to run
+`openclaw sentrook login`.
+
+**Consent withdrawn:** when you withdraw consent on the FIDU portal, the identity service refuses this machine's
+credentials and Sentrook cannot scan. Calls are handled as for any credential problem (asked where attended, blocked
+on unattended runs, and blocked with `allow` too); the prompt and the agent's message say consent was withdrawn.
+Instead of the per-job notices above you get one notice through the channel you chose with `/sentrook-notify here`,
+in observe mode too: it says scans stopped and that you can run `openclaw sentrook login` to connect again, switch to
+observe mode, or uninstall. It is sent once for these credentials, also across restarts; signing in again (or setting
+new credentials) resets it. The traffic log records it as the scan's `notice`.
+
 A snooze does not change this. Set `onScanError` to `deny` to block the call everywhere, or to `allow` to run it
 without a scan everywhere. Bad credentials or endpoints are never let through silently: with `allow` the call is
 blocked, and with `review` you are asked as above. Whatever the setting, a call blocked on an unattended run because
@@ -856,10 +874,11 @@ In short, for anyone deciding whether to install it:
   notice, through the channel you chose with `/sentrook-notify here`, and a call blocked because the scan failed sends
   you one notice per job (per session for other runs) every 6 hours at most. OpenClaw's own skill and memory saves
   are never asked about: a reviewed one is let through, saved as a Skill Workshop draft or held, and a notice tells
-  you ([Background skill and memory saves](#background-skill-and-memory-saves)). Turning a save into a draft is the
-  only change it makes to a call; those notices are the only messages it sends.
+  you ([Background skill and memory saves](#background-skill-and-memory-saves)). If you withdraw consent on the FIDU
+  portal it sends you one notice saying scans stopped. Turning a save into a draft is the only change it makes to a
+  call; those notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
-  command, snooze state, held calls, passes and denials and their lock files, the notice target, when each job or run last had a notice with a quiet period, and
+  command, snooze state, held calls, passes and denials and their lock files, the notice target, when each job or run last had a notice with a quiet period, whether the consent-withdrawn notice was sent, and
   the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
   cron run, that job's definition from OpenClaw's job store (`~/.openclaw/state/openclaw.sqlite`, or

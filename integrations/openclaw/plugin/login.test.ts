@@ -25,6 +25,9 @@ const FIXTURE = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../fixtures/login/cases.json", import.meta.url)), "utf8"),
 );
 const ISSUER: string = FIXTURE.issuer;
+const CONSENT = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../fixtures/consent/cases.json", import.meta.url)), "utf8"),
+).rendered.openclaw;
 
 function fakeIdentity(c: any) {
   const discovery = c.discovery ?? FIXTURE.discovery;
@@ -70,6 +73,7 @@ function expectedOutput(c: any, where: string): string[] {
     if (line === "{start}") lines.push(...FIXTURE.start_output);
     else if (line === "{restart}") continue; // first sign-in into an empty .env: no restart needed
     else if (line === "{verify}") lines.push(FIXTURE.verify_report);
+    else if (line === "{signed_in}") lines.push(...CONSENT[c.expect.terms === "dated" ? "signed_in_dated" : "signed_in"]);
     else lines.push(line.replaceAll("{cmd}", "openclaw").replaceAll("{where}", where));
   }
   return lines;

@@ -1621,6 +1621,15 @@
         "title": "🪶 Sentrook could not check this call",
         "description": "Sentrook's sign-in was revoked or is wrong. Run on the gateway machine: openclaw sentrook login\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
       }
+    },
+    {
+      "name": "scan error: consent withdrawn",
+      "cause": "consent_withdrawn",
+      "hermes": "🪶 Sentrook could not check this call\nConsent for Sentrook was withdrawn on the FIDU portal. Run on the Hermes machine: hermes sentrook login\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "Consent for Sentrook was withdrawn on the FIDU portal. Run on the gateway machine: openclaw sentrook login\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
     }
   ]
 }
