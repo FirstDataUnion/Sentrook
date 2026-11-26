@@ -1370,6 +1370,7 @@ def _code(code: str) -> dict:
 _NOTES = "import os\nOUT=os.path.expanduser('~/.hermes/attachments/drafts/')\n"
 _STATE = "import os\nS=os.path.expanduser('~/.hermes/sentrook/grants.json')\n"
 _REVIEW = "guardrail.state_dir_write_review"
+_H = "import os\nh=os.environ['HERMES_HOME']\n"
 
 
 @pytest.mark.parametrize(
@@ -1581,6 +1582,32 @@ def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
         "T='see sentrook/sentrook/jev/client.py'\nopen(resolve('/srv/x/sentrook/grants.json'),'w').write(T)",
         "T='see sentrook/integrations/hermes/plugin/snooze.py'\n"
         "open(resolve('~/.hermes/sentrook/snooze.json'),'w').write(T)",
+        # `./sentrook` (normalised to one word) followed by more path.
+        _H + "open(os.path.join(h, f'./sentrook/{n}'),'w')",
+        _H + "open(os.path.join(h, './sentrook/%s' % n),'w')",
+        _H + "open(os.path.join(h, './sentrook/{}'.format(n)),'w')",
+        _H + "os.chdir(h)\nopen(f'./sentrook/{n}','w')",
+        _H + "open(os.path.join(h, f'./sentrook//{1}'),'w')",
+        _H + "open(os.path.join(h, f'././sentrook/{1}'),'w')",
+        _H + "open(os.path.join(h, f'x/../sentrook/{1}'),'w')",
+        _H + "import subprocess\nos.chdir(h)\nsubprocess.run('rm -rf ./sentrook', shell=True)",
+        "import subprocess\nsubprocess.run('cd \"$HERMES_HOME\" && rm -rf ./sentrook', shell=True)",
+        # More ways to cut a cited path back.
+        "import os\nd=os.path.split(os.path.split(h + '/sentrook/tests/x')[0])[0]\n"
+        "open(d + '/grants.json','w')",
+        "d=(h + '/sentrook/tests/x').partition('/tests')[0]\nopen(d + '/grants.json','w')",
+        "import os\nd=os.path.commonpath([h + '/sentrook/tests/x', h + '/sentrook/schema/y'])\n"
+        "open(d + '/grants.json','w')",
+        "import os\nd=os.path.commonprefix([h + '/sentrook/tests/x', h + '/sentrook/tests/y'])\n"
+        "open(d + 'grants.json','w')",
+        "const fs=require('fs'),path=require('path');"
+        "const p=path.parse(path.parse(h+'/sentrook/tests/x').dir);"
+        "fs.writeFileSync(p.dir+'/grants.json','{}')",
+        "const fs=require('fs');const u=''.padEnd(2,'.');"
+        "fs.writeFileSync(h+'/sentrook/tests/x/'+u+'/'+u+'/grants.json','{}')",
+        "import os\nu=os.curdir*2\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "u='\\N{FULL STOP}\\N{full stop}'\n"
+        "open(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
     ],
     ids=[
         "runtime-target-names-state-file",
@@ -1660,6 +1687,23 @@ def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
         "backtick-short",
         "citation-and-moved-state",
         "citation-and-home-state",
+        "join-dot-fstring",
+        "join-dot-percent",
+        "join-dot-format",
+        "chdir-dot-fstring",
+        "join-dot-double-slash",
+        "join-dot-dot-dot",
+        "join-x-parent",
+        "chdir-shell-rm",
+        "shell-cd-rm",
+        "climb-os-path-split",
+        "climb-partition",
+        "climb-commonpath",
+        "climb-commonprefix",
+        "climb-node-parse",
+        "climb-padend",
+        "climb-curdir",
+        "climb-named-escape",
     ],
 )
 def test_c4star_inline_code_naming_a_state_or_install_location_is_asked(code):

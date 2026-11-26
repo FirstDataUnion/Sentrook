@@ -545,25 +545,33 @@ content_write_marker_patterns:
 # - its last component is a `legacy_basenames` file, or
 # - it holds any other lowercase `sentrook` component, however the path is built around it (quotes,
 #   `%s`, `{h}`, `$HERMES_HOME`, shell words), with two exceptions:
-#   - a slash command in prose: `/sentrook` alone, after the start of a line, a space or an opening
-#     backtick, and before a space and a word or the end of a line (`/sentrook status`);
+#   - a `/sentrook` word standing alone, as a slash command does in prose: after the start of a
+#     line, a space or an opening backtick, and before a space and a word or the end of a line
+#     (`/sentrook status`);
 #   - a citation of Sentrook's source tree: `sentrook/sentrook/<one of source_packages>/...` or
 #     `sentrook/<one of source_top_folders>/<something>`, only when the code's text holds none of
 #     `climb_patterns` anywhere: a `..` component, or a common way to cut a path back or spell a
-#     `..` (`dirname`, `.parent`, `os.pardir`, `rsplit`, `chr(`, `'.'*2`, `\x2e`, `%2e`, ...), any
-#     of which may climb out of a cited folder into the state folder.
-# A word `sentrook` with no slash counts only as a whole quoted string (a path part); a capitalised
+#     `..` (`dirname`, `.parent`, `os.pardir`, `os.path.split(`, `partition`, `rsplit`, `chr(`,
+#     `'.'*2`, `\x2e`, `%2e`, ...), any of which may climb out of a cited folder into the state
+#     folder.
+# A run must be written as a path (it holds a `/`, as `./sentrook` does) or be a whole quoted string
+# (`'sentrook'`, a path part); a bare word `sentrook` in prose does not count. A capitalised
 # `Sentrook` counts only at a known location, so a checkout at `~/projects/Sentrook/` or prose like
 # `Sentrook/Hermes` does not.
-# This is a reading of the text, not of what the code does, and it can be beaten: a name split
-# across strings (`'sentr' + 'ook'`), or a cited path cut back by slicing, `.replace(`, `re.sub` or
-# another route not in `climb_patterns`, is not found here. Slicing and replacing are left out on
-# purpose: programs that write documents use them all the time. Resolved writes are found by the
-# block floor's path rules whatever the text says.
+# This is a reading of the text, not of what the code does, and a path assembled on purpose beats
+# it. Not found here:
+# - a name split across strings (`'sentr' + 'ook'`);
+# - a cited path cut back by slicing, `.replace(`, `re.sub`, a bare `.split(` and rejoin, or another
+#   route not in `climb_patterns` (slicing, replacing and splitting are left out on purpose: programs
+#   that write documents use them all the time);
+# - `..` or `dirname` spelled by assembly (`''.join(['.', '.'])`, `'%c%c' % (46, 46)`, base64,
+#   `getattr` with a built name);
+# - a `/sentrook` word standing alone reused to build a path (`'\n/sentrook\n'.strip()`,
+#   `'x /sentrook y'.split()`).
+# Resolved writes are found by the block floor's path rules whatever the text says.
 # Known limit: a plugin installed by linking to a source checkout (for example an OpenClaw extension
 # loaded from `~/src/sentrook/integrations/openclaw/plugin/dist/`) reads as a source citation here,
-# so a write into that checkout through the text tier is not asked about. Resolved writes are still
-# found by the block floor's path rules.
+# so a write into that checkout through the text tier is not asked about.
 code_text_paths:
   location_patterns:
     - '(?:\A|/)\.hermes/(?:profiles/[^/]+/)?(?:plugins/)?sentrook\Z'
@@ -603,7 +611,10 @@ code_text_paths:
   # the text.
   climb_patterns:
     - '(?<![\w.~$-])\.\.(?![\w.~$-])'
-    - '\b(?:dirname|pardir|f?chdir|rsplit|rpartition|removesuffix|normpath|realpath|abspath|unquote)'
+    - '\b(?:dirname|pardir|curdir|f?chdir|rsplit|r?partition|removesuffix|normpath|realpath|abspath|unquote|commonpath|commonprefix|pad(?:end|start))'
+    - '\bpath\.(?:split|parse)\s*\('
+    - '\.dir\b'
+    - '\\N\{FULL STOP\}'
     - '\.parents?\b'
     - '\.resolve\s*\('
     - '\bchr\s*\('

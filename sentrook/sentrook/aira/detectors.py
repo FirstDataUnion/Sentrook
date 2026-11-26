@@ -5060,7 +5060,7 @@ def _slash_command(text: str, start: int, end: int) -> bool:
     code (itself after the start of the text or a space, and closed later on the line; a shell
     substitution's closing backtick, `` `echo $H`/sentrook ``, is not one), and before a space and a
     word, or the end of a line."""
-    if text[start:end] != "/sentrook":
+    if end - start != len("/sentrook") or text[start:end] != "/sentrook":
         return False
     if start:
         before = text[start - 1]
@@ -5113,15 +5113,17 @@ def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
         if parts[-1].lower() in legacy:
             yield run
             continue
-        # A path, or one quoted part of a path (`'sentrook'`); not a word in prose.
+        # A path as written (`./sentrook/x` normalises to one word but is a path), or one quoted part
+        # of a path (`'sentrook'`); not a word in prose.
         quoted = (
             start > 0
             and end < len(text)
             and text[start - 1] in "'\""
             and text[end] == text[start - 1]
         )
-        if len(parts) == 1 and not absolute and not quoted:
+        if "/" not in run and not quoted:
             continue
+        slash_command = _slash_command(text, start, end)
         for i, part in enumerate(parts):
             if part.lower() != "sentrook":
                 continue
@@ -5131,7 +5133,7 @@ def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
                 yield run
                 break
             # Real state folders are lowercase; a capitalised one counts only at a known location.
-            if part != "sentrook" or _slash_command(text, start, end):
+            if part != "sentrook" or slash_command:
                 continue
             if not climbs and (
                 package_citation(i, parts)

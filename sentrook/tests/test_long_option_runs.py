@@ -793,6 +793,7 @@ def test_inline_code_paths_are_found_as_the_regex_finds_them():
         "a`/sentrook ",
         "\\0000000",
         "sentrook/tests/x ",
+        "sentrook/sentrook/jev/",
         "Sentrook/",
         "'sentrook' ",
         "../",
