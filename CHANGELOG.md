@@ -1284,3 +1284,18 @@ Both plugins and the scanner's second pass took a `|` or a `$(` straight after a
 - A guardrail path anywhere else in the text plus a write marker, which used to block, now takes a review floor, `guardrail.state_dir_write_review` (enforced `review`, minimum risk 0.5, no score of its own): the path may only be mentioned (a note, a message, data the code writes elsewhere) or reached in a way the scan does not follow (a reassigned or loop variable, `chdir`, `opener=`, a mode in a variable, `os.open`). The owner is always asked; this floor never blocks on its own.
 - Newly found: `open(os.path.expanduser(...), 'w')` and a pathlib path built with `/` operands, which the text match missed. The write markers gain `os.open`, `os.ftruncate`, `os.symlink`, `.truncate(`, `.chmod(`, `.touch(`, `FileIO(` and `fs.promises.*`. `guardrail.yaml` version 7.
 - Tests: block-tier and review-tier cases for each route, a relative write against its folder, a mention with no write (silent), and the existing read case.
+
+### Context limits for evaluation runs (2026-11-26)
+- `prepare.context_limits`: a scan request cut down on arrival as if the plugin had sent less, so an evaluation can
+  measure whether less context still works without a plugin release. Three limits: each new input (and each tool
+  result in a background save's conversation) cut to `SENTROOK_EVAL_INPUT_CAP_BYTES` with the plugins' own head and
+  tail cut; only the last `SENTROOK_EVAL_HISTORY_STEPS` history steps, leaving out tool results whose call falls
+  outside them as the plugins do; and with `SENTROOK_EVAL_SELF_EDIT_BODIES=drop`, a background save's user and
+  assistant messages without their text. The pending call's arguments are never cut.
+- Test mode only (refused otherwise, like probe ablation); a value that is not a whole number in range is refused,
+  never defaulted. Unset, the request is untouched, so production behaviour does not change. The health payload
+  names the limits a test-mode server runs with (`context_limits`), so a run's results record them.
+- A cut input is reported as a plugin's cut is: the scan is degraded (`input_truncated`), never an error.
+- Tests: `test_context_limits` (the cut matches the plugins', the history window keeps its results consistent, body
+  dropping keeps the conversation's shape, a limited scan sends the judge only what is left, an unlimited one is
+  unchanged, configuration is gated and validated).

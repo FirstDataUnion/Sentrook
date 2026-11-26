@@ -15,6 +15,12 @@ Scan auth (`SENTROOK_SCAN_AUTH_MODE`):
 
 Probe ablation (`SENTROOK_PROBES`) is a test-mode feature and is refused without
 `SENTROOK_TEST_MODE=1`.
+
+Context limits (`prepare.context_limits`) are for evaluation only and likewise refused without test mode: each
+request is cut down on arrival as if the plugin had sent less. `SENTROOK_EVAL_INPUT_CAP_BYTES` (each new input and
+each tool result in a background save's conversation, in UTF-8 bytes, at least 256), `SENTROOK_EVAL_HISTORY_STEPS`
+(the last n history steps, at least 1) and `SENTROOK_EVAL_SELF_EDIT_BODIES` (`keep`, the default, or `drop`: a
+background save's user and assistant messages lose their text). Unset, nothing is limited.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from dataclasses import dataclass, field
 
 from ..jev.client import DEFAULT_BASE_URL, DEFAULT_MODEL
 from ..jev.questions import QUESTIONS_DIR, load_question_set
+from ..prepare.context_limits import NO_LIMITS, ContextLimits
 from ..prepare.views import VIEW_KIND
 from .oidc import normalize_oidc_url
 
@@ -61,6 +68,31 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
         return int(env.get(key) or default)
     except ValueError:
         return default
+
+
+def _limit(env: Mapping[str, str], key: str) -> int | None:
+    """An evaluation limit: unset is None; anything but a whole number is an error, never a silent default."""
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(f"{key} must be a whole number, got {raw!r}") from None
+
+
+def _context_limits(env: Mapping[str, str]) -> ContextLimits:
+    bodies = (env.get("SENTROOK_EVAL_SELF_EDIT_BODIES") or "keep").strip().lower()
+    if bodies not in ("keep", "drop"):
+        raise ConfigError(f"SENTROOK_EVAL_SELF_EDIT_BODIES must be keep or drop, got {bodies!r}")
+    try:
+        return ContextLimits(
+            input_cap_bytes=_limit(env, "SENTROOK_EVAL_INPUT_CAP_BYTES"),
+            history_steps=_limit(env, "SENTROOK_EVAL_HISTORY_STEPS"),
+            self_edit_bodies=bodies == "keep",
+        )
+    except ValueError as e:
+        raise ConfigError(f"context limits: {e}") from None
 
 
 def _secret(env: Mapping[str, str], key: str) -> str:
@@ -144,6 +176,9 @@ class ServeConfig:
     convergence: str = "conv-v9"
     lists_dir: str | None = None
 
+    # evaluation: requests cut down as if the plugin had sent less (test mode only)
+    context_limits: ContextLimits = NO_LIMITS
+
     # test mode
     test_mode: bool = False
 
@@ -163,6 +198,11 @@ class ServeConfig:
             raise ConfigError(
                 "SENTROOK_PROBES (probe ablation) is only available in test mode: "
                 "set SENTROOK_TEST_MODE=1 or unset SENTROOK_PROBES"
+            )
+        if not self.context_limits.unlimited and not self.test_mode:
+            raise ConfigError(
+                "context limits (SENTROOK_EVAL_*) are only available in test mode: "
+                "set SENTROOK_TEST_MODE=1 or unset them"
             )
 
     @property
@@ -226,5 +266,6 @@ class ServeConfig:
             packs_default=tuple(p.strip() for p in packs_raw.split(",") if p.strip()) or ("tier1",),
             convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v9").strip(),
             lists_dir=(env.get("SENTROOK_LISTS_DIR") or "").strip() or None,
+            context_limits=_context_limits(env),
             test_mode=test_mode,
         )
