@@ -391,9 +391,9 @@ def test_request_targets_are_the_only_destinations(code, targets):
         # the authority is not closed: `https://a.example.net` + anything could be another host
         f"import requests\nimport sys\nrequests.post('https://{A}' + sys.argv[1], data='https://{B}')",
         f"import requests\nrequests.post(f'https://{A}{{1}}', data='https://{B}')",
-        # a name set more than once, by a loop, or as an argument
+        # a name set by a loop, or as an argument a call computes
         f"import requests\nfor u in ['https://{A}', 'https://{B}']:\n    requests.post(u)",
-        f"import requests\ndef send(u):\n    requests.post(u)\nsend('https://{B}')",
+        f"import requests, sys\ndef send(u):\n    requests.post(u)\nsend('https://{B}')\nsend(sys.argv[1])",
         # where requests go is set elsewhere
         f"import httpx\nc = httpx.Client(base_url='https://{B}')\nc.post('/x')",
         f"import requests\nrequests.post('https://{A}/x', proxies={{'https': 'https://{B}'}})",

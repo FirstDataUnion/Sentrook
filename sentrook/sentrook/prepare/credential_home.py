@@ -13,9 +13,16 @@ holds, and the call's credential does not count as sensitive data sent, only whe
 - every off-machine party the call or its batch touches, in any role, is a host the library lists with credential
   names (an exact library answer, never a near miss), so a URL to any other host in the code fails the check, and
   none of them reached the agent through content it read (a host only untrusted content named, or one it was
-  steered to). A host that only the agent's own installed skills named (a read of an installed skill, on this step
-  or an earlier one, and no other content) does not count as content here: the skill is the agent's standing
-  instructions for the service, and the library already ties the key to that host. Memory reads do count, and
+  steered to). A host the pending program only mentions (the code reading knows the target of every request the
+  program makes and this host is none of them, a link inside the body it posts, and no other call in the batch
+  names it) is no party when it is on the registrable domain of a host the library lists the credential for
+  (`same_service`; never a host only an owner's grant names) and every link to it is a plain link written in
+  a string (`_plain_link_hosts`: a scheme, the host, a path of letters, digits, `_`, `-` and `/`, and the link's
+  end, nothing else): whatever the code does with the key, such a link reaches only the service that already
+  receives it. A link to any other domain is a party like any other host. A host that only the agent's own
+  installed skills named (a read of an installed skill, on this step or an earlier one, and no other content)
+  does not count as content here: the skill is the agent's standing instructions for the service, and the
+  library already ties the key to that host. Memory reads do count, and
   everything else still scores such a host as untrusted;
 - the call sends by no route whose destination need not be written as a host (`scp`, `nc`, `git push`, ...), in a
   shell command or named in code (`subprocess.run(['nc', ...])`, a raw socket), and builds no address at run time
@@ -48,11 +55,12 @@ from __future__ import annotations
 import posixpath
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from ..enums import SessionFlag
 from ..planir.models import ToolKind
-from .entities import EntityKind, Origin
+from .entities import EntityKind, Origin, Role, call_code_reach, normalise_host
 
 #: An environment name shaped like a credential: words joined by `_` ending in a key, token, secret or password word.
 CREDENTIAL_NAME_RE = re.compile(
@@ -334,6 +342,223 @@ def _shell_puts_key_elsewhere(a: Any, ctx: Any, names: set[str]) -> bool:
     return False
 
 
+def _code_targets(pending: Any) -> frozenset[str] | None:
+    """The hosts the pending program's requests are aimed at, when the code reading knows every one."""
+    reach = call_code_reach(pending)
+    if reach is None or not reach.network or not reach.targets:
+        return None
+    return frozenset(normalise_host(t) for t in reach.targets)
+
+
+def _only_mentioned_by_code(ent: Any, targets: frozenset[str] | None) -> bool:
+    """A host the pending program only writes in its data (a link in a request body), sent to by nothing."""
+    return (
+        targets is not None
+        and ent.kind is EntityKind.HOST
+        and ent.value not in targets
+        and set(ent.roles) == {Role.MENTIONED}
+        and not ent.future_roles
+        and not ent.in_resolved_command
+        and not ent.has_origin(Origin.WRITTEN_FILE, Origin.SIBLING)
+    )
+
+
+#: Multi-tenant suffixes, besides `SHARED_HOSTING` and the shared second levels, under which a name is a
+#: stranger's own site: a link there is not on the service's domain.
+_MORE_SHARED = frozenset(
+    {
+        "notion.site",
+        "webflow.io",
+        "wixsite.com",
+        "readthedocs.io",
+        "gitbook.io",
+        "substack.com",
+        "githubusercontent.com",
+        "github.dev",
+        "amplifyapp.com",
+        "elasticbeanstalk.com",
+        "framer.website",
+        "carrd.co",
+        "s3-website.amazonaws.com",
+        # workspaces and tenants of SaaS services, each its own customer's
+        "slack.com",
+        "atlassian.net",
+        "zendesk.com",
+        "freshdesk.com",
+        "salesforce.com",
+        "my.salesforce.com",
+        "force.com",
+        "service-now.com",
+        "okta.com",
+        "oktapreview.com",
+        "auth0.com",
+        "us.auth0.com",
+        "eu.auth0.com",
+        "au.auth0.com",
+        "jp.auth0.com",
+        "sharepoint.com",
+        # apps, functions and storage anyone can publish under
+        "run.app",
+        "azureedge.net",
+        "googleusercontent.com",
+        "cloudfunctions.net",
+        "on.aws",
+        "hf.space",
+        "pythonanywhere.com",
+        "railway.app",
+        "modal.run",
+        "surge.sh",
+        "neocities.org",
+        "pantheonsite.io",
+        "azurestaticapps.net",
+        "ngrok-free.dev",
+        "loca.lt",
+        "storage.googleapis.com",
+        # second levels where people and small firms register names
+        "me.uk",
+        "ltd.uk",
+        "plc.uk",
+        "id.au",
+        "firm.in",
+        "gen.in",
+        "nom.br",
+        "blog.br",
+        "gob.mx",
+    }
+)
+
+
+def _plain_host(host: str) -> str | None:
+    """`host` lower-cased without a trailing dot, or None for an address in numbers, an internationalised name
+    (`xn--` or not ASCII) or anything else that is not a plain DNS name."""
+    host = host.strip().lower().rstrip(".")
+    if not host or "*" in host or not host.isascii() or not _GRANT_HOST_RE.fullmatch(host):
+        return None
+    labels = host.split(".")
+    if any(label.startswith("xn--") for label in labels) or all(
+        label.isdigit() for label in labels
+    ):
+        return None
+    return host
+
+
+def _shared(domain: str) -> bool:
+    """`domain` is, or sits under, a suffix many owners share (`co.uk`, `github.io`, `amazonaws.com`, a US state
+    or `k12` locality: `pvt.k12.ma.us` must not read as `ma.us`)."""
+    if _wildcard_too_broad(domain):
+        return True
+    labels = domain.split(".")
+    if len(labels) >= 2 and labels[-1] == "us" and (len(labels[-2]) == 2 or labels[-2] == "k12"):
+        return True
+    return any(
+        domain == s or domain.endswith("." + s) or s.endswith("." + domain) for s in _MORE_SHARED
+    )
+
+
+def same_service(mention: str, home: str) -> bool:
+    """`mention` is on the registrable domain of `home`, a host the credential is listed for: the domain itself
+    or a name under it (`app.example.com` for `api.example.com`). Fails closed: no list of public suffixes ships
+    with the scanner, so the registrable domain is read by `near_miss.registrable` (two labels, or three under a
+    shared second level such as `co.uk`), and a domain that is, or sits under, a known multi-tenant suffix
+    (`github.io`, `notion.site`, `s3.amazonaws.com`), an address in numbers or an internationalised name is never
+    the same service."""
+    from ..oracle.near_miss import registrable
+
+    m, h = _plain_host(mention), _plain_host(home)
+    if m is None or h is None:
+        return False
+    domain = registrable(h)[1]
+    if "." not in domain or _shared(domain) or _shared(h):
+        return False
+    if registrable(m)[1] != domain or _shared(registrable(m)[1]):
+        return False
+    return m == domain or m.endswith("." + domain)
+
+
+#: What may follow a mentioned host in a link that is skipped: a path of letters, digits, `_`, `-` and `/` only (no
+#: `.`, `%`, `?`, `#`, `@`, `\\`, `:` or quote: nothing that can name a second address, encode one, start a query or
+#: hide userinfo), then the link's end inside the same string: ASCII whitespace, or the `)` closing a markdown link
+#: target. Matched against lower-cased text.
+_LINK_TAIL = re.compile(r"(?:/[a-z0-9_\-/]*)?([ \t\r\n)])")
+_SCHEMES = ("https://", "http://")
+
+
+@lru_cache(maxsize=64)
+def _string_values(code: str) -> tuple[str, ...]:
+    """The program's string values, as Python reads them (escapes decoded), lower-cased; empty when it does not
+    parse."""
+    import ast
+    import warnings
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return ()
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            v = node.value
+            out.append((v.decode("latin-1") if isinstance(v, bytes) else v).lower())
+    return tuple(out)
+
+
+def _link_shape(text: str, start: int, end: int) -> bool:
+    """The host at `text[start:end]` sits in a plain link: `http://` or `https://` right before it, the scheme at
+    the start of the string or after ASCII whitespace or `(`, then `_LINK_TAIL`. A `)` ends it only as the close of a
+    markdown link target (`[x](https://h/p)`), where a renderer ends the link whatever follows."""
+    for scheme in _SCHEMES:
+        s = start - len(scheme)
+        if s >= 0 and text.startswith(scheme, s):
+            break
+    else:
+        return False
+    lead = text[s - 1] if s > 0 else ""
+    if lead not in ("", " ", "\t", "\r", "\n", "("):
+        return False
+    tail = _LINK_TAIL.match(text, end)
+    if tail is None:
+        return False
+    if tail.group(1) == ")":
+        return lead == "(" and s >= 2 and text[s - 2] == "]"
+    return True
+
+
+@lru_cache(maxsize=64)
+def _plain_link_hosts(code: str, hosts: frozenset[str]) -> frozenset[str]:
+    """Those of `hosts` that the program names only in plain links (`_link_shape`): every case-insensitive
+    occurrence of the host in its string values has that shape, and there is at least one. A host built at run time,
+    named in a longer name, or written any other way is not among them.
+
+    The rule leaves one thing open on purpose: a value put after a link that already ended (`'see
+    https://h/docs/x '.strip() + key`) can make a plain-text linkifier read a longer path on the same host, a path
+    of letters, digits, `_`, `-` and `/`. That reaches only the service the key is for, which receives it anyway.
+
+    Linear: one regex pass per host over the strings, and a constant check per occurrence; once per program and
+    set of hosts."""
+    texts = _string_values(code)
+    out: set[str] = set()
+    for host in hosts:
+        h = host.lower().rstrip(".")
+        if not h:
+            continue
+        pattern = re.compile(re.escape(h))
+        found = False
+        plain = True
+        for text in texts:
+            for m in pattern.finditer(text):
+                found = True
+                if not _link_shape(text, m.start(), m.end()):
+                    plain = False
+                    break
+            if not plain:
+                break
+        if found and plain:
+            out.add(host)
+    return frozenset(out)
+
+
 def check(
     prepared: Any, extra_grants: tuple[tuple[str, str, str], ...] = ()
 ) -> tuple[CredentialHome | None, str]:
@@ -371,8 +596,35 @@ def _check(
     # Every off-machine party the call or its batch touches is a host the library lists with credential names, or one
     # the owner's credential grants tie names to.
     owner_grants = [*live_credential_grants(prepared), *extra_grants]
+    code_targets = _code_targets(pending)
     hosts: dict[str, list[str]] = {}
     host_grants: dict[str, list[tuple[str, str]]] = {}
+    home_names: list[str] = []
+
+    def take(ent: Any) -> str | None:
+        """Record a party the call touches; why the check fails on it, if it does."""
+        if ent.kind is not EntityKind.HOST:
+            return "other_party"
+        info = prepared.oracle_entities.get(ent.id) or {}
+        listed = [str(n) for n in info.get("credential_names") or []]
+        if info.get("verdict") != "known_bad":
+            granted = [(ref, n) for ref, n, h in owner_grants if host_covered(h, ent.value)]
+            if granted:
+                host_grants[ent.id] = granted
+                listed += [n for _, n in granted]
+        if not listed:
+            return "unlisted_host"
+        if ent.steered or (
+            (ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins)
+            and not ent.skill_named
+        ):
+            return "host_from_content"
+        hosts[ent.id] = listed
+        if info.get("credential_names"):
+            home_names.append(ent.value)  # the library's home for the key, not an owner's grant
+        return None
+
+    mentions: list[Any] = []
     for ent in prepared.entities:
         if ent.kind not in (EntityKind.HOST, EntityKind.RECIPIENT, EntityKind.CHANNEL):
             continue
@@ -383,23 +635,22 @@ def _check(
             continue
         if ent.kind is EntityKind.HOST and is_local_host(ent.value):
             continue
-        if ent.kind is not EntityKind.HOST:
-            return None, "other_party"
-        info = prepared.oracle_entities.get(ent.id) or {}
-        listed = [str(n) for n in info.get("credential_names") or []]
-        if info.get("verdict") != "known_bad":
-            granted = [(ref, n) for ref, n, h in owner_grants if host_covered(h, ent.value)]
-            if granted:
-                host_grants[ent.id] = granted
-                listed += [n for _, n in granted]
-        if not listed:
-            return None, "unlisted_host"
-        if ent.steered or (
-            (ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins)
-            and not ent.skill_named
-        ):
-            return None, "host_from_content"
-        hosts[ent.id] = listed
+        if _only_mentioned_by_code(ent, code_targets):
+            mentions.append(ent)  # judged once the call's listed hosts are known
+            continue
+        why = take(ent)
+        if why is not None:
+            return None, why
+    same = frozenset(
+        ent.value for ent in mentions if any(same_service(ent.value, h) for h in home_names)
+    )
+    plain = _plain_link_hosts(pending.command or "", same) if same else frozenset()
+    for ent in mentions:
+        if ent.value in plain:
+            continue  # a plain link on the service's own domain, which receives the key anyway
+        why = take(ent)
+        if why is not None:
+            return None, why
     if not hosts:
         return None, "no_host"
 
