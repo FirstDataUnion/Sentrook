@@ -40,7 +40,7 @@ from ..aira.lists import Lists, load_lists
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
-from ..prepare.entities import Role, display_path, fed_paths
+from ..prepare.entities import Role, call_code_reach, display_path, fed_paths
 from ..prepare.skill_steps import CALL_ID_PREFIX, NEGATED_SUFFIX
 from ..probes.base import Contribution, Envelope, Floor, SessionMark
 
@@ -69,6 +69,10 @@ SKILL_STEP_SUSPICION: dict[str, float] = {
 
 
 NEGATED_STEP_FACTOR = 0.5
+
+#: Evidence key: the contributions and floors of a code tool's program that reaches no network sink, read as
+#: code (`analyse(local=True)`), for the cap in `converge.local_cap`.
+LOCAL_READING = "local_reading"
 
 
 class AiraProbe:
@@ -127,6 +131,23 @@ class AiraProbe:
             )
 
     def _run(self, prepared: Any, versions: dict[str, str | None], start: float) -> Envelope:
+        envelope = self._collect(prepared, versions, start, local=False)
+        reach = call_code_reach(prepared.pending, local=True)
+        if reach is not None and not reach.network:
+            # A program that reaches no network sink keeps the text reading's findings above. What it scores
+            # read as code (its URLs and quoted commands only mentioned) goes in the evidence: convergence
+            # caps the verdict at a review when only the text reading reaches a block (`converge.local_cap`).
+            local = self._collect(prepared, versions, start, local=True)
+            envelope.evidence[LOCAL_READING] = {
+                "contributions": [c.model_dump() for c in local.contributions],
+                "floors": [f.model_dump(mode="json") for f in local.floors],
+            }
+            envelope.latency_ms = (time.perf_counter() - start) * 1000
+        return envelope
+
+    def _collect(
+        self, prepared: Any, versions: dict[str, str | None], start: float, *, local: bool
+    ) -> Envelope:
         ctx = Context(
             prepared=prepared,
             lists=self.lists,
@@ -161,7 +182,7 @@ class AiraProbe:
         resolved_evidence: list[dict[str, Any]] = []
         pending_paths: list[str] = []
         for call in calls:
-            a = analyse(call, prepared, self.lists)
+            a = analyse(call, prepared, self.lists, local=local)
             findings, skipped_here = run_detectors(a, ctx)
             skipped = skipped_here
             label = call_label(call)

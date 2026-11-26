@@ -29,14 +29,18 @@ def decide(resp: dict[str, Any], review_at: float, block_at: float) -> str:
 
 #: The scanner's reason for a ceiling on a retry of a review nobody answered: kept on an unattended run.
 RETRY_CAP = "cap.unanswered_retry"
+#: The scanner's reason for a ceiling on code that reaches no network sink: kept on an unattended run.
+LOCAL_CODE_CAP = "cap.local_code"
+#: The ceilings an unattended run keeps.
+UNATTENDED_CAPS = frozenset({RETRY_CAP, LOCAL_CODE_CAP})
 
 
 def unattended_view(resp: dict[str, Any]) -> dict[str, Any]:
     """`resp` as an unattended run decides from it. The attended-owner ceiling is dropped: nobody can answer, so a
-    block is not lowered to a review with it. The ceiling on a retry of a review nobody answered is kept, so that
-    retry is held for the owner rather than blocked."""
+    block is not lowered to a review with it. The ceilings on a retry of a review nobody answered and on code that
+    reaches no network sink are kept, so that call is held for the owner rather than blocked."""
     codes = {r.get("code") for r in resp.get("reasons") or [] if isinstance(r, dict)}
-    return resp if RETRY_CAP in codes else {**resp, "ceiling": None}
+    return resp if codes & UNATTENDED_CAPS else {**resp, "ceiling": None}
 
 
 def tiers_of(resp: dict[str, Any]) -> dict[str, float | None]:

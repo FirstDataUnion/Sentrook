@@ -1,7 +1,8 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
 Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
-→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → owner pass (`owner_pass`: whether a held
+→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → local-code cap (`local_cap`: a ceiling of review for
+a code tool's program with no network sink in sight) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → owner pass (`owner_pass`: whether a held
 call may be passed once, always or not at all) → tool description → flags and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
@@ -14,7 +15,7 @@ from datetime import datetime
 from ..aira.detectors import call_label
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..planir.models import ToolKind
-from ..prepare import INPUT_TOO_LARGE, Prepared
+from ..prepare import INPUT_TOO_LARGE, Prepared, kernel_effects_of, kernel_hashes
 from ..prepare.entities import EntityKind
 from ..prepare.save_adds import SaveReading
 from ..probes.base import Envelope
@@ -37,6 +38,8 @@ from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
 from .hints import grant_hints
+from .local_cap import REASON as LOCAL_CAP_REASON
+from .local_cap import local_cap
 from .merge import Claim, Merged, collect, merge
 from .owner_pass import owner_pass
 from .params import ConvergenceParams, load_params
@@ -130,6 +133,11 @@ def _mint_session_sets(
         call=call_hash(state.salt, prepared.planir.pending_call.call_id),
         flags=set(own_flags),
     )
+    # What a code-tool call leaves in the conversation's interpreter for later programs.
+    effects = kernel_effects_of(state, prepared.pending)
+    if effects is not None:
+        marks.kernel = sorted(kernel_hashes(state, effects.names))
+        marks.kernel_unknown = effects.unknown
     for env in envelopes:
         if env.status is not ProbeStatus.OK:
             continue
@@ -292,9 +300,13 @@ def converge(
 ) -> ConvergeResult:
     """`self_edit_reading`: what a self-edit's saved content adds and whether the reading can vouch for it
     (`prepare.save_adds`), None for any other scan; it sets `Response.self_edit` and nothing else."""
-    claims = collect(envelopes)
-    if params.credential_home and prepared.credential_home is not None:
-        claims = cap_model_sensitivity(claims, params.credential_home_model_sensitivity_cap)
+
+    def hold_claims(cs: list[Claim]) -> list[Claim]:
+        if params.credential_home and prepared.credential_home is not None:
+            return cap_model_sensitivity(cs, params.credential_home_model_sensitivity_cap)
+        return cs
+
+    claims = hold_claims(collect(envelopes))
     merged = merge(claims)
     unjudged = exposure_unjudged(prepared, envelopes)
     tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
@@ -431,6 +443,34 @@ def converge(
         retry_cap["capped"] = False
         retry_cap["withheld"] = "degraded"
 
+    # A code tool's program with no network sink in sight may be reviewed or held, never blocked (`local_cap`).
+    code_cap = local_cap(
+        envelopes,
+        excluded,
+        params,
+        hold_claims=hold_claims,
+        extra_floor_risks=[f.min_risk for f in floors if f.floor == INPUT_TOO_LARGE],
+        enforced=enforced,
+        risk=tiers.risk,
+        degraded=degraded,
+        exposure_unjudged=unjudged,
+    )
+    local_capped = bool(code_cap and code_cap.capped)
+    text_blocks = enforced is Enforce.BLOCK or tiers.risk >= DEFAULT_BLOCK_LINE
+    if code_cap is not None and local_capped:
+        # the floors and enforcement are the code reading's; the risk stays as scored
+        floors = [f for f in floors if f.floor == INPUT_TOO_LARGE] + [
+            FloorApplied(
+                floor=f.floor,
+                min_risk=f.min_risk,
+                enforce=f.enforce,
+                subject=f.subject,
+                reason=f.reason,
+            )
+            for f in code_cap.floors
+        ]
+        enforced = code_cap.enforced
+
     not_informed = withheld(
         envelopes,
         degraded=degraded,
@@ -442,7 +482,7 @@ def converge(
     relax = relaxable(cap, held_back, enforced)
     attended_ceiling = relax and params.attended_owner_cap
     retry_capped = bool(retry_cap and retry_cap["capped"])
-    ceiling: str | None = "review" if attended_ceiling or retry_capped else None
+    ceiling: str | None = "review" if attended_ceiling or retry_capped or local_capped else None
     attended = {
         "attended": cap.attended,
         "strong": cap.strong,
@@ -475,13 +515,14 @@ def converge(
     reasons = _reasons(merged, tiers, floors, relief, params, params.u)
     # why the call is held for review rather than blocked: first when the risk reaches the default block line
     for code, applies in (
+        (LOCAL_CAP_REASON, local_capped),
         (RETRY_CAP_REASON, retry_capped),
         ("cap.attended_owner", attended_ceiling),
     ):
         if not applies:
             continue
         cap_reason = Reason(code=code, detail={"ceiling": "review"})
-        if tiers.risk >= DEFAULT_BLOCK_LINE:
+        if tiers.risk >= DEFAULT_BLOCK_LINE or (code == LOCAL_CAP_REASON and text_blocks):
             reasons.insert(0, cap_reason)
         else:
             reasons.append(cap_reason)
@@ -576,6 +617,7 @@ def converge(
                 "coverage_notes": sorted(coverage_codes),
                 "attended_owner": attended,
                 **({"unanswered_retry": retry_cap} if retry_cap is not None else {}),
+                **({"local_code": code_cap.evidence()} if code_cap is not None else {}),
             },
         ),
     )

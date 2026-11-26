@@ -20,6 +20,10 @@ since the version the catalog pins.
   went to the home channel, or that it was not delivered, until a notice gets through. The `notify here` reply says
   the first notice may take a few minutes. Other send failures, notices to a home channel and Telegram chats are
   unchanged.
+- An `execute_code` program that calls nothing on the network, and that the scanner can follow, is held for the owner
+  on an unattended run instead of blocked when only the URLs or quoted commands in its strings take it to a block
+  (the scanner's `cap.local_code` ceiling). A program that does call the network is scored and blocked as before.
+
 - The `sentrook-setup` skill tells the agent never to read Sentrook's folder or traffic log to work out what is
   routine, and to call the `sentrook_setup_report` tool instead: the log holds content from earlier tool calls, so
   reading it made the rest of the chat count as exposed to it.
