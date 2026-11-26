@@ -752,6 +752,107 @@ test("pending items sit at the top with the commands to answer them and their fu
   assert.equal(quiet.children[1]!.textContent, "History6");
 });
 
+test("pending: each hold can be dismissed, the section folds up, and only the first three show until asked", () => {
+  const model: any = viewModel();
+  model.pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  model.commands = COMMANDS;
+  const { root } = drawViewWith(model);
+  const section = root.byClass("srk-pending-section")[0]!;
+  // a details element, open while it holds something the owner has not folded away
+  assert.equal(section.tag, "details");
+  assert.ok("open" in section.attrs);
+  assert.equal(section.children[0]!.tag, "summary");
+  assert.match(section.children[0]!.textContent, /^Waiting for you5$/);
+  const text = section.textContent;
+  for (const id of ["h-4e4e4e", "h-3d3d3d", "h-2c2c2c", "h-1b1b1b"]) {
+    assert.ok(text.includes(`/sentrook-dismiss ${id}Copy`), id);
+  }
+  assert.match(text, /\/sentrook-dismiss allCopyTake every held call off this list without answering/);
+  assert.match(text, /dismiss it to take it off this list now/);
+  // the first three items, then the rest behind a button
+  const more = section.byClass("srk-pending-more")[0]!;
+  assert.ok("hidden" in more.attrs);
+  assert.equal(more.byClass("srk-pending-item").length, 2);
+  assert.equal(section.byClass("srk-pending-item").length - 2, 3);
+  const button = section.byClass("srk-pending-show")[0]!;
+  assert.equal(button.textContent, "Show 2 more");
+  button.click();
+  assert.ok(!("hidden" in more.attrs));
+  assert.equal(section.byClass("srk-pending-show").length, 0);
+});
+
+test("pending: three items or fewer need no button, and one hold no dismiss all", () => {
+  const model: any = viewModel();
+  const pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  model.pending = { ...pending, reviews: [], holds: pending.holds.slice(0, 1) };
+  model.commands = COMMANDS;
+  const section = drawView(model).byClass("srk-pending-section")[0]!;
+  assert.equal(section.byClass("srk-pending-more").length, 0);
+  assert.equal(section.byClass("srk-pending-show").length, 0);
+  assert.doesNotMatch(section.textContent, /dismiss all/);
+  assert.match(section.textContent, /\/sentrook-dismiss h-4e4e4e/);
+});
+
+test("pending: folding the section is remembered until something newer is waiting", () => {
+  const model: any = viewModel();
+  const pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  model.pending = pending;
+  model.commands = COMMANDS;
+  const store: Record<string, string> = {};
+  const localStorage = {
+    getItem: (k: string) => (k in store ? store[k]! : null),
+    setItem: (k: string, v: string) => {
+      store[k] = String(v);
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+  const v = drawViewWith(model);
+  v.window.localStorage = localStorage;
+  v.redraw();
+  let section = v.root.byClass("srk-pending-section").at(-1)!;
+  assert.ok("open" in section.attrs);
+  (section as any).open = false;
+  section.fire("toggle");
+  assert.equal(Object.keys(store).length, 1);
+  // drawn again with the same items: folded
+  const again = drawViewWith(model);
+  again.window.localStorage = localStorage;
+  again.redraw();
+  section = again.root.byClass("srk-pending-section").at(-1)!;
+  assert.ok(!("open" in section.attrs));
+  assert.match(section.children[0]!.textContent, /^Waiting for you5$/, "the count still shows");
+  // a newer hold opens it again
+  const newer = { ...pending, holds: [{ ...pending.holds[0], id: "h-5f5f5f", held_at: "2026-10-30T08:00:00Z" }, ...pending.holds] };
+  const fresh = drawViewWith({ ...model, pending: newer });
+  fresh.window.localStorage = localStorage;
+  fresh.redraw();
+  section = fresh.root.byClass("srk-pending-section").at(-1)!;
+  assert.ok("open" in section.attrs);
+  // opening it again forgets the fold
+  (section as any).open = true;
+  section.fire("toggle");
+  assert.deepEqual(store, {});
+});
+
+test("pending: a browser that refuses storage still draws the section open and folds it", () => {
+  const model: any = viewModel();
+  model.pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  model.commands = COMMANDS;
+  const v = drawViewWith(model);
+  Object.defineProperty(v.window, "localStorage", {
+    get() {
+      throw new Error("SecurityError");
+    },
+  });
+  v.redraw();
+  const section = v.root.byClass("srk-pending-section").at(-1)!;
+  assert.ok("open" in section.attrs);
+  (section as any).open = false;
+  assert.doesNotThrow(() => section.fire("toggle"));
+});
+
 test("search: the form shows the query, the status says how far the log was read, Older pages on", () => {
   const model: any = {
     ...viewModel(),

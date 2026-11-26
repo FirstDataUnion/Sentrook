@@ -397,7 +397,7 @@ count.
 down: the three scores the scanner combines (suspicion, consequence and confidence), every signal under each one with
 the reasons that raised it, and any floor or grant that changed the result. Grants and snooze are shown as they stand.
 
-Anything waiting for you comes first: an approval prompt still open, or a call held for your approval, each with the command that answers it. Below, the history shows 10, 25 or 50 scans a page; **Older** pages back. Search by tool name, outcome, time window or minimum risk. The traffic log has no index, so a search reads it backwards from the newest line, skipping lines outside the time window without parsing them; a time window makes searches faster. A search reads at most the whole log at its configured size (twice `traffic_log.max_bytes`, up to 256 MB) and says when it stopped early.
+Anything waiting for you comes first: an approval prompt still open, or a call held for your approval, each with the command that answers it. The first three show, with the rest behind **Show more**; `/sentrook dismiss <id>` (or `/sentrook dismiss all`) takes held calls off the list without answering them. Click the heading to fold the list away: the tab remembers that in your browser until something newer is waiting. Below, the history shows 10, 25 or 50 scans a page; **Older** pages back. Search by tool name, outcome, time window or minimum risk. The traffic log has no index, so a search reads it backwards from the newest line, skipping lines outside the time window without parsing them; a time window makes searches faster. A search reads at most the whole log at its configured size (twice `traffic_log.max_bytes`, up to 256 MB) and says when it stopped early.
 
 The tab only reads. To change a grant or a snooze, use the commands above. It shows the same records as
 `/sentrook history` and `/sentrook why`, and nothing when the traffic log is off. It reads the traffic log of the
@@ -547,6 +547,9 @@ Where nobody can answer a review (the runs above), the call is **held**:
     call safe to let through on every run and the call names who or what it acts on.
   - `/sentrook deny <id>`: the job is refused the same call for 30 days. The agent is told you declined it and to go
     on without it, and you get no more notices about it.
+  - `/sentrook dismiss <id>` (or `/sentrook dismiss all`): takes the hold off the list without answering it, on any
+    hold, as if it had expired now. The call never runs and nothing is set: the next call like it is held again, with
+    a notice. Use it to clear holds you do not want to answer, such as ones that offer no answer.
   - `/sentrook approve <id>` still works, as `allow`.
 - "The same call" means: the same tool, about the same parties (the destination, file or account the hold named),
   scoring no higher, with no warning the held call did not have, and nothing Sentrook enforces or floors. A send to

@@ -6,6 +6,15 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- `/sentrook dismiss <id>` (or `/sentrook dismiss all`) takes a held call off the waiting list without answering it,
+  as if it had expired now. It works on any hold, including one that offers no answer (a run with no source, or a
+  hold from an earlier version) and one you would rather not deny for 30 days. The call never runs and nothing is set:
+  no pass, denial or grant, and a call like it is held again with a notice. Each dismissed call is recorded in the
+  traffic log with the resolution `hold_dismissed`, and `/sentrook history` shows its review as `dismissed`. Like the
+  other answers, it is for the owner only and the agent is told never to run it.
+- The dashboard's **Waiting for you** section now folds: click its heading to fold it away, and the tab remembers that
+  in your browser until something newer is waiting. It shows the first three items with the rest behind **Show
+  more**, and names `/sentrook dismiss` on each held call and `/sentrook dismiss all` when more than one is waiting.
 - A notice to the chat set with `/sentrook notify here` that Hermes cannot reach yet is sent again instead of being
   lost. On platforms such as Mattermost, `hermes send` reaches a new chat only once Hermes has listed it, a few
   minutes after the chat starts, so the test notice and the first held-call notices failed with "Could not

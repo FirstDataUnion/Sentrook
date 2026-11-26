@@ -305,7 +305,7 @@ def test_a_denial_is_sent_to_the_scanner_as_a_denial_by_the_owner(h):
     assert h.scans[-1]["history"][-1]["decision"] == "denied_by_user"
 
 
-@pytest.mark.parametrize("verb", ["allow", "deny", "approve", "passes"])
+@pytest.mark.parametrize("verb", ["allow", "deny", "approve", "passes", "dismiss"])
 def test_a_non_owner_is_refused(h, monkeypatch, verb):
     _out, rec = run(h, 1)
     monkeypatch.setattr(
@@ -332,6 +332,13 @@ def test_a_non_owner_is_refused(h, monkeypatch, verb):
             "No held call h-abcdef: the id is unknown, already answered or expired.",
         ),
         ("deny h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."),
+        ("dismiss", "usage: /sentrook dismiss <id>|all"),
+        ("dismiss h-zzzzzz", "usage: /sentrook dismiss <id>|all"),
+        ("dismiss h-1a2b3c now", "usage: /sentrook dismiss <id>|all"),
+        (
+            "dismiss h-abcdef",
+            "No held call h-abcdef: the id is unknown, already answered or expired.",
+        ),
         (
             "passes revoke p-abcdef",
             "No pass or denial p-abcdef: the id is unknown, used up or expired.",
@@ -372,6 +379,90 @@ def test_deny_on_a_run_that_is_not_a_cron_job_is_refused(h):
     rec = [r for r in h.traffic() if r.get("kind") == "scan"][-1]
     assert rec["hold"]["offers"] == ["allow"]
     assert "no cron job or other source" in slash(h, f"deny {rec['hold']['id']}")
+
+
+# ---- dismiss -----------------------------------------------------------------------------------------------
+
+DISMISS = {k: v for k, v in FIXTURES["dismiss"].items() if k != "_comment"}
+
+
+def test_the_dismiss_replies_are_the_shared_fixtures():
+    assert hold.DISMISS_TEXT == DISMISS
+
+
+def test_dismiss_takes_a_jobs_hold_off_the_list_with_nothing_set(h):
+    _out, rec = run(h, 1)
+    hid = rec["hold"]["id"]
+    assert slash(h, f"dismiss {hid}") == DISMISS["one"].format(id=hid)
+    assert holds(h) == [] and stored_passes(h) == []
+    assert [
+        (r["request_id"], r["resolution"], r["decision"], r["hold_id"]) for r in resolutions(h)
+    ] == [(rec["request_id"], "hold_dismissed", "held", hid)]
+    assert not [r for r in h.traffic() if r.get("kind") == "passes"]
+    # the session history is left as an expiry leaves it
+    session = json.loads((h.dir / "sentrook" / "sessions" / "cron-job-j-1.json").read_text())
+    assert session["history"][-1]["decision"] == "held"
+    before = len(notices(h))
+    out, again = run(h, 2)
+    assert out == HELD and again["hold"]["id"] != hid
+    assert len(notices(h)) == before + 1
+    assert slash(h, f"dismiss {hid}").startswith(f"No held call {hid}:")
+
+
+def test_dismiss_works_on_a_hold_that_offers_no_answer_and_on_one_from_before_version_2(h):
+    h.reply = dict(MISSING)
+    _out, rec = run(h, 1, job=None)
+    assert rec["hold"]["offers"] == []
+    hid = rec["hold"]["id"]
+    assert slash(h, f"dismiss {hid}") == DISMISS["one"].format(id=hid)
+    assert holds(h) == []
+    h.reply = dict(NAMED)
+    _out, old = run(h, 2, job="job-k")
+    path = h.dir / "sentrook" / "holds.json"
+    data = json.loads(path.read_text())
+    del data["holds"][0]["v"]
+    data["holds"][0].pop("offers", None)
+    path.write_text(json.dumps(data))
+    oid = old["hold"]["id"]
+    assert slash(h, f"dismiss {oid}") == DISMISS["one"].format(id=oid)
+    assert holds(h) == [] and stored_passes(h) == []
+    assert not [r for r in h.traffic() if r.get("kind") == "grants"]
+
+
+def test_dismiss_records_every_held_call_of_a_repeated_hold(h):
+    _out, first = run(h, 1)
+    _out, second = run(h, 2)
+    assert second["hold"]["id"] == first["hold"]["id"]
+    slash(h, f"dismiss {first['hold']['id']}")
+    assert [(r["request_id"], r["resolution"]) for r in resolutions(h)] == [
+        (first["request_id"], "hold_dismissed"),
+        (second["request_id"], "hold_dismissed"),
+    ]
+
+
+def test_dismiss_all_takes_every_waiting_hold_off_the_list(h):
+    ids = [run(h, 1, job=job)[1]["hold"]["id"] for job in ("job-j", "job-k", None)]
+    assert len(holds(h)) == 3
+    assert slash(h, "dismiss all") == DISMISS["all"].format(n=3, ids=", ".join(ids))
+    assert holds(h) == [] and stored_passes(h) == []
+    assert [(r["hold_id"], r["resolution"]) for r in resolutions(h)] == [
+        (i, "hold_dismissed") for i in ids
+    ]
+    assert slash(h, "dismiss ALL") == DISMISS["none"]
+
+
+def test_dismiss_on_an_expired_hold_says_so_and_records_only_the_expiry(h):
+    _out, rec = run(h, 1)
+    hid = rec["hold"]["id"]
+    path = h.dir / "sentrook" / "holds.json"
+    data = json.loads(path.read_text())
+    data["holds"][0]["expires_at"] = "2020-01-01T00:00:00Z"
+    path.write_text(json.dumps(data))
+    assert slash(h, f"dismiss {hid}").startswith(
+        f"Held call {hid} expired: a hold can be answered for 7 days."
+    )
+    assert [r["resolution"] for r in resolutions(h)] == ["hold_expired"]
+    assert slash(h, "dismiss all") == DISMISS["none"]
 
 
 # ---- holds repeat, passes list ---------------------------------------------------------------------------------

@@ -6,7 +6,7 @@
  *
  * `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
  * grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`,
- * the same as `allow`) answer a call held on an unattended run, `passes` lists and revokes what those answers set
+ * the same as `allow`) answer a call held on an unattended run, `dismiss` takes held calls off the list unanswered, `passes` lists and revokes what those answers set
  * (passes.ts), `notify` says where the notice of a held call goes (see `hold.ts`) and `setup` shows what would stop
  * Sentrook asking about routine work and sets it with the screen's code (see `setup.ts`), so only the owner may run
  * them. `snooze` and a session `grant` cover the session the command was sent from; the
@@ -203,6 +203,19 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
       "days, with no more notices",
     cliRest: true,
     run: (ctx, rest) => answerText(ctx, "deny", rest),
+  },
+  dismiss: {
+    command: "sentrook-dismiss",
+    args: "<id>|all",
+    description:
+      "Take a held call (or all of them) off the waiting list without answering it, as if it had expired now: the " +
+      "call never runs and nothing is set, so a call like it is held again",
+    cliRest: true,
+    run: (ctx, rest) => {
+      if (!ctx.owner) return refusal("dismiss");
+      const o = ctx.owner;
+      return hold.dismiss(configOf(ctx).stateDir, rest, o.by, new Date(), CMD, o.record, o.beforeWrite);
+    },
   },
   approve: {
     command: "sentrook-approve",

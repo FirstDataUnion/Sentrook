@@ -31,7 +31,7 @@ In short, for anyone deciding whether to install it:
   approves a call on your behalf. Where nobody can answer (cron jobs, subagents), a review holds the call: it does not
   run, and you get one notice as a direct message, on the chat you chose with `/sentrook-notify here`, with an id to
   answer within 7 days: `/sentrook-allow` runs the job again now and lets that call through once in that run (`later`:
-  on the job's next run instead; `always`: for 30 days, where offered), and `/sentrook-deny` refuses it on that job for 30 days with no more notices. On a heartbeat or subagent run the answers are bound to the heartbeat's agent or the subagent's parent session instead, and nothing is started. A call blocked there because the scan failed sends you a notice on
+  on the job's next run instead; `always`: for 30 days, where offered), and `/sentrook-deny` refuses it on that job for 30 days with no more notices; `/sentrook-dismiss` (or `/sentrook-dismiss all`) takes it off the list unanswered, as if it had expired. On a heartbeat or subagent run the answers are bound to the heartbeat's agent or the subagent's parent session instead, and nothing is started. A call blocked there because the scan failed sends you a notice on
   the same chat, at most once per job (per session for other runs) every 6 hours.
 - **Background skill and memory saves:** OpenClaw's own saves (the Skill Workshop review, the memory flush, the skill
   collection review) are never asked about, because nobody can answer a prompt in those runs. A save Sentrook would

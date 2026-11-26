@@ -89,6 +89,11 @@ SUMMARIES: dict[str, tuple[str, str]] = {
         "refuses a call held on a cron job, or on another run with a source, by the id in Sentrook's notice: that "
         "job or source is refused the same call for 30 days, with no more notices",
     ),
+    "dismiss": (
+        "<id>|all",
+        "takes a held call (or all of them) off the waiting list without answering it, as if it had expired now: "
+        "the call never runs and nothing is set, so a call like it is held again",
+    ),
     "approve": ("<id>", "the same as allow (kept for one release)"),
     "passes": (
         "[revoke <id>]",
@@ -126,6 +131,7 @@ HOSTS: dict[str, dict] = {
             "snooze",
             "allow",
             "deny",
+            "dismiss",
             "approve",
             "passes",
             "notify",
@@ -158,6 +164,7 @@ HOSTS: dict[str, dict] = {
             "snooze",
             "allow",
             "deny",
+            "dismiss",
             "approve",
             "passes revoke",
             "notify",
@@ -233,6 +240,7 @@ HOSTS: dict[str, dict] = {
             "snooze",
             "allow",
             "deny",
+            "dismiss",
             "approve",
             "passes",
             "notify",
@@ -247,6 +255,7 @@ HOSTS: dict[str, dict] = {
             "snooze",
             "allow",
             "deny",
+            "dismiss",
             "approve",
             "passes revoke",
             "notify",

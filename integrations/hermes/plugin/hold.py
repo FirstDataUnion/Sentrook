@@ -41,6 +41,9 @@ process with no terminal. There the plugin holds the call:
   the job's next run makes its first hold (`stale_groups`).
 - After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next
   changed (a new hold or an answer).
+- `/sentrook dismiss <id>` (or `all`) takes waiting holds off the list as if they had expired now (`dismiss`), on
+  any hold, whatever answers it offers: nothing is set and the session history is left as an expiry leaves it, so a
+  call like it is held again.
 
 `holds.json` is version 2. Its entries keep no raw arguments: the match key is a hash (`passes.match_of`).
 Holds from before (no `v`) stay answerable as before until they expire: `allow` or `approve` sets the
@@ -54,7 +57,8 @@ answered that the scanner caps at review (`decision.unattended_view`). Attended 
 is still a review prompt.
 
 The traffic log gets the scan with decision `held` and, later, a `resolution` record with resolution
-`hold_allowed`, `hold_allowed_always`, `hold_denied` (`hold_approved` for an older hold) or `hold_expired`,
+`hold_allowed`, `hold_allowed_always`, `hold_denied` (`hold_approved` for an older hold), `hold_dismissed` or
+`hold_expired`,
 joined by `request_id` as review answers are; a call a pass or denial settles is logged with decision
 `allowed_by_pass` or `denied_by_owner`. Holds are kept in
 `<hermes home>/sentrook/holds.json`; the OpenClaw plugin keeps the same file and prints the same
@@ -866,6 +870,80 @@ def _parse(verb: str, rest: str) -> tuple[str, str, str] | None:
     return words[0], passes.ALLOW, "" if mode == "once" else mode
 
 
+def _not_waiting(hold_id: str, gone: list[dict[str, Any]]) -> str:
+    """The reply for an id no hold waits under: expired (it went in this sweep, `gone`), or unknown."""
+    old = next((h for h in gone if h.get("id") == hold_id), None)
+    if old is not None:
+        days = "7 days" if old.get("v") == 2 else "24 hours"
+        return (
+            f"Held call {hold_id} expired: a hold can be answered for {days}. Nothing was set; the "
+            "next run is scanned as before."
+        )
+    return f"No held call {_clean(hold_id, 40)}: the id is unknown, already answered or expired."
+
+
+#: The replies to `dismiss`; the shared fixture's `dismiss` (shared with the OpenClaw plugin).
+DISMISS_TEXT = {
+    "one": "Dismissed {id}: the held call does not run and nothing was set. A call like it is held again next time.",
+    "all": (
+        "Dismissed {n} held call(s): {ids}. None of them runs and nothing was set. Calls like them are held again "
+        "next time."
+    ),
+    "none": "No held calls are waiting.",
+    "usage": "usage: {dismiss} <id>|all, with the id from Sentrook's notice (h- and 6 hex digits)",
+}
+
+
+def dismiss(
+    state_dir: Path, rest: str, who: dict[str, Any], now: datetime, cmd: Cmd, record: Record
+) -> str:
+    """`dismiss <id>` or `dismiss all`: takes waiting holds off the list as if they had expired now, whatever answers
+    they offer (an older hold, one that offers nothing, one on a run with no source). The held call never runs and
+    nothing is set: no pass, denial or grant, and the held calls' history is left as an expiry leaves it, so a call
+    like it is held again, with a notice. Each held call gets a `hold_dismissed` resolution."""
+    words = rest.split()
+    every = len(words) == 1 and words[0].lower() == "all"
+    if len(words) != 1 or (not every and not _ID.fullmatch(words[0])):
+        return DISMISS_TEXT["usage"].format(dismiss=cmd("dismiss"))
+    hid = words[0]
+    store = Store(state_dir)
+    with _LOCK, file_lock(state_dir / "holds.json"):
+        data = store.load_holds()
+        if data is None:
+            return f"The holds file {state_dir / 'holds.json'} could not be read; fix or remove it first."
+        gone = _sweep(data, now, record)
+        # after the sweep every entry is a live hold
+        taken = [h for h in data["holds"] if every or h.get("id") == hid]
+        if not taken:
+            if gone:
+                store.save_holds(data)
+            return DISMISS_TEXT["none"] if every else _not_waiting(hid, gone)
+        data["holds"] = [h for h in data["holds"] if not any(h is t for t in taken)]
+        try:
+            store.save_holds(data)
+        except Exception as exc:  # noqa: BLE001 - nothing changed
+            return f"Not dismissed: the holds file could not be written ({_clean(exc, 160)}); nothing changed."
+    for h in taken:
+        held = [x for x in h.get("held") or [] if isinstance(x, dict)] or [
+            {"request_id": h.get("request_id")}
+        ]
+        for x in held:
+            if isinstance(x.get("request_id"), str):
+                record(
+                    {
+                        "kind": "resolution",
+                        "request_id": x["request_id"],
+                        "resolution": "hold_dismissed",
+                        "decision": "held",
+                        "hold_id": h.get("id"),
+                        "by": who,
+                    }
+                )
+    if not every:
+        return DISMISS_TEXT["one"].format(id=hid)
+    return DISMISS_TEXT["all"].format(n=len(taken), ids=", ".join(str(h.get("id")) for h in taken))
+
+
 def answer(
     state_dir: Path,
     verb: str,
@@ -901,16 +979,7 @@ def answer(
         if found is None:
             if gone:
                 store.save_holds(data)
-            old = next((h for h in gone if h.get("id") == hid), None)
-            if old is not None:
-                days = "7 days" if old.get("v") == 2 else "24 hours"
-                return (
-                    f"Held call {hid} expired: a hold can be answered for {days}. Nothing was set; the "
-                    "next run is scanned as before."
-                )
-            return (
-                f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
-            )
+            return _not_waiting(hid, gone)
         if found.get("v") != 2:
             if want != passes.ALLOW:
                 if gone:

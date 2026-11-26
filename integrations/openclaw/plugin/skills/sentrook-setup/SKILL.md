@@ -89,7 +89,8 @@ approved.
 4. **For a tool reviewed again and again with no suggestion**, ask the owner to find one of those calls in
    `/sentrook-history 50` and run `/sentrook-why <id>`; explain what it shows, and if they think Sentrook got it wrong,
    suggest `/sentrook-report <id>`. A held call is answered with `/sentrook-allow <id>` (once, or `always` where the
-   notice offers it) or `/sentrook-deny <id>`; `/sentrook-passes` lists what those answers set.
+   notice offers it) or `/sentrook-deny <id>`, or taken off the list unanswered with `/sentrook-dismiss <id>`;
+   `/sentrook-passes` lists what those answers set.
 5. **For a key sent to its own service**, nothing is needed: Sentrook already lets it through. If the owner mentions a
    key the report does not list, add a credential item with `sentrook_propose_setup` (see "Hand over").
 
@@ -107,7 +108,7 @@ approved.
 
 ## What you never do
 
-- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
+- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-dismiss`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never read Sentrook's folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`) or its traffic log to work out what is routine: call the

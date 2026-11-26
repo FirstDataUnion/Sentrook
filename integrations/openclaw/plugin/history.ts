@@ -38,6 +38,7 @@ const REVIEW: Record<string, string> = {
   hold_allowed: "allowed once",
   hold_allowed_always: "allowed always",
   hold_denied: "denied",
+  hold_dismissed: "dismissed",
   hold_expired: "expired",
 };
 /** A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked. */
