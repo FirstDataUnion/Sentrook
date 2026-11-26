@@ -368,6 +368,106 @@ def _hashes(shape: Fingerprint, echoed: Fingerprint | None, *roles: Role) -> fro
     return out
 
 
+#: Heads that only change the shell's working folder.
+_NAVIGATION_HEADS = frozenset({"cd", "pushd", "popd"})
+#: Interpreters and launchers: running one says how a program runs, not which program runs.
+_LAUNCHER_NAME_RE = re.compile(
+    r"(?:python|pypy|node|deno|bun|bunx|npx|uv|uvx|pipx|ruby|perl|php|env|sudo|doas"
+    r"|bash|sh|zsh|dash|ksh)(?:\d+(?:\.\d+)*)?"
+)
+#: A `PATH` assignment, exported or for one command, with its value.
+_PATH_ASSIGN_RE = re.compile(r"(?<![\w$])PATH=(\"[^\"]*\"|'[^']*'|[^\s;&|)]*)")
+#: Tools whose `-C <folder>` runs them in that folder, as a `cd` before them would.
+_DIR_FLAG_HEADS = frozenset({"git", "make"})
+
+#: One acting segment of a command, comparable across spellings: (program, operands resolved
+#: against the folder it runs in, flags, that folder when no operand carries it).
+_Segment = tuple[str, tuple[str, ...], frozenset[str], str]
+
+
+@dataclass(frozen=True)
+class _ExecEnvironment:
+    """What an exec command sets up rather than acts on. `paths`: the folders it `cd`s into, runs a
+    tool in with `-C` or puts on `PATH`, and interpreters or launchers it runs by path, minus any of
+    those the command also names as an operand. `segments`: its acting segments (`_Segment`), the
+    folder and `PATH` setup left out, to tell the same command again from another one."""
+
+    paths: frozenset[str]
+    segments: frozenset[_Segment]
+
+    def repeats(self, denied: _ExecEnvironment) -> bool:
+        """This command runs every acting segment of the `denied` one."""
+        return bool(denied.segments) and denied.segments <= self.segments
+
+
+def _flags(tok: str) -> list[str]:
+    """`-fdx` is `-f -d -x`; any other flag is itself."""
+    if re.fullmatch(r"-[A-Za-z]{2,}", tok):
+        return ["-" + c for c in tok[1:]]
+    return [tok]
+
+
+def _exec_environment(
+    command: str, cwd: str | None, *, home: str | None, workspace_root: str | None
+) -> _ExecEnvironment:
+    from ..prepare.entities import resolve_token, shell_segments_sep
+
+    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
+
+    def at(raw: str, where: str) -> str:
+        return resolve_token(raw, where, home=home, workspace_root=workspace_root)[0]
+
+    env: set[str] = set()
+    operands: set[str] = set()
+    segments: set[_Segment] = set()
+    stack: list[str] = []
+    for raw in _PATH_ASSIGN_RE.findall(command):
+        for part in raw.strip("'\"").split(":"):
+            if part and "$" not in part.replace("$HOME", ""):
+                env.add(at(part, base))
+    for _, tokens in shell_segments_sep(command):
+        head, args = tokens[0], tokens[1:]
+        if head in _NAVIGATION_HEADS:
+            if head == "popd":
+                base = stack.pop() if stack else base
+                continue
+            target = next((a for a in args if not a.startswith("-")), None)
+            if target is not None:
+                if head == "pushd":
+                    stack.append(base)
+                base = at(target, base)
+                env.add(base)
+            continue
+        if head == "export" and all("=" in a or a.startswith("-") for a in args):
+            continue
+        where = base
+        if head in _DIR_FLAG_HEADS and "-C" in args:
+            k = args.index("-C")
+            if k + 1 < len(args):
+                where = at(args[k + 1], base)
+                env.add(where)
+                args = args[:k] + args[k + 2 :]
+        name = head.rsplit("/", 1)[-1]
+        launcher = _LAUNCHER_NAME_RE.fullmatch(name)
+        if launcher:
+            if "/" in head:
+                env.add(at(head, where))
+            program = re.sub(r"[\d.]+$", "", name)  # `python3` and `~/v/bin/python` run alike
+        else:
+            program = at(head, where) if "/" in head else head
+            operands.add(at(head, where))
+        resolved: list[str] = []
+        flags: set[str] = set()
+        for tok in args:
+            if tok.startswith("-") and tok != "-":
+                flags.update(_flags(tok))
+                continue
+            resolved.append(at(tok, where))
+        operands.update(resolved)
+        segments.add((program, tuple(resolved), frozenset(flags), "" if resolved else where))
+    return _ExecEnvironment(paths=frozenset(env - operands), segments=frozenset(segments))
+
+
 _SHAPE_ROLES = (
     Role.DATA_SOURCE,
     Role.DATA_DESTINATION,
@@ -1258,6 +1358,26 @@ class ContextProbe:
             followed,
         )
 
+    @staticmethod
+    def _environment(call: CanonicalCall, prepared: Prepared) -> _ExecEnvironment | None:
+        """An exec call's environment setup (`_exec_environment`); None for any other call."""
+        if call.tool_kind is not ToolKind.EXEC or not call.command:
+            return None
+        return _exec_environment(
+            call.command,
+            call.get("cwd"),
+            home=prepared.home,
+            workspace_root=prepared.workspace_root,
+        )
+
+    @staticmethod
+    def _env_hashes(env: _ExecEnvironment | None, prepared: Prepared) -> frozenset[str]:
+        if env is None:
+            return frozenset()
+        return frozenset(
+            entity_hash(prepared.state.salt, EntityKind.PATH.value, path) for path in env.paths
+        )
+
     def _read_shaped(self, prepared: Prepared) -> bool:
         """A file read, or an exec whose every segment starts with a reading head and writes
         nothing: touching the denied step's data again, not retrying what was denied. A `find`
@@ -1292,7 +1412,9 @@ class ContextProbe:
         nothing. A destructive SQL statement that names the object a denied destructive statement
         named is the same action through whatever tool it now goes. A skill-tool call that changes a skill a
         denied skill-tool call changed is the same action (`skill_steps.skills_changed`); two skill-tool
-        calls match on nothing else. Each match records whether its
+        calls match on nothing else. The folders an exec works in or puts on `PATH`, and the
+        interpreter it runs, are its environment and match nothing (`_exec_environment`); an exec that
+        runs every acting segment of a denied one again is the same action. Each match records whether its
         step was a review nobody answered (`Prepared.unanswered_review`); convergence caps a retry
         whose every match is one at review (`converge.retry_cap`)."""
         p = self.params
@@ -1305,9 +1427,13 @@ class ContextProbe:
         pending, copies = self._with_copies(
             prepared.fingerprint, prepared.entities.pending(), step_now, prepared
         )
-        p_src = pending.hashes(Role.DATA_SOURCE)
-        p_dst = pending.hashes(Role.DATA_DESTINATION) | pending.hashes(Role.RECIPIENT)
-        p_code = pending.hashes(Role.CODE_SOURCE) | pending.hashes(Role.EXECUTABLE)
+        p_env = self._environment(prepared.pending, prepared)
+        p_env_hashes = self._env_hashes(p_env, prepared)
+        p_src = pending.hashes(Role.DATA_SOURCE) - p_env_hashes
+        p_dst = (
+            pending.hashes(Role.DATA_DESTINATION) | pending.hashes(Role.RECIPIENT)
+        ) - p_env_hashes
+        p_code = (pending.hashes(Role.CODE_SOURCE) | pending.hashes(Role.EXECUTABLE)) - p_env_hashes
         p_all = p_src | p_dst | p_code
         read_shaped = self._read_shaped(prepared)
         p_sql = _sql_objects(prepared.lineage.sql_targets)
@@ -1326,15 +1452,24 @@ class ContextProbe:
             shape = hist
             if echoed is not None and not any(hist.hashes(r) for r in _SHAPE_ROLES):
                 shape = echoed
+            # The folders a command works in or puts on PATH, and the interpreter that runs it, are
+            # not what it acts on: they neither match nor give the step a source.
+            h_env = self._environment(call, prepared)
+            h_env_hashes = self._env_hashes(h_env, prepared)
             two_sided = bool(
-                shape.hashes(Role.DATA_SOURCE)
-                and (shape.hashes(Role.DATA_DESTINATION) or shape.hashes(Role.RECIPIENT))
+                shape.hashes(Role.DATA_SOURCE) - h_env_hashes
+                and (shape.hashes(Role.DATA_DESTINATION) | shape.hashes(Role.RECIPIENT))
+                - h_env_hashes
             )
-            h_src = _hashes(shape, echoed, Role.DATA_SOURCE)
-            h_dst = _hashes(shape, echoed, Role.DATA_DESTINATION, Role.RECIPIENT)
-            h_code = _hashes(shape, echoed, Role.CODE_SOURCE, Role.EXECUTABLE)
+            h_src = _hashes(shape, echoed, Role.DATA_SOURCE) - h_env_hashes
+            h_dst = _hashes(shape, echoed, Role.DATA_DESTINATION, Role.RECIPIENT) - h_env_hashes
+            h_code = _hashes(shape, echoed, Role.CODE_SOURCE, Role.EXECUTABLE) - h_env_hashes
             src_shared, dst_shared = bool(h_src & p_all), bool(h_dst & p_all)
             code_shared = bool(h_code & p_all)
+            # A command run again is the same action even where it names what it acts on in a way
+            # no entity carries (`rm -rf data` in a folder it `cd`s into, `git clean -fdx`): the
+            # pending call runs every acting segment of the denied one, in the same folders.
+            same_command = bool(h_env is not None and p_env is not None and p_env.repeats(h_env))
             # The same destructive statement through another tool or client shares no path or code:
             # the object it destroys is the match, unless each names a different database file.
             sql_shared = sorted(p_sql & _sql_objects(sql_targets(call))) if p_sql else []
@@ -1348,13 +1483,22 @@ class ContextProbe:
             skill_shared: list[str] = []
             if h_skills is not None:
                 skill_shared = sorted(p_skills & h_skills)
-                src_shared = dst_shared = code_shared = False
+                src_shared = dst_shared = code_shared = same_command = False
                 sql_shared = []
-            if not (src_shared or dst_shared or code_shared or sql_shared or skill_shared):
+            if not (
+                src_shared
+                or dst_shared
+                or code_shared
+                or sql_shared
+                or skill_shared
+                or same_command
+            ):
                 continue
             carry = True
-            if sql_shared or skill_shared:
+            if sql_shared or skill_shared or (same_command and not read_shaped):
                 value, reason = p.retry_same_action, "retry.same_action"
+            elif same_command and not (src_shared or dst_shared or code_shared):
+                value, reason, carry = p.retry_same_source_only, "retry.same_source_only", False
             elif two_sided:  # the denied step moved data from a source to a destination
                 if src_shared and dst_shared:
                     value, reason = p.retry_same_action, "retry.same_action"
