@@ -96,6 +96,10 @@ SHAPES = {
     "a fetch piped to sudo with many options": lambda size: ex(
         _repeat("curl |sudo ", "-curl|sudo ", "", size)
     ),
+    # launchers that take a word or a setting before the command, each run cut by a pipe
+    "a fetch piped to launchers with many words": lambda size: ex(
+        _repeat("curl |", "flock -a x env A=1 -b|", "", size)
+    ),
     "execute_code with many opens": lambda size: _code(_repeat("", "open(", "", size)),
     "mail to many addresses": lambda size: _write(
         AGENTS, "".join(f"send to u{i}@a.io " for i in range(size // 19))
