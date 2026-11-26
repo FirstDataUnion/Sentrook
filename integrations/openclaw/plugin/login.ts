@@ -17,6 +17,7 @@ import path from "node:path";
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, parseDotenvText } from "./auth.ts";
 import { openclawDir, resolveConfig } from "./config.ts";
+import * as consent from "./consent.ts";
 
 export const CLIENT_ID = "sentrook-plugin";
 export const SCOPE = "sentrook.scan";
@@ -181,8 +182,16 @@ function usable(body: unknown): Record<string, string> | null {
 const errorOf = (body: unknown): unknown =>
   body && typeof body === "object" ? (body as Record<string, unknown>).error : undefined;
 
-/** The device flow up to the credentials; throws LoginError with the line to print. */
-async function signIn(issuer: string, name: string, devId: string, deps: LoginDeps): Promise<Record<string, string>> {
+/**
+ * The device flow up to the credentials and the accepted terms (when the identity service names them); throws
+ * LoginError with the line to print.
+ */
+async function signIn(
+  issuer: string,
+  name: string,
+  devId: string,
+  deps: LoginDeps,
+): Promise<{ values: Record<string, string>; terms: consent.AcceptedTerms | null }> {
   const discovery = await request(deps, `${issuer}/.well-known/openid-configuration`);
   const endpoint = (discovery.body as Record<string, unknown> | null)?.device_authorization_endpoint;
   if (discovery.status !== 200 || typeof endpoint !== "string" || !endpoint) {
@@ -234,7 +243,7 @@ async function signIn(issuer: string, name: string, devId: string, deps: LoginDe
           "Sign-in failed: the identity service's answer could not be used. Run openclaw sentrook login again.",
         );
       }
-      return values;
+      return { values, terms: consent.acceptedTerms(answer.body) };
     }
     const error = errorOf(answer.body);
     if (error === "authorization_pending") continue;
@@ -337,8 +346,9 @@ export async function runLogin(
   const issuerUrl = issuer.url.replace(/\/+$/, "");
   const name = cleanDeviceName(opts.name, deps.hostname());
   let values: Record<string, string>;
+  let terms: consent.AcceptedTerms | null;
   try {
-    values = await signIn(issuerUrl, name, deviceId(cfg.stateDir), deps);
+    ({ values, terms } = await signIn(issuerUrl, name, deviceId(cfg.stateDir), deps));
   } catch (err) {
     if (err instanceof Cancelled || deps.cancel?.aborted) {
       deps.out("Cancelled. Nothing was changed.");
@@ -362,8 +372,12 @@ export async function runLogin(
     );
     return EXIT_FAILED;
   }
+  // New credentials: a later withdrawal of consent is announced again.
+  consent.reset(cfg.stateDir);
   deps.out(`Connected as "${name}". Credentials saved ${saved.where}.`);
   if (saved.replacedEarlier) deps.out(RESTART_LINE);
+  deps.out("");
+  for (const line of consent.signedInLines(terms)) deps.out(line);
   deps.out("");
   if (!deps.verify) return EXIT_OK;
   const { report, ok } = await deps.verify(values);

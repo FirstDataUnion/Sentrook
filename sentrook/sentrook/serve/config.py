@@ -1,7 +1,7 @@
 """Serve configuration from `SENTROOK_*` environment variables.
 
 Operators configure one image through the environment. Secrets (`SENTROOK_JEV_API_KEY`,
-`SENTROOK_STATE_KEY`, `SENTROOK_ORACLE_API_KEY`) only ever come from here: either the variable itself or
+`SENTROOK_JEV_SECONDARY_API_KEY`, `SENTROOK_STATE_KEY`, `SENTROOK_ORACLE_API_KEY`) only ever come from here: either the variable itself or
 `<NAME>_FILE`, a path to a file holding the value (for secrets rendered to files by a secrets agent, so
 they stay out of the process environment). Setting both is an error, and so is a `_FILE` path that
 cannot be read; the file is read once, at startup.
@@ -12,6 +12,11 @@ Scan auth (`SENTROOK_SCAN_AUTH_MODE`):
   always the default in production.
 - `open`: no authentication, for a local sidecar or a test-mode server. The default in development
   when no issuer is set (the server logs a warning at startup); refused in production.
+
+Jev route (`SENTROOK_JEV_ROUTE`, see `jev.routing`): `primary` (the default) sends every Jev call to the Decisions
+API. The other modes add a second, OpenAI-compatible route (`SENTROOK_JEV_SECONDARY_BASE_URL`, `_MODEL`, `_API_KEY`
+or `_API_KEY_FILE`, `_TIMEOUT_MS`, `_STRUCTURED`), which they need: `fallback_on_outage`, `fallback_on_rejected`
+or `secondary`. The secondary settings are ignored in `primary` mode.
 
 Probe ablation (`SENTROOK_PROBES`) is a test-mode feature and is refused without
 `SENTROOK_TEST_MODE=1`.
@@ -33,6 +38,7 @@ from dataclasses import dataclass, field
 from ..jev.client import DEFAULT_BASE_URL, DEFAULT_MODEL
 from ..jev.questions import QUESTIONS_DIR, load_question_set
 from ..prepare.context_limits import NO_LIMITS, ContextLimits
+from ..jev.routing import MODE_PRIMARY, MODES
 from ..prepare.views import VIEW_KIND
 from .oidc import normalize_oidc_url
 
@@ -169,6 +175,13 @@ class ServeConfig:
     jev_call_question_set: str = "call-v11"
     #: Declared self-edits (the host's own background saves to memory or skills); "" sends them to the call set.
     jev_selfedit_question_set: str = "selfedit-v3"
+    #: Which Jev route answers (`jev.routing.MODES`); anything but `primary` needs the secondary settings.
+    jev_route: str = MODE_PRIMARY
+    jev_secondary_base_url: str | None = None
+    jev_secondary_model: str | None = None
+    jev_secondary_api_key: str | None = None
+    jev_secondary_timeout_s: float = 20.0
+    jev_secondary_structured: bool = True
     oracle_url: str | None = None
     oracle_api_key: str | None = None
     probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
@@ -194,6 +207,17 @@ class ServeConfig:
             raise ConfigError("SENTROOK_SCAN_AUTH_MODE=oidc needs a valid SENTROOK_OIDC_ISSUER")
         if self.test_mode and self.production:
             raise ConfigError("SENTROOK_TEST_MODE cannot be enabled in production")
+        if self.jev_route not in MODES:
+            raise ConfigError(
+                f"SENTROOK_JEV_ROUTE must be one of {', '.join(MODES)}, got {self.jev_route!r}"
+            )
+        if self.jev_route != MODE_PRIMARY and not (
+            self.jev_secondary_base_url and self.jev_secondary_model
+        ):
+            raise ConfigError(
+                f"SENTROOK_JEV_ROUTE={self.jev_route} needs SENTROOK_JEV_SECONDARY_BASE_URL and "
+                "SENTROOK_JEV_SECONDARY_MODEL"
+            )
         if self.probes and not self.test_mode:
             raise ConfigError(
                 "SENTROOK_PROBES (probe ablation) is only available in test mode: "
@@ -258,6 +282,14 @@ class ServeConfig:
             jev_call_question_set=_question_set(
                 env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v11", "call"
             ),
+            jev_route=(env.get("SENTROOK_JEV_ROUTE") or MODE_PRIMARY).strip().lower(),
+            jev_secondary_base_url=(env.get("SENTROOK_JEV_SECONDARY_BASE_URL") or "").strip()
+            or None,
+            jev_secondary_model=(env.get("SENTROOK_JEV_SECONDARY_MODEL") or "").strip() or None,
+            jev_secondary_api_key=_secret(env, "SENTROOK_JEV_SECONDARY_API_KEY") or None,
+            jev_secondary_timeout_s=_float(env, "SENTROOK_JEV_SECONDARY_TIMEOUT_MS", 20_000.0)
+            / 1000.0,
+            jev_secondary_structured=_bool(env, "SENTROOK_JEV_SECONDARY_STRUCTURED", True),
             oracle_url=(env.get("SENTROOK_ORACLE_URL") or "").strip() or None,
             oracle_api_key=_secret(env, "SENTROOK_ORACLE_API_KEY") or None,
             probes=tuple(p.strip() for p in probes_raw.split(",") if p.strip())

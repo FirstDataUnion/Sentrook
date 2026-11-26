@@ -39,8 +39,9 @@ import { blockReason, decide, describe as describeCall, severity, tiersOf, unatt
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL_NAMES, toolKind, triggerKind, unwrapToolCall } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
-import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
+import { invalidEndpointEffect, type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
+import * as consent from "./consent.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as setup from "./setup.ts";
@@ -946,13 +947,15 @@ const plugin = {
       const unattended = timing.unattended || runKind !== null || triggerKind === "subagent";
 
       let result: ScanOk | ScanFailure;
+      let oidc: ReturnType<typeof resolveOidcCredentials> = null;
       const { scan, issuer } = cfg.endpoints;
       if (!scan.ok) result = { ok: false, kind: "config", detail: `scan URL: ${scan.reason}` };
       else if (!issuer.ok) result = { ok: false, kind: "config", detail: `OIDC issuer: ${issuer.reason}` };
       else {
+        oidc = resolveOidcCredentials(api.pluginConfig ?? {}, env, issuer.url);
         result = await postScan({
           scanUrl: scan.url,
-          oidc: resolveOidcCredentials(api.pluginConfig ?? {}, env, issuer.url),
+          oidc,
           body,
           timeoutMs: cfg.timeoutMs,
         });
@@ -1187,7 +1190,10 @@ const plugin = {
               });
         entry.decision = hook?.block || hook?.requireApproval ? "blocked_on_error" : "allowed_on_error";
         api.logger.warn(`${LOG} scan failed (${result.kind}): ${result.detail}`);
-        if (hook?.block && unattended) {
+        const withdrawn = result.setup === "consent_withdrawn" && oidc !== null;
+        // One notice for the withdrawal, in either mode, instead of one per job or session.
+        if (withdrawn) notice = consentNotice(cfg, oidc!.clientId);
+        else if (hook?.block && unattended) {
           notice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run, runKind);
         }
       }
@@ -1560,6 +1566,37 @@ const plugin = {
     }
 
     /**
+     * Tells the owner, once for these credentials, that the identity service refuses them because consent was
+     * withdrawn. Kept in the state folder, so a restart does not send it again; `openclaw sentrook login` resets it.
+     * Returns what the scan record says about the notice. Never throws: the call's outcome stands whatever happens.
+     */
+    function consentNotice(cfg: PluginConfig, clientId: string): Json {
+      const target = store.loadNotify();
+      const outbound = outboundOf();
+      if (!target) return { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+      if (!outbound?.loadAdapter) return { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+      try {
+        if (!consent.claim(cfg.stateDir, clientId, new Date())) return { status: "quiet" };
+      } catch (err) {
+        if (!(err instanceof hold.LockTimeoutError)) api.logger.warn(`${LOG} could not read or write the consent notice: ${String(err)}`);
+        return { status: "unsent", target: null, reason: err instanceof hold.LockTimeoutError ? "notice file locked" : "notice file not written" };
+      }
+      hold.track(
+        hold.deliver(outbound, hostConfig(), target, consent.withdrawnText()).then((why) => {
+          if (!why) return;
+          api.logger.warn(`${LOG} consent notice not delivered: ${why}`);
+          // Not delivered: the next refused scan announces it instead.
+          try {
+            consent.release(cfg.stateDir, clientId);
+          } catch (err) {
+            api.logger.warn(`${LOG} could not reopen the consent notice: ${String(err)}`);
+          }
+        }),
+      );
+      return { status: "queued", target: target.channel };
+    }
+
+    /**
      * Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session) per quiet
      * period. Returns what the scan record says about the notice. Never throws: the call is blocked whatever happens.
      */
@@ -1799,7 +1836,7 @@ const plugin = {
       api.logger.warn(`${LOG} skillReview ${JSON.stringify(boot.skillReviewUnknown)} is not allow or review; reading it as allow`);
     }
     if (!ep.scan.ok || !ep.issuer.ok) {
-      api.logger.error(`${LOG} endpoint configuration is invalid; every tool call will fail closed until fixed`);
+      api.logger.error(`${LOG} endpoint configuration is invalid; ${invalidEndpointEffect(boot.mode, boot.onScanError)}`);
     }
     const unsent = grants.unsentSummary(boot);
     if (unsent) {

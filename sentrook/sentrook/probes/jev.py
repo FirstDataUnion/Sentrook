@@ -180,6 +180,10 @@ class _JevProbe:
         resolved = next((r.model for r in reversed(results) if r.model), None)
         if resolved:
             v["model"] = resolved
+        # Set only when a second Jev route is configured; "primary+secondary" when chunks were answered by both.
+        routes = sorted({r.route for r in results if r.route})
+        if routes:
+            v["route"] = "+".join(routes)
         return v
 
     def _view_evidence(self, prepared: Prepared) -> dict[str, Any]:
