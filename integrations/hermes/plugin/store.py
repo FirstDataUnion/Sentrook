@@ -386,6 +386,15 @@ class Store:
         with self.lock:
             self._write(self.dir / "scan-failure-notices.json", {"version": 1, "sent": sent})
 
+    def load_notice_retries(self) -> Any:
+        """`notice-retries.json` as written (`notice_retry` checks it); None when absent or unreadable."""
+        with self.lock:
+            return self._read(self.dir / "notice-retries.json", None)
+
+    def save_notice_retries(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "notice-retries.json", value)
+
     def load_holds(self) -> dict[str, Any] | None:
         """`holds.json`, empty when absent; None when it exists but cannot be read."""
         path = self.dir / "holds.json"

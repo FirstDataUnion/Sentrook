@@ -6,6 +6,20 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- A notice to the chat set with `/sentrook notify here` that Hermes cannot reach yet is sent again instead of being
+  lost. On platforms such as Mattermost, `hermes send` reaches a new chat only once Hermes has listed it, a few
+  minutes after the chat starts, so the test notice and the first held-call notices failed with "Could not
+  resolve". Such a notice is now tried again in the background by the gateway (or the app's `hermes serve`) for up
+  to 10 minutes (after 30 seconds, then 1, 2 and 3 minutes, then every 3 minutes), and when it still fails it goes to
+  the platform's home channel if one is set, with a line saying why. A notice kept by another process, such as the
+  worker a managed gateway runs a cron job in, is found by the gateway within 30 seconds and keeps its 10 minutes
+  from when it was kept; one whose chat is no longer where notices go is dropped. While it is tried again it counts as
+  sent, so further scan failures or background saves of the same kind are not announced again in their usual quiet
+  period. If the process that kept it also settles it as finally not delivered, the next one of that kind is
+  announced again; otherwise the quiet period simply runs out. `/sentrook notify status`, `status` and `verify` say while it is being tried, when it
+  went to the home channel, or that it was not delivered, until a notice gets through. The `notify here` reply says
+  the first notice may take a few minutes. Other send failures, notices to a home channel and Telegram chats are
+  unchanged.
 - The `sentrook-setup` skill tells the agent never to read Sentrook's folder or traffic log to work out what is
   routine, and to call the `sentrook_setup_report` tool instead: the log holds content from earlier tool calls, so
   reading it made the rest of the chat count as exposed to it.
