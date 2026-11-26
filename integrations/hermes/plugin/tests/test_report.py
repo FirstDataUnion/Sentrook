@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 import plugin
-from plugin import config, history, owner, report
+from plugin import config, history, owner, report, traffic
 
 #: Shared with the OpenClaw plugin's tests: both hosts build the same report for the same log.
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "traffic-log" / "report"
@@ -35,6 +35,8 @@ def log(harness, monkeypatch):
     """The report fixture log in place of this install's traffic log, run from the local terminal."""
     for k in ("HERMES_SESSION_PLATFORM", "HERMES_PLATFORM"):
         monkeypatch.delenv(k, raising=False)
+    # The fixture logs were recorded on a fixed date; writing the audit record must not age them out.
+    monkeypatch.setattr(traffic, "RETENTION_SECONDS", float("inf"))
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
     monkeypatch.setattr(plugin, "session_surface", lambda: "" if facts.get("platform") else "cli")

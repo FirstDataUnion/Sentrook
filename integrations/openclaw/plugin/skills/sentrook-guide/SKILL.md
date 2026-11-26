@@ -47,7 +47,9 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   they run `openclaw sentrook login` again; they get one notice about it. Do not run that command yourself.
 
 Grants and channel bindings tell Sentrook what is routine (a host the agent always sends to, a folder it works in, the
-channel a daily report goes to). They never lower Sentrook's floors: reading secrets and sending them somewhere is
+channel a daily report goes to). The owner sets them, with `/sentrook-setup apply`, `/sentrook-grant` and `/sentrook-bind`,
+or by answering **Allow always** on an approval card that offers it (it sets that grant for 30 days); Sentrook does not add or widen them by itself, and approving the same kind of call again and
+again changes nothing unless the owner sets a grant for it. They never lower Sentrook's floors: reading secrets and sending them somewhere is
 still blocked whatever is granted.
 
 ## The owner's commands

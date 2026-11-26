@@ -353,3 +353,30 @@ def test_a_security_fix_is_flagged_in_the_title(tmp_path):
     )
     assert title.startswith("Security fix: sentrook:")
     assert "security fix" in body.lower()
+
+
+def test_the_catalog_description_carries_the_disclosure():
+    entry = release.catalog_entry({"sha": "b" * 40, "version": release.manifest()["version"]})
+    description = entry["description"]
+    for phrase in ("other personal data", "OpenRouter", "TypeSafe", "beta"):
+        assert phrase.lower() in description.lower(), phrase
+    assert "{{" not in description
+    # The technical details stay alongside it.
+    assert re.search(r"\(sentrook\.firstdataunion\.org\)", description)
+    assert re.search(r"\bfrom identity\.firstdataunion\.org with\b", description)
+
+
+@pytest.mark.parametrize("phrase", ["other personal data", "OpenRouter", "TypeSafe", "beta"])
+def test_a_catalog_description_without_the_disclosure_is_refused(phrase):
+    filled = release.listing_description({"description": "Scans tool calls. {{disclosure}}"})
+    stripped = re.sub(re.escape(phrase), "x", filled, flags=re.I)
+    with pytest.raises(release.ReleaseError, match=re.escape(repr(phrase))):
+        release.listing_description({"description": stripped})
+
+
+def test_a_readme_without_the_disclosure_is_refused_before_building(tmp_path, mirror):
+    readme = tmp_path / "README.md"
+    readme.write_text("# Sentrook for Hermes Agent\n\nNo disclosure here.\n")
+    with pytest.raises(release.ReleaseError, match="README.md must disclose"):
+        release.build(mirror, tmp_path / "out", upstream_sha=UPSTREAM, date=DATE, readme=readme)
+    assert not (tmp_path / "out" / "mirror").exists()

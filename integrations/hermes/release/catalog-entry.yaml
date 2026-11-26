@@ -6,22 +6,23 @@ name: sentrook
 title: Sentrook
 repo: https://github.com/FirstDataUnion/Sentrook-hermes
 subdir: ""
+# {{disclosure}} becomes the disclosure paragraph from integrations/docs/disclosure.md, with disclosure_details
+# (what this plugin does with credentials and on the machine) in its middle; disclosure_details is not a catalog
+# field. release.py refuses a description that lacks what the disclosure must say.
 description: >-
   Sentrook scans each tool call before it runs, against what the owner asked for and what the session has
-  done, and allows it, hands it to Hermes's approval prompt, or blocks it. Disclosure: sends each pending
-  tool call, with its recent inputs and session history, redacted of recognised secrets, to the hosted
-  Sentrook scan service (sentrook.firstdataunion.org) and mints a short-lived token from
-  identity.firstdataunion.org with the scan credentials Hermes stores (SENTROOK_SCAN_CLIENT_ID /
-  SENTROOK_SCAN_CLIENT_SECRET, read only through get_secret). hermes sentrook login, run by the user, signs
-  in through identity.firstdataunion.org in a browser and has Hermes store those two values with its own
-  writer; it keeps a random id for the machine in HERMES_HOME/sentrook/device-id. With skill_review: allow (default) the
-  redacted recent conversation goes with Hermes's own background skill and memory saves and is kept
-  redacted on disk for that. Writes only its own folder (HERMES_HOME/sentrook: traffic log, grants, snooze
-  state, held calls, conversation logs); runs no shell commands, and the only process it starts is
-  Hermes's own hermes send, for a notice; no telemetry beyond the scans. Never approves a call itself;
-  where nobody can answer (cron, webhooks, API server) a review holds the call and sends the owner one
-  notice on a home channel with hermes send.
-  Observe mode logs without blocking or asking.
+  done, and allows it, hands it to Hermes's approval prompt, or blocks it. {{disclosure}}
+disclosure_details: >-
+  It mints a short-lived token from identity.firstdataunion.org with the scan credentials Hermes stores
+  (SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET, read only through get_secret). hermes sentrook login,
+  run by the user, signs in through identity.firstdataunion.org in a browser and has Hermes store those two
+  values with its own writer; it keeps a random id for the machine in HERMES_HOME/sentrook/device-id. With
+  skill_review: allow (default) the redacted recent conversation goes with Hermes's own background skill and
+  memory saves and is kept redacted on disk for that. Writes only its own folder (HERMES_HOME/sentrook: traffic
+  log, grants, snooze state, held calls, conversation logs); runs no shell commands, and the only process it
+  starts is Hermes's own hermes send, for a notice; no telemetry beyond the scans. Never approves a call itself;
+  where nobody can answer (cron, webhooks, API server) a review holds the call and sends the owner one notice on a
+  home channel with hermes send. Observe mode logs without blocking or asking.
 maintainer: FirstDataUnion
 tier: community
 category: tools

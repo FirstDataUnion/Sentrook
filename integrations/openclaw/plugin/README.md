@@ -13,6 +13,21 @@ credentials to the first scan, and covers grants, channel bindings, commands and
 
 ## What the plugin does on your machine
 
+<!-- disclosure: start (copied from integrations/docs/disclosure.md by docs.py sync; edit it there) -->
+**Disclosure:** sends each pending tool call, with its recent inputs and session history, to the hosted Sentrook scan
+service (sentrook.firstdataunion.org), run by First International Data Union Ltd. Recognised secrets (API keys, tokens,
+passwords) are replaced with placeholders first; other personal data, including other people's, is sent as it is. The
+service may pass the call to OpenRouter and TypeSafe (United States) to judge it. The scanner does not store scan
+content; metadata logs are kept for up to 60 days. It mints a short-lived token from identity.firstdataunion.org with
+the scan credentials kept in OpenClaw's ~/.openclaw/.env (SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET).
+openclaw sentrook login, run by the user, signs in through identity.firstdataunion.org in a browser, writes those two
+lines there and keeps a random id for the machine in ~/.openclaw/sentrook/device-id. With skillReview: allow (default)
+the redacted conversation goes with OpenClaw's own background skill and memory saves and is kept redacted on disk for up
+to 7 days for that. Apart from those two lines, writes only its own folder (~/.openclaw/sentrook); runs no shell
+commands and starts no background processes; no telemetry beyond the scans. Sentrook is a beta and does not guarantee
+protection.
+<!-- disclosure: end -->
+
 In short, for anyone deciding whether to install it:
 
 - **Network:** it calls two services run by First Data Union: the scan service (`sentrook.firstdataunion.org`), once
@@ -20,9 +35,9 @@ In short, for anyone deciding whether to install it:
   short-lived token. Each scan carries the pending call and its arguments, the request you gave the agent this turn,
   the tool results since the last scan (capped at 256 KB), a short history of the session's earlier calls, and host
   facts (platform, versions, home and workspace paths, how OpenClaw is set to run commands). Secrets the plugin
-  recognises (API keys, tokens, passwords, private keys) are replaced with placeholders before anything is sent, so
-  what leaves the machine is redacted; other content, including personal data in files and messages, is sent as it
-  is. No telemetry beyond the scans themselves.
+  recognises (API keys, tokens, passwords, private keys) are replaced with placeholders before anything is sent;
+  other content, including personal data in files and messages, is sent as it is. No telemetry beyond the scans
+  themselves.
 - **OpenClaw's own saves:** with `skillReview: allow` (the default), the skill and memory saves OpenClaw makes on its
   own (the Skill Workshop review, the memory flush) are sent with the redacted part of the conversation they came
   from, and the plugin keeps that conversation, redacted, on disk for up to 7 days to send with them. Set `skillReview`
@@ -41,7 +56,8 @@ In short, for anyone deciding whether to install it:
   kind per run every 6 hours. Turning a save into a draft is the only change the plugin makes to a call, and these
   notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
-  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls, the passes and denials your answers set, and where their notices go; when each job or run last had a notice with a quiet period; the
+  whose records are kept for 30 days: older ones are deleted from the log and its rotated copy as it writes, and it
+  is rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls, the passes and denials your answers set, and where their notices go; when each job or run last had a notice with a quiet period; the
   agent's setup proposals and the last `/sentrook-setup` list with its code; the conversations above), or to the paths
   you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
   cron run, that job's definition from OpenClaw's job store (read-only), for the channel the job delivers to; when you
