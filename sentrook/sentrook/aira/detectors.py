@@ -3085,26 +3085,42 @@ class _Where:
         return bool(self.classes)
 
 
+def _path_flags(ctx: Context) -> int:
+    """A case-insensitive file system names one file however the case is written."""
+    return re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
+
+
+@functools.lru_cache(maxsize=64)
+def _tree_roots(
+    trees: tuple[_Tree, ...], home: str, ws: str, flags: int
+) -> tuple[tuple[_Tree, re.Pattern[str], bool], ...]:
+    """Each host tree with its root compiled once rather than for every path a call names: the tree,
+    a pattern for a file under it (its path below the root in `rel`), and whether the workspace `ws`
+    sits strictly inside it."""
+    home = re.escape(home.rstrip("/"))
+    out = []
+    for tree in trees:
+        root = tree.root.replace("{home}", home)
+        under = re.compile(r"(?:" + root + r")/(?P<rel>.+)\Z", flags)
+        out.append((tree, under, bool(ws) and under.match(ws) is not None))
+    return tuple(out)
+
+
 def _host_where(value: str, rules: _LooseningRules, ctx: Context) -> _Where:
     """`tree` (a host tree), `approvals`, `main` and `include` (host files at a tree root), and
     `env` (a file that sets the environment a host starts with, or a host tree). Documentation is
     none of them."""
     if _match_any(rules.doc_files, value):
         return _Where(frozenset())
-    home = re.escape(ctx.prepared.home.rstrip("/"))
     ws = ctx.prepared.workspace_root.rstrip("/")
-    # A case-insensitive file system names one file however the case is written.
-    flags = re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
     classes: set[str] = set()
     host: str | None = None
     excluded = False
-    for tree in rules.trees:
-        root = tree.root.replace("{home}", home)
-        m = re.match(r"(?:" + root + r")/(?P<rel>.+)\Z", value, flags)
+    for tree, under, ws_in in _tree_roots(rules.trees, ctx.prepared.home, ws, _path_flags(ctx)):
+        m = under.match(value)
         if m is None:
             continue
         # The workspace excludes its files only when it sits strictly inside this tree.
-        ws_in = re.match(r"(?:" + root + r")/.+\Z", ws, flags) if ws else None
         if ws_in and (value == ws or value.startswith(ws + "/")):
             continue
         rel = m.group("rel")
@@ -3131,12 +3147,11 @@ def _tree_file(
     value: str, host: str, rel: re.Pattern[str], rules: _LooseningRules, ctx: Context
 ) -> bool:
     """Whether `value` is the file `rel` (relative to a tree root) in one of `host`'s trees."""
-    home = re.escape(ctx.prepared.home.rstrip("/"))
-    flags = re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
-    for tree in rules.trees:
+    ws = ctx.prepared.workspace_root.rstrip("/")
+    for tree, under, _ in _tree_roots(rules.trees, ctx.prepared.home, ws, _path_flags(ctx)):
         if tree.host != host:
             continue
-        m = re.match(r"(?:" + tree.root.replace("{home}", home) + r")/(?P<rel>.+)\Z", value, flags)
+        m = under.match(value)
         if m is not None and rel.fullmatch(m.group("rel")):
             return True
     return False
@@ -4002,7 +4017,25 @@ def _approval_loosening(
         settings = sorted(f"{k}={v}" for k, v, t in hits if t == tier)
         out.append((tier, subject, {**detail, "settings": settings[:4]}))
 
+    # A call can name the same path, or many paths in one folder, thousands of times (`sed -i` with
+    # many expressions): each path is resolved and placed once, each folder normalised once.
+    base_abs_of: dict[str, str] = {}
+    resolved: dict[tuple[str, str | None], str] = {}
+    placed: dict[str, _Where] = {}
+
     def resolve(path: str, cwd: str | None = None) -> str:
+        value = resolved.get((path, cwd))
+        if value is None:
+            value = resolved[(path, cwd)] = _resolve(path, cwd)
+        return value
+
+    def where_of(value: str) -> _Where:
+        where = placed.get(value)
+        if where is None:
+            where = placed[value] = _host_where(value, rules, ctx)
+        return where
+
+    def _resolve(path: str, cwd: str | None) -> str:
         path = path.strip().strip("'\"")
         path = path.replace("${HOME}", "~").replace("$HOME", "~")
         m = _TILDE_USER.match(path)
@@ -4017,7 +4050,10 @@ def _approval_loosening(
         if path and not path.startswith(("/", "~", "$")):
             # `normalise_path` keeps a bare or `../` relative path as it is; this floor anchors on
             # the host trees, so it resolves one against the cwd (or the workspace) first.
-            base_abs = normalise_path(base, home=home, workspace_root=ws, cwd=None)
+            base_abs = base_abs_of.get(base)
+            if base_abs is None:
+                base_abs = normalise_path(base, home=home, workspace_root=ws, cwd=None)
+                base_abs_of[base] = base_abs
             path = os.path.join(base_abs, path)
         value = normalise_path(path, home=home, workspace_root=ws, cwd=base)
         return os.path.normpath(value) if value.startswith("/") else value
@@ -4050,7 +4086,7 @@ def _approval_loosening(
             for path, old, new in _patch_sections(patch):
                 value = resolve(path)
                 p = a.path(value)
-                where = _host_where(value, rules, ctx)
+                where = where_of(value)
                 report(
                     _loosened([(old, new)], rules, where, fragment=True),
                     p.entity_id if p else None,
@@ -4072,7 +4108,7 @@ def _approval_loosening(
             value = resolve(raw_path)
             targets.setdefault(value, (None, display(value), a.kind.value))
         for value, (subject, shown, mechanism) in targets.items():
-            where = _host_where(value, rules, ctx)
+            where = where_of(value)
             report(
                 _loosened(pairs, rules, where, fragment=bool(edits)),
                 subject,
@@ -4110,7 +4146,7 @@ def _approval_loosening(
                 {"path": display(value), "mechanism": mechanism},
             )
             return
-        where = _host_where(value, rules, ctx)
+        where = where_of(value)
         if not where:
             return
         # The same write judged again (a heredoc read by many `cat`s) finds nothing new.
@@ -4409,7 +4445,7 @@ def _approval_loosening(
                     continue
                 val = val if eq else (tokens[j + 1] if j + 1 < n else "")
                 src = resolve(val)
-                if val and not _host_where(src, rules, ctx).classes & {"approvals"}:
+                if val and not where_of(src).classes & {"approvals"}:
                     cli_hit(line, mech, {("read from", display(src), REVIEW)})
         add = entry.get("allowlist_add")
         if add and v + 1 < n and tokens[v + 1].lower() == str(add):
@@ -4739,11 +4775,7 @@ def _approval_loosening(
             )
 
     def blind(value: str, source: str) -> None:
-        if (
-            unplaced(value)
-            or _host_where(value, rules, ctx).classes & {"approvals", "main"}
-            or state_db(value)
-        ):
+        if unplaced(value) or where_of(value).classes & {"approvals", "main"} or state_db(value):
             shown = (
                 source if source in ("a download", "unreadable input") else display(resolve(source))
             )
@@ -4806,7 +4838,7 @@ def _approval_loosening(
                     script=written_script.get(src_value) if content is None else None,
                 )
                 continue
-            if _host_where(src_value, rules, ctx).classes & {"approvals", "main", "include"}:
+            if where_of(src_value).classes & {"approvals", "main", "include"}:
                 continue  # another host config or approvals file
             blind(dest_value, src)
 
