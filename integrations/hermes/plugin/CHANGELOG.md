@@ -6,6 +6,20 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- A notice to the chat set with `/sentrook notify here` that Hermes cannot reach yet is sent again instead of being
+  lost. On platforms such as Mattermost, `hermes send` reaches a new chat only once Hermes has listed it, a few
+  minutes after the chat starts, so the test notice and the first held-call notices failed with "Could not
+  resolve". Such a notice is now tried again in the background by the gateway (or the app's `hermes serve`) for up
+  to 10 minutes (after 30 seconds, then 1, 2 and 3 minutes, then every 3 minutes), and when it still fails it goes to
+  the platform's home channel if one is set, with a line saying why. A notice kept by another process, such as the
+  worker a managed gateway runs a cron job in, is found by the gateway within 30 seconds and keeps its 10 minutes
+  from when it was kept; one whose chat is no longer where notices go is dropped. While it is tried again it counts as
+  sent, so further scan failures or background saves of the same kind are not announced again in their usual quiet
+  period. If the process that kept it also settles it as finally not delivered, the next one of that kind is
+  announced again; otherwise the quiet period simply runs out. `/sentrook notify status`, `status` and `verify` say while it is being tried, when it
+  went to the home channel, or that it was not delivered, until a notice gets through. The `notify here` reply says
+  the first notice may take a few minutes. Other send failures, notices to a home channel and Telegram chats are
+  unchanged.
 - An `execute_code` program that calls nothing on the network, and that the scanner can follow, is held for the owner
   on an unattended run instead of blocked when only the URLs or quoted commands in its strings take it to a block
   (the scanner's `cap.local_code` ceiling). A program that does call the network is scored and blocked as before.
@@ -313,6 +327,11 @@ since the version the catalog pins.
   address such as `192.168.1.*` is refused too, and one already in the config is listed as too broad and never sent:
   write the exact hosts instead. A bare name with a wildcard such as `daily-*` is refused as a destination, as it
   would match hosts too: write `#daily-*` or `discord:#daily-*` for channel names.
+- `/sentrook setup` and the setup report count a chat as having read content that tried to steer the agent only
+  when one of its scans gave an `exposure.*` reason: the scanner's own line for it, and every later call of a chat
+  it judged tainted carries one. The exposure scores alone no longer count, since almost any content scores a little,
+  so the screen warned about nearly every proposal from the agent and left out reviews you approved in ordinary
+  chats.
 
 ## 2.0.0-beta.17
 

@@ -584,10 +584,15 @@ In the chat where you want Sentrook's notices (a direct message with the agent),
 ```
 
 From then on the notices of held calls, of scan failures on unattended runs and of Hermes's background saves go to
-that chat, and Sentrook sends a test notice there straight away. If it does not arrive, `/sentrook notify status`
-(and `status` and `verify`) says the last test notice was not delivered until a later notice gets through: check the
-Hermes log, and send `/sentrook notify here` again a few minutes later (on some platforms Hermes can reach a new chat
-only once it has listed it). On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
+that chat, and Sentrook sends a test notice there straight away. The first notice may take a few minutes to arrive:
+on some platforms (Mattermost, for one) Hermes can reach a new chat only once it has listed it, which it does every
+few minutes. The gateway (or the app's `hermes serve`) tries such a notice again for up to 10 minutes, including one a
+scheduled job's own process could not send; if it still cannot reach the chat, it sends
+the notice to the platform's home channel when there is one (set with `/sethome`), with a line saying why. A notice
+waiting to be tried again is dropped if you send `notify off` or set another target first. Until a notice
+gets through, `/sentrook notify status` (and `status` and `verify`) says whether it is still being tried, went to the
+home channel instead, or was not delivered; for the last, check the Hermes log and send `/sentrook notify here`
+again. On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
 them to that platform's home channel (set with `/sethome` in the chat you want). If Hermes does not say which chat a
 command came from, `notify here` uses the platform's home channel and the reply names it, so you can tell when that
 is not the chat you are in. A platform with no home channel is refused, with what to set.

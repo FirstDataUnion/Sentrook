@@ -378,7 +378,7 @@ def test_notify_here_says_a_test_notice_was_sent_and_what_to_do_if_it_does_not_a
     reply = from_chat(h, monkeypatch, "notify here")
     hold.wait_for_notices()
     assert sent_test_notices(h) == ["telegram:4242"]
-    assert owner_settings.TEST_SENT.format(where="this chat") in reply
+    assert owner_settings.TEST_SENT_CHAT in reply
     assert "/sentrook notify status" in reply
     assert owner_settings.FAILED_TEXT[:20] not in slash(h, "notify status")
 
@@ -392,7 +392,7 @@ def test_a_test_notice_that_was_not_delivered_is_reported_until_a_notice_gets_th
     from_chat(h, monkeypatch, "notify here")
     hold.wait_for_notices()
     warning = owner_settings.failed_line(plugin._load()[0])
-    assert warning.startswith("The last test notice to the telegram chat was not delivered:")
+    assert warning.startswith("The last notice to the telegram chat was not delivered:")
     assert warning in slash(h, "notify status")
     assert warning in status_lines(h)
     assert warning in verify(h)["notice target"][1]
