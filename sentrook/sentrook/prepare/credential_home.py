@@ -15,9 +15,11 @@ holds, and the call's credential does not count as sensitive data sent, only whe
   none of them reached the agent through content it read (a host only untrusted content named, or one it was
   steered to). A host the pending program only mentions (the code reading knows the target of every request the
   program makes and this host is none of them, a link inside the body it posts, and no other call in the batch
-  names it) is no party when it is on the registrable domain of a host the credential is listed for
-  (`same_service`): whatever the code does with the key, such a link reaches only the service that already
-  receives it. A link to any other domain is a party like any other host. A host that only the agent's own
+  names it) is no party when it is on the registrable domain of a host the library lists the credential for
+  (`same_service`; never a host only an owner's grant names) and every link to it is written whole in a string,
+  naming no second address (`_plain_links`: no redirect or proxy target, no userinfo): whatever the code does
+  with the key, such a link reaches only the service that already receives it. A link to any other domain is a
+  party like any other host. A host that only the agent's own
   installed skills named (a read of an installed skill, on this step or an earlier one, and no other content)
   does not count as content here: the skill is the agent's standing
   instructions for the service, and the library already ties the key to that host. Memory reads do count, and
@@ -377,6 +379,50 @@ _MORE_SHARED = frozenset(
         "framer.website",
         "carrd.co",
         "s3-website.amazonaws.com",
+        # workspaces and tenants of SaaS services, each its own customer's
+        "slack.com",
+        "atlassian.net",
+        "zendesk.com",
+        "freshdesk.com",
+        "salesforce.com",
+        "my.salesforce.com",
+        "force.com",
+        "service-now.com",
+        "okta.com",
+        "oktapreview.com",
+        "auth0.com",
+        "us.auth0.com",
+        "eu.auth0.com",
+        "au.auth0.com",
+        "jp.auth0.com",
+        "sharepoint.com",
+        # apps, functions and storage anyone can publish under
+        "run.app",
+        "azureedge.net",
+        "googleusercontent.com",
+        "cloudfunctions.net",
+        "on.aws",
+        "hf.space",
+        "pythonanywhere.com",
+        "railway.app",
+        "modal.run",
+        "surge.sh",
+        "neocities.org",
+        "pantheonsite.io",
+        "azurestaticapps.net",
+        "ngrok-free.dev",
+        "loca.lt",
+        "storage.googleapis.com",
+        # second levels where people and small firms register names
+        "me.uk",
+        "ltd.uk",
+        "plc.uk",
+        "id.au",
+        "firm.in",
+        "gen.in",
+        "nom.br",
+        "blog.br",
+        "gob.mx",
     }
 )
 
@@ -396,8 +442,12 @@ def _plain_host(host: str) -> str | None:
 
 
 def _shared(domain: str) -> bool:
-    """`domain` is, or sits under, a suffix many owners share (`co.uk`, `github.io`, `amazonaws.com`)."""
+    """`domain` is, or sits under, a suffix many owners share (`co.uk`, `github.io`, `amazonaws.com`, a US state
+    or `k12` locality: `pvt.k12.ma.us` must not read as `ma.us`)."""
     if _wildcard_too_broad(domain):
+        return True
+    labels = domain.split(".")
+    if len(labels) >= 2 and labels[-1] == "us" and (len(labels[-2]) == 2 or labels[-2] == "k12"):
         return True
     return any(
         domain == s or domain.endswith("." + s) or s.endswith("." + domain) for s in _MORE_SHARED
@@ -422,6 +472,67 @@ def same_service(mention: str, home: str) -> bool:
     if registrable(m)[1] != domain or _shared(registrable(m)[1]):
         return False
     return m == domain or m.endswith("." + domain)
+
+
+#: Where a link written in text ends: whitespace, a quote or a bracket.
+_LINK_END = frozenset("'\"`()[]<>")
+#: How many times one host may be named in the program's strings for its links to be read one by one.
+_MAX_LINKS = 200
+
+
+def _string_values(code: str) -> list[str]:
+    """The program's string values, as Python reads them (escapes decoded), lower-cased; empty when it does not
+    parse."""
+    import ast
+    import warnings
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            v = node.value
+            out.append((v.decode("latin-1") if isinstance(v, bytes) else v).lower())
+    return out
+
+
+def _plain_links(texts: list[str], host: str) -> bool:
+    """Every link to `host` in the program's strings goes to that host and nowhere else: nothing before the host but
+    a scheme or subdomain labels (no `@` or `\\`, which some parsers read as userinfo), nothing after it that names a
+    second address (`://`, an encoded `%3a%2f%2f` or `%2f%2f`, `@`, `\\`: a redirect or proxy such as
+    `/login?redirect_uri=https%3A%2F%2F…`), and the link ends inside the string, so no computed value is put after
+    it. A host named in no string (built at run time) fails."""
+    host = host.lower().rstrip(".")
+    found = 0
+    for text in texts:
+        start = text.find(host)
+        while start >= 0:
+            end = start + len(host)
+            before_ok = start == 0 or not (text[start - 1].isalnum() or text[start - 1] == "-")
+            after_ok = end == len(text) or not (text[end].isalnum() or text[end] in "-.")
+            if before_ok and after_ok:
+                found += 1
+                if found > _MAX_LINKS:
+                    return False
+                i = start
+                while i > 0 and not (text[i - 1].isspace() or text[i - 1] in _LINK_END):
+                    i -= 1
+                j = end
+                while j < len(text) and not (text[j].isspace() or text[j] in _LINK_END):
+                    j += 1
+                if j == len(text):
+                    return False  # the link runs to the end of the string: a value put after it extends it
+                lead, tail = text[i:start], text[end:j]
+                if "@" in lead or "\\" in lead or "@" in tail or "\\" in tail:
+                    return False
+                if "://" in tail or "%3a%2f%2f" in tail or "%2f%2f" in tail:
+                    return False
+            start = text.find(host, end)
+    return found > 0
 
 
 def check(
@@ -485,7 +596,8 @@ def _check(
         ):
             return "host_from_content"
         hosts[ent.id] = listed
-        home_names.append(ent.value)
+        if info.get("credential_names"):
+            home_names.append(ent.value)  # the library's home for the key, not an owner's grant
         return None
 
     mentions: list[Any] = []
@@ -505,9 +617,13 @@ def _check(
         why = take(ent)
         if why is not None:
             return None, why
+    texts: list[str] | None = None
     for ent in mentions:
         if any(same_service(ent.value, home) for home in home_names):
-            continue  # a link on the service's own domain, which receives the key anyway
+            if texts is None:
+                texts = _string_values(pending.command or "")
+            if _plain_links(texts, ent.value):
+                continue  # a link on the service's own domain, which receives the key anyway
         why = take(ent)
         if why is not None:
             return None, why
