@@ -63,6 +63,7 @@ from .intent import (
     children_auto_approved,
     conversation_sender_of,
     hermes_config,
+    host_yolo,
     is_unattended,
     owner_attends,
     resolve_platform,
@@ -242,6 +243,18 @@ def _rule_key(
         ("sentrook rule key v1|" + secret).encode(), material.encode(), hashlib.sha256
     ).hexdigest()
     return prefix + digest[:16]
+
+
+def _call_rule_key(request_id: str, secret: str) -> str:
+    """The rule key of a block a snooze turned into a review although it carries a strong signal: the call's own
+    request, so a Session or Always answer Hermes stores for it never matches another call, and the next one asks
+    again. An HMAC under `secret`, as `_rule_key`."""
+    digest = hmac.new(
+        ("sentrook rule key v1|" + secret).encode(),
+        f"call|{request_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return "sentrook:call:" + digest[:16]
 
 
 def _error_rule_key(session_ref: str, outage: str, cause: str) -> str:
@@ -699,6 +712,7 @@ def _scan_one(
     verdict: str | None = None
     snoozed = False
     relaxed = False
+    strong = False  # a relaxed block with a strong signal: a warning, and nothing answers it but this prompt
     let_through = False
     session_allowed: dict[str, Any] | None = None
     allow_key: str | None = None
@@ -718,19 +732,25 @@ def _scan_one(
         # that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
         # (`decision.unattended_view`).
         verdict = decide(unattended_view(resp) if unattended else resp, cfg.review_at, cfg.block_at)
-        if (
-            cfg.mode != "observe"
-            and not unattended
-            and snooze.relaxes(resp, verdict)
-            and snooze.active(
-                store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
-            )
+        asked = (
+            None
+            if cfg.mode == "observe" or unattended
+            else snooze.asks(resp, verdict, planir, built["platform"])
+            # a review of an action the owner was asked about during a snooze asks with the warning, never snoozed
+            or ("strong" if verdict == "review" and snooze.asked_before(sess, resp) else None)
+        )
+        if asked == "strong" and verdict == "block" and host_yolo():
+            # Hermes would approve the prompt by itself (session YOLO): a block with a strong signal stays a block.
+            asked = None
+        if asked is not None and snooze.active(
+            store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):
-            # The owner snoozed this attended session and nothing independent points to an attack: the block
-            # asks instead. It is allowed silently only where the owner answered Session or Always for the same
-            # action under the same snoozes (`_rule_key`).
+            # The owner snoozed this attended session: the block asks instead (`snooze.asks`). One the scanner marks
+            # relaxable is allowed silently only where the owner answered Session or Always for the same action under
+            # the same snoozes (`_rule_key`); any other asks every time, with a warning (`_call_rule_key`).
             verdict = "review"
             relaxed = True
+            strong = asked == "strong"
         sess.pop("error_epoch", None)  # Sentrook scans again: the next failure is a new outage
         sess["token"] = resp.get("state")
         sess["buffer"] = []
@@ -900,13 +920,17 @@ def _scan_one(
                 if relaxed
                 else None
             )
-            key = _rule_key(
-                resp.get("approval_fingerprint") or resp.get("action_fingerprint"),
-                planir["request_id"],
-                snoozes,
-                tool=tool_name,
-                args=kw.get("args"),
-                secret=store.salt(),
+            key = (
+                _call_rule_key(planir["request_id"], store.salt())
+                if strong
+                else _rule_key(
+                    resp.get("approval_fingerprint") or resp.get("action_fingerprint"),
+                    planir["request_id"],
+                    snoozes,
+                    tool=tool_name,
+                    args=kw.get("args"),
+                    secret=store.salt(),
+                )
             )
             # The grant the scan suggests: the prompt shows its command, and approving always sets it where
             # the owner is the one answering (never for a block a snooze turned into a review).
@@ -916,12 +940,15 @@ def _scan_one(
             # with it: no allowance besides (`session_allow`).
             if remember:
                 allow_key = None
+            if relaxed:
+                snooze.note_asked(sess, resp)
             directive = {
                 "action": "approve",
                 "message": card.hermes_message(
                     resp,
                     built["tool"],
                     relaxed=relaxed,
+                    strong=strong,
                     hint=hint,
                     remember=remember,
                     why_id=planir["request_id"] if cfg.traffic_log_enabled else None,
@@ -1005,6 +1032,7 @@ def _scan_one(
             **({"snoozed": True} if snoozed else {}),
             **({"lenient": True} if let_through else {}),
             **({"relaxed": True} if relaxed else {}),
+            **({"relaxed_strong": True} if strong else {}),
             **({"session_allowed": session_allowed} if session_allowed is not None else {}),
             **({"hold": held} if held is not None else {}),
             **({"pass": by_pass} if by_pass is not None else {}),
@@ -1037,6 +1065,8 @@ def _scan_one(
             if session_allowed is not None
             else f" ({'refused by' if by_pass['kind'] == 'deny' else 'let through by'} {by_pass['id']})"
             if by_pass is not None
+            else " (block with a strong signal asked by snooze)"
+            if strong
             else " (block relaxed to review by snooze)"
             if relaxed
             else " (let through)"

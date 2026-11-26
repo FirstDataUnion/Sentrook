@@ -150,15 +150,81 @@ def approvals_off(cfg: dict[str, Any]) -> bool:
     return isinstance(mode, str) and mode.strip().lower() == "off"
 
 
+def single_query_approves(cfg: dict[str, Any]) -> bool:
+    """`approvals.single_query_mode` reads as approve, the way Hermes reads it (approve, off, allow or yes, after
+    `str()`; anything else, a YAML boolean included, is deny)."""
+    approvals = cfg.get("approvals")
+    mode = approvals.get("single_query_mode") if isinstance(approvals, dict) else None
+    return str(mode).strip().lower() in ("approve", "off", "allow", "yes")
+
+
+def single_query(env: dict[str, str]) -> bool:
+    """A single-query run (`hermes chat -q`, or a finite `-z` turn admitted by the gateway): nobody waits to answer
+    an approval prompt there. Read as Hermes reads it: the gateway's finite-turn flag, else
+    `HERMES_SINGLE_QUERY_SESSION` for the session (from Hermes's session context when it has one, else the process
+    environment). Anything that cannot be read counts as not single-query."""
+    try:
+        from gateway.session_finite import finite_turn_required
+
+        if finite_turn_required() is True:
+            return True
+    except Exception:  # noqa: BLE001 - an install without the gateway package, or an older one
+        pass
+    value = env.get("HERMES_SINGLE_QUERY_SESSION", "")
+    try:
+        from gateway.session_context import get_session_env
+
+        value = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") or value
+    except Exception:  # noqa: BLE001
+        pass
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def unattended_turn() -> bool:
+    """A `hermes -z` turn: nobody can answer a prompt, and Hermes approves every one by itself (its one-shot
+    contract). Read from Hermes's gateway; False where that cannot be read (an install without it)."""
+    try:
+        from gateway.session_finite import unattended_turn as read
+
+        return read() is True
+    except Exception:  # noqa: BLE001 - an install without the gateway package, or an older one
+        return False
+
+
+def host_yolo() -> bool:
+    """Hermes would approve a prompt in the current session by itself: YOLO for the process (`--yolo`), YOLO the
+    owner switched on for this session (`/yolo`), or a `-z` turn, as Hermes's own approval gate reads them. Fails
+    closed: when Hermes's approval module cannot be read (a plugin host outside Hermes's process, another version),
+    YOLO counts as on. Used where a prompt would let a block run (a snooze's strong prompt), not for reviews."""
+    try:
+        from tools.approval import _yolo_active
+
+        return bool(_yolo_active())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from tools.approval import is_current_session_yolo_enabled
+
+        return bool(is_current_session_yolo_enabled()) or unattended_turn()
+    except Exception:  # noqa: BLE001 - nothing readable: assume Hermes would approve it
+        return True
+
+
 def _approval_bypass(env: dict[str, str]) -> bool:
-    """True when Hermes would auto-approve an `approve` directive: approvals are off in the config, or
-    the process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it). YOLO the
-    owner switches on for a session (`/yolo` in a chat, `hermes chat --yolo`, which the gateway
-    applies per session) is not visible through Hermes's public API, so there the owner's YOLO
-    choice also covers Sentrook's approval prompts."""
+    """True when Hermes would auto-approve an `approve` directive: approvals are off in the config, the
+    process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it), a `-z` turn
+    (`unattended_turn`), or a single-query run (`single_query`) where `approvals.single_query_mode` is approve. YOLO
+    the owner switches on for a session (`/yolo` in a chat, `hermes chat --yolo`, which the gateway applies per
+    session) is not part of Hermes's public API, so there the owner's YOLO choice also covers Sentrook's review
+    prompts; a snooze's strong prompt reads it from Hermes's approval module instead (`host_yolo`)."""
     if env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
         return True
-    return approvals_off(hermes_config())
+    if unattended_turn():
+        return True
+    cfg = hermes_config()
+    if approvals_off(cfg):
+        return True
+    return single_query(env) and single_query_approves(cfg)
 
 
 def is_unattended(

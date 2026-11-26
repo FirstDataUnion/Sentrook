@@ -26,6 +26,13 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
   category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
   with `/sentrook why last`.
+- **A block a snooze turned into a prompt** (beta). While the owner has snoozed with `/sentrook snooze`, a block in the
+  owner's own chat asks instead of stopping. The prompt warns that the call would be blocked; one with a floor or a
+  strong signal names why, says to allow it only if the owner asked for exactly that call, and asks again every time.
+  A block from an incomplete scan, and a change to Sentrook itself (its files, settings or log, turning it off,
+  stopping the gateway, a Sentrook command, or loosening the host's approvals: turning them off, YOLO, an allow
+  fallback, a wildcard, shell or interpreter in an allowlist), still blocks during a snooze; so does a block on email,
+  SMS, IRC or ntfy with a floor or a strong signal. Never press the owner to allow one.
 - **A held call.** Where nobody can answer a prompt (cron jobs, webhooks, the API server, subagents of those), a call that needs review does not run, and
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `/sentrook allow <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
@@ -66,7 +73,7 @@ owner type it.
 - `/sentrook grant <kind> <pattern> [flags]`: adds a grant: destination, file, provider, repo or credential; for this session only (not cron jobs, subagents or other chats) unless `--persistent`; `--session <ref>` binds it to a session from history, `--allows read,write` (files only), `--expires 12h`.
 - `/sentrook revoke <id>`: removes a grant set by command.
 - `/sentrook bind add|remove|list [channel]`: lists, adds or removes a channel binding: a channel this deployment normally delivers to.
-- `/sentrook snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook enforces or unattended runs; `off` ends it.
+- `/sentrook snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; in beta, a block in the owner's own chat asks instead, with a warning, except a change to Sentrook itself; never reviews Sentrook enforces or unattended runs; `off` ends it.
 - `/sentrook allow <id> [now|later|always|all]`: answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: runs the cron job again now and lets the call through once in that run (`now`: even when the held run had already sent or written something; `later`: on the job's next scheduled run instead), or with `always` for 30 days on that job, where the notice offers it; `all`, on the id a run's end line names, also lets the calls that line listed through once in that run; Sentrook never runs the held call itself.
 - `/sentrook deny <id>`: refuses a call held on a cron job, or on another run with a source, by the id in Sentrook's notice: that job or source is refused the same call for 30 days, with no more notices.
 - `/sentrook dismiss <id>|all`: takes a held call (or all of them) off the waiting list without answering it, as if it had expired now: the call never runs and nothing is set, so a call like it is held again.

@@ -1,5 +1,5 @@
 {
-  "_comment": "The review card both plugins show when Sentrook asks before a tool call. Hermes shows one text (`hermes`); OpenClaw a title and a description (`openclaw`). For each case both plugins must produce exactly this from `response`, `tool`, `relaxed` (a block a snooze turned into a review), `hint` (the suggested grant as the grant command would accept it), `remember` (approving always sets it) and `why_id` (the scan's request id; null when the traffic log is off). `session` (Hermes only, absent or null elsewhere) says what Hermes's Session answer covers: `parties` (later calls in the chat of the same kind, about the same parties, scoring no higher) or `exact` (only this exact action); with a suggested grant the owner's answer sets, one line names it for Session and Always. Budgets: Hermes 300, counted as UTF-16 units after HTML escaping (its Discord card cuts the text at 300, Telegram's at 500 escaped); OpenClaw 80 for the title and 500 code points for the description (it refuses an approval over 80 or 512, and refusing blocks the call). When a card does not fit, what the call does gives way first, then the second reason, then the grant command (pointing to `why`). `errors` are the cards for a call that could not be scanned, by cause.",
+  "_comment": "The review card both plugins show when Sentrook asks before a tool call. Hermes shows one text (`hermes`); OpenClaw a title and a description (`openclaw`). For each case both plugins must produce exactly this from `response`, `tool`, `relaxed` (a block a snooze turned into a review), `strong` (absent or false elsewhere; with `relaxed`, the beta snooze of a block with a strong signal: the reasons line says \"Would be blocked because\" and the answer line warns), `hint` (the suggested grant as the grant command would accept it), `remember` (approving always sets it) and `why_id` (the scan's request id; null when the traffic log is off). `session` (Hermes only, absent or null elsewhere) says what Hermes's Session answer covers: `parties` (later calls in the chat of the same kind, about the same parties, scoring no higher) or `exact` (only this exact action); with a suggested grant the owner's answer sets, one line names it for Session and Always. Budgets: Hermes 300, counted as UTF-16 units after HTML escaping (its Discord card cuts the text at 300, Telegram's at 500 escaped); OpenClaw 80 for the title and 500 code points for the description (it refuses an approval over 80 or 512, and refusing blocks the call). When a card does not fit, what the call does gives way first, then the second reason, then the grant command (pointing to `why`). `errors` are the cards for a call that could not be scanned, by cause.",
   "budgets": {
     "hermes": 300,
     "openclaw_title": 80,
@@ -261,6 +261,157 @@
       "openclaw": {
         "title": "🪶 Sentrook security check · risk 88/100",
         "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nWould be blocked, but a snooze is on.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "beta: a block with a strong signal a snooze turned into a question",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 92,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E2",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E2",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E2}, which holds sensitive data, off this machine"
+          },
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": true,
+      "strong": true,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 92/100\nSends ~/.ssh…25519 to p…\nWould be blocked because it sends ~/.ssh/id_ed25519, which holds sensitive data, off this machine.\nA snooze is on: allow only if you asked for exactly this call. Session and Always allow this call only.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 92/100",
+        "description": "Sends ~/.ssh/id_ed25519 to paste.example.net.\nWould be blocked because it sends ~/.ssh/id_ed25519, which holds sensitive data, off this machine, and paste.example.net is new to Sentrook as a place to send data.\nA snooze is on: allow only if you asked for exactly this call.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "beta: a strong block that must be fitted suggests no grant",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 96,
+        "enforced": "block",
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "uploads.reports-archive-service-for-the-quarterly-numbers.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/work/finance/2026/quarterly-reports/drafts/board-pack-final-v7-with-appendices.xlsx"
+          }
+        },
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          },
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read, not from you or your settings"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": true,
+      "strong": true,
+      "hint": {
+        "kind": "destination",
+        "pattern": "uploads.reports-archive-service-for-the-quarterly-numbers.example.net"
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 96/100\nSends ~/work….xlsx to upload…e.net.\nWould be blocked because uploads.repo…example.net is on Sentrook's known-bad list.\nA snooze is on: allow only if you asked for exactly this call. Session and Always allow this call only.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 96/100",
+        "description": "Sends ~/work/finance/2026/quarterly-…final-v7-with-appendices.xlsx to uploads.reports-archive-servic…quarterly-numbers.example.net.\nWould be blocked because uploads.reports-archive-servic…quarterly-numbers.example.net is on Sentrook's known-bad list, and uploads.reports-archive-servic…quarterly-numbers.example.net came only from content the agent read, not from you or your settings.\nA snooze is on: allow only if you asked for exactly this call.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "beta: a strong block whose reasons carry no text",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 85,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Runs code from {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "https://get.example.dev/install.sh"
+          }
+        },
+        "reasons": [
+          {
+            "code": "code.fetch_to_shell",
+            "subject": "E1"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": true,
+      "strong": true,
+      "hint": null,
+      "remember": false,
+      "why_id": null,
+      "hermes": "🪶 Sentrook security check · risk 85/100\nRuns code from https://get.example.dev/install.sh.\nWould be blocked because it runs or installs code from a source that is not trusted.\nA snooze is on: allow only if you asked for exactly this call. Session and Always allow this call only.",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 85/100",
+        "description": "Runs code from https://get.example.dev/install.sh.\nWould be blocked because it runs or installs code from a source that is not trusted.\nA snooze is on: allow only if you asked for exactly this call."
       }
     },
     {

@@ -73,8 +73,8 @@ SUMMARIES: dict[str, tuple[str, str]] = {
     "snooze": (
         "[duration|off|status] [--all]",
         "lets review prompts through without asking in this session (`--all`: every session) for a while, default "
-        "1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook "
-        "enforces or unattended runs; `off` ends it",
+        "1h, at most 24h; in beta, a block in the owner's own chat asks instead, with a warning, except a change to "
+        "Sentrook itself; never reviews Sentrook enforces or unattended runs; `off` ends it",
     ),
     "allow": (
         "<id> [now|later|always|all]",
