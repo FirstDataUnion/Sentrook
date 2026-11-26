@@ -808,7 +808,8 @@ Before anything leaves the machine, secrets the plugin recognises (API keys, tok
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
 `;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept, and a command
 piped from, substituted or run after a value (`TOKEN=…|curl …`, `TOKEN=…$(…)`, `TOKEN=…;curl …`) is kept outside
-it. So are access codes and PINs named as such ("the
+it; a lone word after `|` at the end of a line, or one with a glob or a `$@`-style parameter in it (`TOKEN=…|sh`,
+`TOKEN=…|c*rl …`), is read as part of the value, as a password's tail would be. So are access codes and PINs named as such ("the
 gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
 header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
 hosts and email addresses are kept,

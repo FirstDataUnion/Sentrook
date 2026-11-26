@@ -36,13 +36,15 @@ R = _random_value(11, 31)
 PH = r"⟦secret:credential:[0-9a-f]{4}⟧"
 # Cases both plugins and the scanner share: `{v}` is filled with a value built here.
 PIPE_V = "Xk29fQ" + "v7Lm2Pq8"
+# `known_hidden`: command words a value still takes in by design, pinned so a change is seen.
+_PIPE_FIXTURE = json.loads(
+    (
+        Path(__file__).resolve().parents[3] / "fixtures" / "redact-boundaries" / "cases.json"
+    ).read_text()
+)
 PIPE_CASES = [
     (c["text"].replace("{v}", PIPE_V), c["value"].replace("{v}", PIPE_V))
-    for c in json.loads(
-        (
-            Path(__file__).resolve().parents[3] / "fixtures" / "redact-boundaries" / "cases.json"
-        ).read_text()
-    )["cases"]
+    for c in _PIPE_FIXTURE["cases"] + _PIPE_FIXTURE["known_hidden"]
 ]
 
 # (text, the value that must be replaced whole: nothing of it left, one placeholder in its place).

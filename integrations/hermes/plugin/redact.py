@@ -50,10 +50,9 @@ _COMMAND_ENDS = (
     r"|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['\"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])"
     r"|[A-Za-z_](?:[ \t]|\\t)|\$[(A-Za-z_{'\"]|\(|\{[ \t]|\.\.?/|/[A-Za-z]|~/"
 )
-# What ends an unquoted value at `|`: a command (`_COMMAND_ENDS`), a run of anything but spaces and quotes with more
-# after it on its line (`|7z x`, `|[c]url …`, `|c*rl …`, `|cu$@rl …`, `|/??n/?h -c …`), which a shell runs as a command,
-# or a brace list (`|{curl,…}`).
-_PIPE_ENDS = _COMMAND_ENDS + r"|[^\s|\"'\\]{1,80}(?:[ \t]|\\t)+[^\s\"'\\]|\{[^\s,{}|]{1,40},"
+# What ends an unquoted value at `|`: a command (`_COMMAND_ENDS`), a word led by a digit before a space (`|7z x`), or a
+# brace list (`|{curl,…}`).
+_PIPE_ENDS = _COMMAND_ENDS + r"|[0-9][A-Za-z0-9_.-]{0,40}(?:[ \t]|\\t)|\{[^\s,{}|]{1,40},"
 # What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
 # maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
 # `&9x=1`), a command (`_COMMAND_ENDS`), a word straight before `(` or `{` (`;next()`), `(` or `{` (`;(…)`, `;{…}`), or

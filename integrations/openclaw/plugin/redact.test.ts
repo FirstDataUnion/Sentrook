@@ -804,11 +804,13 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
 
 /** Cases both plugins and the scanner share: `{v}` is filled with a value built here. */
 const PIPE_V = "Xk29fQ" + "v7Lm2Pq8";
-const PIPE_CASES = (
+const PIPE_FIXTURE = (
   JSON.parse(
     readFileSync(fileURLToPath(new URL("../../fixtures/redact-boundaries/cases.json", import.meta.url)), "utf8"),
-  ) as { cases: { name: string; text: string; value: string }[] }
-).cases.map((c) => ({ name: c.name, text: c.text.replaceAll("{v}", PIPE_V), value: c.value.replaceAll("{v}", PIPE_V) }));
+  ) as Record<"cases" | "known_hidden", { name: string; text: string; value: string }[]>
+);
+/** `known_hidden`: command words a value still takes in by design, pinned so a change is seen. */
+const PIPE_ALL = [...PIPE_FIXTURE.cases, ...PIPE_FIXTURE.known_hidden].map((c) => ({ name: c.name, text: c.text.replaceAll("{v}", PIPE_V), value: c.value.replaceAll("{v}", PIPE_V) }));
 
 /**
  * How the time grows with the input, as the scanner's tests measure it (`sentrook/tests/linear_time.py`): the work at
@@ -835,7 +837,7 @@ function assertLinear(run: (divisor: number) => void, what: string, limit = 10):
 test("a pipe, a command substitution or a redirect after a value ends it where a command follows", () => {
   const ph = "⟦secret:credential:[0-9a-f]{4}⟧";
   const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  for (const c of PIPE_CASES) {
+  for (const c of PIPE_ALL) {
     const [head, ...rest] = c.text.split(c.value);
     assert.match(r.string(c.text), new RegExp(`^${esc(head)}${ph}${esc(rest.join(c.value))}$`), c.name);
   }
