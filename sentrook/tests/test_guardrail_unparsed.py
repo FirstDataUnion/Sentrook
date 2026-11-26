@@ -107,6 +107,19 @@ FIRES = [
     ("sudo -E " + D, "plugin_disable"),
     ("env -u HOME " + D, "plugin_disable"),
     ("env -i " + D, "plugin_disable"),
+    # A shell script behind wrappers.
+    *(
+        (prefix + " bash -c '" + D + "'", "plugin_disable")
+        for prefix in (
+            "sudo -E",
+            "timeout 5",
+            "env -i",
+            "nice -n 5",
+            "nohup",
+            "xargs -0",
+            "time -p",
+        )
+    ),
     ("true && openclaw sentrook snooze 1h", "plugin_command"),
     ("bash -c 'hermes sentrook grant host example.test'", "plugin_command"),
 ]
@@ -225,6 +238,23 @@ def test_the_body_of_a_heredoc_with_no_closing_line_is_asked_not_blocked(length)
     assert tier(ex(text)) in ("quiet", "review")
     if not derive_exec_shape(text).parse_ok:
         assert tier(ex(text)) == "review"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash <<EOF\n" + D + "\n",
+        "sudo bash <<EOF\n" + D + "\n",
+        "echo start\nbash -s <<'EOF'\n" + D + "\nhermes gateway stop\n",
+    ],
+)
+@pytest.mark.parametrize("length", ["short", "padded"])
+def test_a_shell_fed_a_heredoc_with_no_closing_line_runs_it(command, length):
+    """A shell reading its commands from a heredoc runs the body even with no closing line."""
+    text = command if length == "short" else padded(command, MAX_PARSE_CHARS + 1)
+    assert not derive_exec_shape(text).parse_ok
+    assert tier(_call(text)).startswith("block: ")
+    assert "guardrail.plugin_disable" in tier(_call(text))
 
 
 def test_a_real_command_and_a_named_one_take_the_block_alone():

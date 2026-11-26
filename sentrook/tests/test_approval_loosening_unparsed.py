@@ -386,6 +386,20 @@ def test_a_command_after_a_shift_or_quote_is_not_taken_for_a_heredoc_body(comman
     fires(ex(padded(command, MAX_PARSE_CHARS + 1)))
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash <<EOF\nhermes config set approvals.mode off\n",
+        "sh -s <<'EOF'\nhermes config set approvals.mode off\n",
+        "sudo bash <<EOF\nhermes config set approvals.mode off\n",
+    ],
+)
+def test_a_shell_fed_a_heredoc_with_no_closing_line_still_blocks(command):
+    """A shell reading its commands from the heredoc runs the body, closed or not."""
+    fires(h_ex(command))
+    fires(h_ex(padded(command, MAX_PARSE_CHARS + 1)))
+
+
 def test_the_body_of_a_heredoc_with_no_closing_line_is_asked_not_blocked():
     """The shell runs nothing of such a body (it reads it as the heredoc up to the end)."""
     reviews(
