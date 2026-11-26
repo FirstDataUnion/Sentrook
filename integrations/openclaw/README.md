@@ -824,7 +824,8 @@ example value that only stands in for one, such as `"access_token": "ya29.a0..."
 files, messages and tool output can still contain other personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
-readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with
+readable only by your user and rotated at 50 MB. Records are kept for 30 days: the plugin deletes older ones from it
+and its rotated copy as it writes. The plugin never uploads it. Turn it off with
 `openclaw config set plugins.entries.sentrook.config.trafficLog.enabled false`; the history and why commands then
 have nothing to show.
 
