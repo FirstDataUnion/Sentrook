@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { capArgs, capHeadTail, createRedactor } from "./redact.ts";
 
@@ -797,5 +799,68 @@ test("`&`, `,` and `;` end a link's query value, a list item or a command, but n
     const start = performance.now();
     r.string(text);
     assert.ok(performance.now() - start < 3000, text.slice(0, 30));
+  }
+});
+
+/** Cases both plugins and the scanner share: `{v}` is filled with a value built here. */
+const PIPE_V = "Xk29fQ" + "v7Lm2Pq8";
+const PIPE_FIXTURE = (
+  JSON.parse(
+    readFileSync(fileURLToPath(new URL("../../fixtures/redact-boundaries/cases.json", import.meta.url)), "utf8"),
+  ) as Record<"cases" | "known_hidden", { name: string; text: string; value: string }[]>
+);
+/** `known_hidden`: command words a value still takes in by design, pinned so a change is seen. */
+const PIPE_ALL = [...PIPE_FIXTURE.cases, ...PIPE_FIXTURE.known_hidden].map((c) => ({ name: c.name, text: c.text.replaceAll("{v}", PIPE_V), value: c.value.replaceAll("{v}", PIPE_V) }));
+
+/**
+ * How the time grows with the input, as the scanner's tests measure it (`sentrook/tests/linear_time.py`): the work at
+ * a quarter and at full size, the fastest of a few runs each; linear work takes about 4 times as long, quadratic about
+ * 16. A full-size run under 20 ms is too short to time and passes.
+ */
+function assertLinear(run: (divisor: number) => void, what: string, limit = 10): void {
+  const ms = (divisor: number) => {
+    const t0 = performance.now();
+    run(divisor);
+    return performance.now() - t0;
+  };
+  let small = ms(4);
+  let large = ms(1);
+  small = Math.min(small, ms(4));
+  for (let attempt = 1; attempt < 5 && large >= 20 && large / Math.max(small, 1e-6) >= 0.8 * limit; attempt++) {
+    small = Math.min(small, ms(4));
+    large = Math.min(large, ms(1));
+  }
+  const growth = large / Math.max(small, 1e-6);
+  assert.ok(large < 20 || growth < limit, `${what}: ${large.toFixed(1)} ms at full size vs ${small.toFixed(1)} ms at 1/4, ${growth.toFixed(1)}x`);
+}
+
+test("a pipe, a command substitution or a redirect after a value ends it where a command follows", () => {
+  const ph = "⟦secret:credential:[0-9a-f]{4}⟧";
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const c of PIPE_ALL) {
+    const [head, ...rest] = c.text.split(c.value);
+    assert.match(r.string(c.text), new RegExp(`^${esc(head)}${ph}${esc(rest.join(c.value))}$`), c.name);
+  }
+  const rep = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  for (const [head, unit, tail] of [
+    ["TOKEN=abcdefg", "|a", ""],
+    ["TOKEN=abcdefg", "|ab|", ""],
+    ["TOKEN=abcdefg", "|" + "w".repeat(40) + "X", ""],
+    ["TOKEN=abcdefg", "|w$x", ""],
+    ["TOKEN=abcdefg", "$(", ""],
+    ["TOKEN=abcdefg", "$a", ""],
+    ["TOKEN=", "|", "x"],
+    ["MY_SECRET_TOKEN=abcdefg", "|ab", ""],
+    ["?token=abcdefg", "|a&", ""],
+    ["the password is ", "|ab", ""],
+    ["", "token=ab|cd ", ""],
+    ["TOKEN=abcdefg", "|cu''x", ""],
+    ["TOKEN=abcdefg", "|" + "x".repeat(79), ""],
+    ["TOKEN=abcdefg", "|a;b", ""],
+    ["TOKEN=abcdefg", ";ab&", ""],
+    ["the password is ", ";ab&", ""],
+    ["token: ", "a|{b", ""],
+  ]) {
+    assertLinear((d) => createRedactor("standard", "test-salt").string(head + rep(unit, 200_000 / d) + tail), head + unit);
   }
 });

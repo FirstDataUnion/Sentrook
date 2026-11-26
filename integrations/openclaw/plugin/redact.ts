@@ -51,32 +51,67 @@ const PROSE_CUES = "password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
  */
 const VALUE_END = `[^\\s"'&,;<>\`\\\\.:!?)\\]]`;
 /**
+ * What a command after a value looks like, after `&`, `,`, `;` or `|`: a word with more after it on its line (`curl …`,
+ * `w x`), maybe straight after it (`curl${IFS}…`, `curl$IFS…`, `reboot)`, `base64|sh`, `sort<x`); a word before `;`,
+ * `&`, `&&` or `;;` that ends its line or has a command after it (`reboot;`, `reboot;echo …`, `reboot&&echo …`); a word
+ * with quotes or an escape inside it (`cu''rl`, `c\url`); or a command led by a symbol: a substitution or a variable
+ * (`$(…)`, `$SHELL`, `${IFS}`, `$'…'`), a subshell or a group (`(…)`, `{ …; }`) or a path (`./run.sh`, `../bin/x`,
+ * `/bin/sh`, `~/x.sh`). A tail that runs to the end of the line, a lone word included (`TOKEN=<value>|sh`,
+ * `TOKEN=<value>;make`), is part of the value, as a password's tail would be.
+ */
+const COMMAND_ENDS =
+  String.raw`[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|<>${"`"})]|\\t|\$[{(A-Za-z_]` +
+  String.raw`|[;&]{1,2}(?:[ \t]|(?![^\n])|[A-Za-z_][A-Za-z0-9_.-]{0,40}[ \t]))` +
+  String.raw`|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])` +
+  String.raw`|[A-Za-z_](?:[ \t]|\\t)|\$[(A-Za-z_{'"]|\(|\{[ \t]|\.\.?/|/[A-Za-z]|~/`;
+/**
+ * What ends an unquoted value at `|`: a command (`COMMAND_ENDS`), a word led by a digit before a space (`|7z x`), or a
+ * brace list (`|{curl,…}`).
+ */
+const PIPE_ENDS = COMMAND_ENDS + String.raw`|[0-9][A-Za-z0-9_.-]{0,40}(?:[ \t]|\\t)|\{[^\s,{}|]{1,40},`;
+/**
  * What ends an unquoted value at `&`, `,` or `;`: an HTML entity after `&` (`&amp;`, `&quot;`, `&#39;`), another key,
  * maybe with spaces in its name or led by a digit or a symbol (`&page=2`, `,b=2`, `;Initial Catalog=y`, `&ids[]=1`,
- * `&9x=1`), a word with more after it on its line, which is a command or a statement (`;curl${IFS}…`, `;npm publish`, `;next()`),
- * a word with quotes or an escape inside it (`;cu''rl`, `;c\url`), or a command led by a symbol: a substitution or a
- * variable (`;$(…)`, `;$SHELL`, `;${IFS}`), a subshell or a group (`;(…)`, `;{…}`), a path (`;./run.sh`, `;../bin/x`,
- * `;/bin/sh`, `;~/x.sh`) or a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a
- * digit, is part of the value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
+ * `&9x=1`), a command (`COMMAND_ENDS`), a word straight before `(` or `{` (`;next()`), `(` or `{` (`;(…)`, `;{…}`), or
+ * a comment (`;#`). A tail that runs to the end of the line or of the text, or starts with a digit, is part of the
+ * value (`password=<value>&3`, an `.env` line `PASSWORD=<value>&<rest>`).
  */
 const SEPARATOR_ENDS =
   String.raw`(?<=&)(?:[A-Za-z]{2,8}|#[xX]?[0-9A-Fa-f]{1,6});` +
   String.raw`|[A-Za-z_\[%-][A-Za-z0-9_.\[\]%-]{0,40}(?: [A-Za-z][A-Za-z0-9_.-]{0,20}){0,3}[=:]` +
   String.raw`|[0-9][A-Za-z0-9_.\[\]%-]{0,40}=` +
-  String.raw`|[A-Za-z_][A-Za-z0-9_.-]{1,40}(?:[ \t|()<>` + "`" + String.raw`{]|\\t|\$[{(])` +
-  String.raw`|[A-Za-z][A-Za-z0-9_.-]{0,40}(?:['"]{1,2}[A-Za-z]|\\(?![nrtbf]|u[0-9A-Fa-f]{4})[A-Za-z])` +
-  String.raw`|\$[(A-Za-z_{]|[({]|\.\.?/|/[A-Za-z]|~/|(?<=;)#`;
+  String.raw`|[A-Za-z_][A-Za-z0-9_.-]{1,40}[({]|[({]|(?<=;)#|` +
+  COMMAND_ENDS;
+/**
+ * `|` inside an unquoted value: part of it (`password=<value>|<rest>`) unless what follows is a space, the end, a quote
+ * or `PIPE_ENDS`, so a pipe into a command stays visible (`TOKEN=<value>|curl …|sh`). Unlike after `&`, `,` or `;`, a
+ * key or a word straight before `(` or `{` does not end it, as `|` is common in generated passwords. A value never ends
+ * in `|`, so `||` or `|&` before a command ends it too (`TOKEN=<value>||curl …`).
+ */
+const PIPE_CHAR = `\\|(?=[^\\s"'<>\`\\\\])(?!${PIPE_ENDS})`;
 /**
  * A character of an unquoted value after a key. `&`, `,` and `;` end the value before a space, the end, a quote, `&&`
  * or `;;`, or `SEPARATOR_ENDS`, and after code's closing bracket (`getToken();`); anywhere else they are part of it
- * (`password=<value>&<rest>`, `password=<value>,;<rest>`).
+ * (`password=<value>&<rest>`, `password=<value>,;<rest>`). `|` ends it where `PIPE_CHAR` says, and a command
+ * substitution `$(` always does (`TOKEN=<value>$(…)`); a `$` before anything else is part of it (`pa$sword`).
  */
-const VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[&,;](?=[^\\s"'<>\`\\\\])(?!(?<=&)&|(?<=;);|${SEPARATOR_ENDS}))`;
+const VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\|$]|\\$(?!\\()|${PIPE_CHAR}|(?<![)\\]])[&,;](?=[^\\s"'<>\`\\\\])(?!(?<=&)&|(?<=;);|${SEPARATOR_ENDS}))`;
+/**
+ * The last character of an unquoted value: not a pipe and not the `$` of a command substitution, so the command after
+ * the value is whole (`TOKEN=<value>$(…)`).
+ */
+const UNQUOTED_END = `(?!\\||\\$\\()${VALUE_END}`;
+/**
+ * After an opening quote that does not close before a space (`password='<value>|<rest> …`), where a shell reads `|` as
+ * a character: `|` is part of the value, the rest as in `VALUE_CHAR`.
+ */
+const QUOTED_RUN_CHAR = `(?:[^\\s"'&,;<>\`\\\\$]|\\$(?!\\()|(?<![)\\]])[&,;](?=[^\\s"'<>\`\\\\])(?!(?<=&)&|(?<=;);|${SEPARATOR_ENDS}))`;
+const QUOTED_RUN_END = `(?!\\$\\()${VALUE_END}`;
 /**
  * In a link's query, where the key follows `?`, `&` or `#`, `&` always ends the value (`?token=X&debug`): the value
  * there, from its first character.
  */
-const QUERY_VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\]|(?<![)\\]])[,;](?=[^\\s"'&<>\`\\\\])(?!(?<=;);|${SEPARATOR_ENDS}))`;
+const QUERY_VALUE_CHAR = `(?:[^\\s"'&,;<>\`\\\\|$]|\\$(?!\\()|${PIPE_CHAR}|(?<![)\\]])[,;](?=[^\\s"'&<>\`\\\\])(?!(?<=;);|${SEPARATOR_ENDS}))`;
 /**
  * The rest of a quoted value after its first character: in single quotes anything up to the closing quote; in double
  * quotes, where a shell runs a command substitution, not `$(` (`password="<value>;$(…)"` keeps the command visible).
@@ -86,11 +121,16 @@ const DQ_CHAR = `(?:[^\\s"'<>\`\\\\$]|\\$(?!\\())`;
 /** Digits that start a value: up to five, then the value's end, are a port or a count (`x.token:8443/`), not a value. */
 const NOT_A_PORT = `(?![0-9]{1,5}(?![0-9A-Za-z]|[&,;][^\\s"'&,;<>\`\\\\]))`;
 const QUERY_VALUE = new RegExp(
-  `[\\s\\S](?:${QUERY_VALUE_CHAR}{6,}${VALUE_END}|${QUERY_VALUE_CHAR}{5}${VALUE_END}(?=[.:!?)\\]]))`,
+  `[\\s\\S](?:${QUERY_VALUE_CHAR}{6,}${UNQUOTED_END}|${QUERY_VALUE_CHAR}{5}${UNQUOTED_END}(?=[.:!?)\\]]))`,
   "y",
 );
-/** A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. */
-const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>\\\\]{5,199}[^\\s\"'`⟦⟧$<>\\\\.,;:!?)\\]])";
+/**
+ * A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. Unquoted, it
+ * ends at `&`, `,`, `;` and `|` where an unquoted value after a key does (`token: <value>|curl …`, `password:
+ * <value>;curl …`); after a quote, they are part of it.
+ */
+const PROSE_CHAR = `(?:[^\\s"'\`⟦⟧$<>\\\\|&,;]|${PIPE_CHAR}|(?<![)\\]])[&,;](?=[^\\s"'<>\`\\\\])(?!(?<=&)&|(?<=;);|${SEPARATOR_ENDS}))`;
+const PROSE_VALUE = `["'\`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>(?<=["'\`])[^\\s"'\`⟦⟧$<>\\\\]{5,199}[^\\s"'\`⟦⟧$<>\\\\.,;:!?)\\]]|(?<!["'\`])${PROSE_CHAR}{5,199}[^\\s"'\`⟦⟧$<>\\\\.,;:!?)\\]|&])`;
 /**
  * Words, not secrets: one or more words with at most a capital first letter, maybe hyphenated (`required`,
  * `Read-only`, `ENABLED`), an identifier (`accessToken`, `GITHUB_TOKEN`), or a hyphenated name with two or
@@ -411,11 +451,12 @@ const SHAPES: Shape[] = [
     // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     // Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
     // escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside, and
-    // `&`, `,` and `;` end the value only where `VALUE_CHAR` says (`password=<value>&3` is one value).
+    // `&`, `,` and `;` end the value only where `VALUE_CHAR` says (`password=<value>&3` is one value), and so do
+    // `|` and `$(`.
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
-        `${NOT_A_PORT}(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:${VALUE_CHAR}{6,}${VALUE_END}|${VALUE_CHAR}{5}${VALUE_END}(?=[.:!?)\\]])))`,
+        `${NOT_A_PORT}(?<v>(?<=["'])[^\\s"'⟦$*{[<%&,;\`\\\\](?:${QUOTED_RUN_CHAR}{6,}${QUOTED_RUN_END}|${QUOTED_RUN_CHAR}{5}${QUOTED_RUN_END}(?=[.:!?)\\]]))|(?<!["'])(?:[^\\s"'⟦$*{[<%&,;\`\\\\|]|${PIPE_CHAR})(?:${VALUE_CHAR}{6,}${UNQUOTED_END}|${VALUE_CHAR}{5}${UNQUOTED_END}(?=[.:!?)\\]])))`,
       "gi",
     ),
     group: "v",
@@ -447,7 +488,7 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*` +
-        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.]${VALUE_CHAR}{6,}${VALUE_END})`,
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>(?:[^\\s"'⟦$*{<%&,;\`\\\\/~.|]|${PIPE_CHAR})${VALUE_CHAR}{6,}${UNQUOTED_END})`,
       "g",
     ),
     group: "v",
