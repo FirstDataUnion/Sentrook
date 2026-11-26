@@ -554,6 +554,9 @@ test("codes, PINs, passport numbers and random values under a key leave the host
     [`GITHUB_TOKEN2=${FOLDER}\nvia googleapis`, FOLDER, "credential"],
     [`connect.sid=${DOC}\nvia googleapis`, DOC, "credential"],
     [`x_session: ${DOC}\nvia googleapis`, DOC, "credential"],
+    // The guard errs toward redacting: a document under a key with a secret stem in it is hidden too.
+    [`const sessionPlan = "${DOC}";\nawait tools.docs_get({ id: sessionPlan });`, DOC, "credential"],
+    [`__Secure-1PSID=${FOLDER}; via googleapis`, FOLDER, "credential"],
     [`value: ${FOLDER}\nthe kid in parents' care`, FOLDER, "credential"],
     [`parents = []\nvalue: ${DOC}`, DOC, "credential"],
   ];
@@ -601,8 +604,6 @@ test("numbers, ids and words without a cue stay", () => {
     `TARGET_A = "${FOLDER}"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x"`,
     `plan = "${DOC}"\nprint("https://docs.google.com/document/d/" + plan)`,
     `plan = "${DOC}"\nd = gapi.getdoc(plan)`,
-    // A document's name under a key with a secret-sounding word in it is still a name (`sessionPlan`).
-    `const sessionPlan = "${DOC}";\nawait tools.docs_get({ id: sessionPlan });`,
     `const r = await tools.drive_files_list({ q: "x" });\nconst dest = "${FOLDER}";`,
   ]) {
     for (const form of forms(text)) assert.equal(r.string(form), form);
@@ -636,7 +637,7 @@ test("a Drive id in an object stays only when its own object names Google", () =
   assert.match((r.value({ value: DOC, note: "ask my parents" }) as any).value, /^⟦secret:credential:/);
   assert.match((r.value({ sessionid: FOLDER, url: "https://www.googleapis.com/x" }) as any).sessionid, /^⟦secret:credential:/);
   assert.match((r.value({ "X-Desk": DOC, u: "googleapis" }) as any)["X-Desk"], /^⟦secret:credential:/);
-  for (const key of ["Authorization", "Proxy-Authorization", "auth.password", "apiKey2"]) {
+  for (const key of ["Authorization", "Proxy-Authorization", "auth.password", "apiKey2", ...["SAPISID", "__Secure-1PSID", "SIDCC", "NID", "SECRETS", "TOKENS", "bindpw", "wpa_psk", "recoveryCode", "code_verifier", "mnemonic", "cf_clearance", "AWSALB", "keystore", "sessionId1", "client_assertion", "connection_string", "refresh", "SLACK_WEBHOOK", "ssh", "api", "activation"]]) {
     assert.match((r.value({ [key]: DOC, u: "googleapis" }) as any)[key], /^⟦secret:credential:/, key);
   }
 });

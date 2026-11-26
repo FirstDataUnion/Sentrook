@@ -595,11 +595,11 @@ def test_rules_are_the_plugins_rules():
         "_PREFIXED_OBJECT_ID",
         "_DRIVE_ID",
         "_GOOGLE_CONTEXT",
-        "_SECRET_KEY_END",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._ORDINARY_CODE_PREFIX == plugin._ORDINARY_CODE_PREFIX
     assert redact._SECRET_KEY_WORDS == plugin._SECRET_KEY_WORDS
+    assert redact._SECRET_KEY_STEMS == plugin._SECRET_KEY_STEMS
     assert redact.PLACEHOLDER_KIND == plugin.PLACEHOLDER_KIND
 
 
@@ -650,6 +650,9 @@ CUE_MUST_REPLACE = [
     ("GITHUB_TOKEN2=" + _FOLDER + "\nvia googleapis", _FOLDER),
     ("connect.sid=" + _DOC + "\nvia googleapis", _DOC),
     ("x_session: " + _DOC + "\nvia googleapis", _DOC),
+    # The guard errs toward redacting: a document under a key with a secret stem in it is hidden too.
+    ('const sessionPlan = "' + _DOC + '";\nawait tools.docs_get({ id: sessionPlan });', _DOC),
+    ("__Secure-1PSID=" + _FOLDER + "; via googleapis", _FOLDER),
     ("value: " + _FOLDER + "\nthe kid in parents' care", _FOLDER),
     ("parents = []\nvalue: " + _DOC, _DOC),
 ]
@@ -684,7 +687,6 @@ CUE_MUST_STAY = [
     'TARGET_A = "' + _FOLDER + '"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x"',
     'plan = "' + _DOC + '"\nprint("https://docs.google.com/document/d/" + plan)',
     'plan = "' + _DOC + '"\nd = gapi.getdoc(plan)',
-    'const sessionPlan = "' + _DOC + '";\nawait tools.docs_get({ id: sessionPlan });',
     'const r = await tools.drive_files_list({ q: "x" });\nconst dest = "' + _FOLDER + '";',
 ]
 
@@ -842,6 +844,33 @@ def test_object_parity_with_the_hermes_plugin():
             "url": "https://www.googleapis.com/x",
         },
         {"auth.password": _DOC, "apiKey2": _FOLDER, "u": "googleapis"},
+        *(
+            {k: _DOC, "u": "googleapis"}
+            for k in [
+                "SAPISID",
+                "__Secure-1PSID",
+                "SIDCC",
+                "NID",
+                "SECRETS",
+                "TOKENS",
+                "bindpw",
+                "wpa_psk",
+                "recoveryCode",
+                "code_verifier",
+                "mnemonic",
+                "cf_clearance",
+                "AWSALB",
+                "keystore",
+                "sessionId1",
+                "client_assertion",
+                "connection_string",
+                "refresh",
+                "SLACK_WEBHOOK",
+                "ssh",
+                "api",
+                "activation",
+            ]
+        ),
     ]
     objects.append(
         {

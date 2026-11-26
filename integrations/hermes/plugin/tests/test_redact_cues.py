@@ -135,6 +135,13 @@ MUST_REDACT = [
     (f"GITHUB_TOKEN2={FOLDER}\nconnect.sid={DOC}\nvia googleapis", FOLDER, "credential"),
     (f"connect.sid={DOC}\nvia googleapis", DOC, "credential"),
     (f"x_session: {DOC}\nvia googleapis", DOC, "credential"),
+    # The guard errs toward redacting: a document under a key with a secret stem in it is hidden too.
+    (
+        f'const sessionPlan = "{DOC}";\nawait tools.docs_get({{ id: sessionPlan }});',
+        DOC,
+        "credential",
+    ),
+    (f"__Secure-1PSID={FOLDER}; SAPISID={DOC}; via googleapis", FOLDER, "credential"),
     (f"value: {FOLDER}\nthe kid in parents' care", FOLDER, "credential"),
     (f"parents = []\nvalue: {DOC}", DOC, "credential"),
 ]
@@ -196,8 +203,6 @@ MUST_STAY = [
     f'TARGET_A = "{FOLDER}"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x" -H "Authorization: Bearer $T"',
     f'plan = "{DOC}"\nprint("https://docs.google.com/document/d/" + plan)',
     f'plan = "{DOC}"\nd = gapi.getdoc(plan)',
-    # A document's name under a key with a secret-sounding word in it is still a name (`sessionPlan`).
-    f'const sessionPlan = "{DOC}";\nawait tools.docs_get({{ id: sessionPlan }});',
     f'const r = await tools.drive_files_list({{ q: "x" }});\nconst dest = "{FOLDER}";',
 ]
 
@@ -220,6 +225,33 @@ MUST_REDACT_OBJECTS = [
     ({"Proxy-Authorization": FOLDER, "u": "googleapis"}, FOLDER, "credential"),
     ({"auth.password": DOC, "u": "googleapis"}, DOC, "credential"),
     ({"apiKey2": FOLDER, "u": "googleapis"}, FOLDER, "credential"),
+    *(
+        ({k: DOC, "u": "googleapis"}, DOC, "credential")
+        for k in [
+            "SAPISID",
+            "__Secure-1PSID",
+            "SIDCC",
+            "NID",
+            "SECRETS",
+            "TOKENS",
+            "bindpw",
+            "wpa_psk",
+            "recoveryCode",
+            "code_verifier",
+            "mnemonic",
+            "cf_clearance",
+            "AWSALB",
+            "keystore",
+            "sessionId1",
+            "client_assertion",
+            "connection_string",
+            "refresh",
+            "SLACK_WEBHOOK",
+            "ssh",
+            "api",
+            "activation",
+        ]
+    ),
 ]
 
 MUST_STAY_OBJECTS = [

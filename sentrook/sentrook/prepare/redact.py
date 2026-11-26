@@ -791,15 +791,19 @@ _PREFIXED_OBJECT_ID = re.compile(r"[a-z]{1,8}_|(?i:sha(?:1|256|384|512))-")
 # A Google Drive, Docs or Sheets file or folder id: `0` or `1`, then 24 to 43 letters, digits, `-` and `_`. It looks
 # random, but where Google is named (`_GOOGLE_CONTEXT`) it is the document or folder a call works on, so it stays.
 _DRIVE_ID = re.compile(r"[01][A-Za-z0-9_-]{24,43}")
-# Words in a key that make its value a secret whatever it looks like (`SIGNING_KEY`, `X-Auth`, `sessionid`, `hmac`), and
-# the endings that do the same inside one word (`signingkey`): a Drive id's shape under such a key, or under a custom
-# `X-` header, is redacted even where Google is named.
-_SECRET_KEY_WORDS = frozenset(
-    "key keys auth authorization cookie cookies sessionid sid sess phpsessid jsessionid sig signature hmac salt seed "
-    "master license licence pwd pw pass passwd credential credentials cred creds access private priv pk sk pat secret "
-    "token otp totp mfa jwt csrf xsrf".split()
+# Stems that make a key's value a secret wherever they sit in it, compared with the key in lower case (`SIGNING_KEY`,
+# `Authorization`, `connect.sid`, `__Secure-1PSID`, `SECRETS`, `bindpw`, `recoveryCode`, `cf_clearance`), and short words
+# that do the same only as a whole word of the key (`pk`, `sk`): a Drive id's shape under such a key, or under a custom
+# `X-` header, is redacted even where Google is named. It errs toward redacting: a document kept under `sessionPlan` or
+# `pinned` is hidden too.
+_SECRET_KEY_STEMS = tuple(
+    "secret token pass pw sess sid nid auth cookie cred key sig hmac salt seed code pin psk verif mnemonic otp jwt "
+    "csrf xsrf cert priv bearer crypt access master licen vault kms clearance __cf awsalb magic serial backup "
+    "challenge cipher assertion conn grant hook invite nonce recover refresh unlock wallet wifi activat".split()
 )
-_SECRET_KEY_END = re.compile(r"(?:key|token|secret|auth|sig|pass|pwd)[0-9]*$")
+_SECRET_KEY_WORDS = frozenset(
+    "pk sk ak pat sas mfa rsa ssh ssl tls gpg pgp jwk jwks x5c dsn enc bot api apim".split()
+)
 # What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
 # Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
 # (`drive_files_list`, `docs_get`). The word alone ("my parents", "kid in parents", `parents = []`) does not.
@@ -899,16 +903,16 @@ def _random_key(key: str, value: str, after_query: bool) -> bool:
 
 
 def _secret_key(key: str) -> bool:
-    """A key whose value is a secret whatever it looks like: a credential key (`_CREDENTIAL_FIELD`), a custom `X-`
-    header, a key with a secret word in any of its dotted parts (`connect.sid`, `GITHUB_TOKEN2`), or one whose last
-    word is `session` (`x_session`, not `sessionPlan`)."""
-    if key[:2].lower() == "x-" or _CREDENTIAL_FIELD.search(key):
+    """A key whose value is a secret whatever it looks like: a custom `X-` header, a credential key
+    (`_CREDENTIAL_FIELD`), a key with a secret stem anywhere in it, or one with a short secret word."""
+    k = key.lower()
+    if (
+        k.startswith("x-")
+        or _CREDENTIAL_FIELD.search(key)
+        or any(s in k for s in _SECRET_KEY_STEMS)
+    ):
         return True
-    words = [w for part in key.split(".") for w in _key_words(part)]
-    return bool(words) and (
-        words[-1] == "session"
-        or any(w in _SECRET_KEY_WORDS or _SECRET_KEY_END.search(w) for w in words)
-    )
+    return any(w in _SECRET_KEY_WORDS for part in key.split(".") for w in _key_words(part))
 
 
 def _google_id(key: str, value: str, google: bool) -> bool:

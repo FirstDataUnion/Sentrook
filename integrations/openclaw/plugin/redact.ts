@@ -632,18 +632,18 @@ const PREFIXED_OBJECT_ID = /^(?:[a-z]{1,8}_|[Ss][Hh][Aa](?:1|256|384|512)-)/;
  */
 const DRIVE_ID = /^[01][A-Za-z0-9_-]{24,43}$/;
 /**
- * Words in a key that make its value a secret whatever it looks like (`SIGNING_KEY`, `X-Auth`, `sessionid`, `hmac`),
- * and the endings that do the same inside one word (`signingkey`): a Drive id's shape under such a key, or under a
- * custom `X-` header, is redacted even where Google is named.
+ * Stems that make a key's value a secret wherever they sit in it, compared with the key in lower case (`SIGNING_KEY`,
+ * `Authorization`, `connect.sid`, `__Secure-1PSID`, `SECRETS`, `bindpw`, `recoveryCode`, `cf_clearance`), and short
+ * words that do the same only as a whole word of the key (`pk`, `sk`): a Drive id's shape under such a key, or under a
+ * custom `X-` header, is redacted even where Google is named. It errs toward redacting: a document kept under
+ * `sessionPlan` or `pinned` is hidden too.
  */
-const SECRET_KEY_WORDS = new Set(
-  (
-    "key keys auth authorization cookie cookies sessionid sid sess phpsessid jsessionid sig signature hmac salt seed " +
-    "master license licence pwd pw pass passwd credential credentials cred creds access private priv pk sk pat secret " +
-    "token otp totp mfa jwt csrf xsrf"
-  ).split(" "),
-);
-const SECRET_KEY_END = /(?:key|token|secret|auth|sig|pass|pwd)[0-9]*$/;
+const SECRET_KEY_STEMS = (
+  "secret token pass pw sess sid nid auth cookie cred key sig hmac salt seed code pin psk verif mnemonic otp jwt " +
+  "csrf xsrf cert priv bearer crypt access master licen vault kms clearance __cf awsalb magic serial backup " +
+  "challenge cipher assertion conn grant hook invite nonce recover refresh unlock wallet wifi activat"
+).split(" ");
+const SECRET_KEY_WORDS = new Set("pk sk ak pat sas mfa rsa ssh ssl tls gpg pgp jwk jwks x5c dsn enc bot api apim".split(" "));
 /**
  * What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
  * Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
@@ -659,14 +659,13 @@ const GOOGLE_CONTEXT = new RegExp(
     String.raw`|(?:g?docs|sheets|slides)_(?:get|create|append|update|batch|export|insert|replace|values))`,
 );
 /**
- * A key whose value is a secret whatever it looks like: a credential key (`CREDENTIAL_FIELD`), a custom `X-` header, a
- * key with a secret word in any of its dotted parts (`connect.sid`, `GITHUB_TOKEN2`), or one whose last word is
- * `session` (`x_session`, not `sessionPlan`).
+ * A key whose value is a secret whatever it looks like: a custom `X-` header, a credential key (`CREDENTIAL_FIELD`), a
+ * key with a secret stem anywhere in it, or one with a short secret word.
  */
 const secretKey = (key: string): boolean => {
-  if (key.slice(0, 2).toLowerCase() === "x-" || CREDENTIAL_FIELD.test(key)) return true;
-  const words = key.split(".").flatMap((part) => keyWords(part));
-  return words.length > 0 && (words[words.length - 1] === "session" || words.some((w) => SECRET_KEY_WORDS.has(w) || SECRET_KEY_END.test(w)));
+  const k = key.toLowerCase();
+  if (k.startsWith("x-") || CREDENTIAL_FIELD.test(key) || SECRET_KEY_STEMS.some((st) => k.includes(st))) return true;
+  return key.split(".").some((part) => keyWords(part).some((w) => SECRET_KEY_WORDS.has(w)));
 };
 /**
  * A Drive, Docs or Sheets id where Google is named, under a key that does not name a secret: the document or folder a
