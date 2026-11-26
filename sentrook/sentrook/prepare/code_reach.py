@@ -18,7 +18,10 @@ from the scope Python reads it from), through a `Request` built from one, or thr
 function the program defines and calls only by its name, every call passing such a URL. A target the code
 computes (`requests.post(T["u"])`, a loop variable, an argument some call computes, a start that stops at
 the host: `'https://api.x.io' + rest` may go on as `.evil.net`) is not followed, and then every host the
-code writes stays a possible destination. So is a function an earlier program left in the interpreter.
+code writes stays a possible destination. So is a function an earlier program left in the interpreter, a
+request function taken from anything but the client module itself (`s.post(u)`), and any program that makes
+types of its own (a `class`, `type(name, bases, ns)`, a dunder method), whose objects may answer `+`, `%` or
+a method call with any URL.
 """
 
 from __future__ import annotations
@@ -390,6 +393,8 @@ _UNFOLLOWED_CALLS = frozenset(
         "mount",
     }
 )
+#: Names that make a type or an object with methods of the program's choosing.
+_TYPE_FACTORIES = frozenset({"SimpleNamespace", "new_class", "make_dataclass", "prepare_class"})
 _UNFOLLOWED_KEYWORDS = frozenset({"base_url", "proxies", "proxy", "mounts", "transport"})
 
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -591,8 +596,9 @@ _Bound = ast.expr | ast.arg | ast.FunctionDef | ast.AsyncFunctionDef | None
 def _scopes(tree: ast.Module) -> dict[ast.AST, ast.AST | None]:
     """The function or lambda whose local names each node's names are, None for the module. A def's
     decorators, defaults and annotations belong to the scope it is written in, its parameters and body to the
-    function. A class body or a comprehension counts as the scope around it: a name bound there is one more
-    value the outer name may hold, never one fewer."""
+    function. A comprehension counts as the scope around it: a name bound there is one more value the outer
+    name may hold, never one fewer. A class body would hide the name around it, so a program with a class is
+    not followed at all (`_Reader._makes_types`)."""
     out: dict[ast.AST, ast.AST | None] = {}
     stack: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
     while stack:
@@ -1208,6 +1214,8 @@ class _Reader:
     # ------------------------------------------------------------------ request targets
 
     def targets(self) -> frozenset[str] | None:
+        if self._makes_types():
+            return None
         hosts: set[str] = set()
         seen = False
         for node in ast.walk(self.tree):
@@ -1256,7 +1264,9 @@ class _Reader:
                 if name == "get" and not node.args and not node.keywords:
                     continue  # `queue.get()`: no argument, no request
                 return None
-            found = self._request_hosts(url, frozenset())
+            # `s.post(u)`, `K().Request(u)`: only the client module's own function is read as a request to `u`
+            client = not isinstance(node.func, ast.Attribute) or self._module_receiver(node.func)
+            found = self._request_hosts(url, frozenset()) if client else None
             if found is None:
                 if name == "get" and self._plain_key(url):
                     continue  # `data.get("key")`, `os.environ.get(KEY)`: a lookup, not a request
@@ -1264,6 +1274,42 @@ class _Reader:
             hosts |= found
             seen = True
         return frozenset(hosts) if seen else None
+
+    def _makes_types(self) -> bool:
+        """The program makes a type of its own (a `class`, `type(name, bases, ns)`, a namespace or class
+        factory) or defines a dunder method: its objects may answer `+`, `%` or a method call with any URL,
+        and a class body's names are not the scope around it. Its targets are not followed."""
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ClassDef):
+                return True
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                node.name.startswith("__") and node.name.endswith("__")
+            ):
+                return True
+            if isinstance(node, ast.Name) and node.id == "type" and isinstance(node.ctx, ast.Load):
+                call = self.parents.get(node)
+                if not (
+                    isinstance(call, ast.Call)
+                    and call.func is node
+                    and len(call.args) == 1
+                    and not call.keywords
+                ):
+                    return True  # `type(n, b, ns)`, `t = type`
+            if (isinstance(node, ast.Name) and node.id in _TYPE_FACTORIES) or (
+                isinstance(node, ast.Attribute) and node.attr in _TYPE_FACTORIES
+            ):
+                return True
+        return False
+
+    def _module_receiver(self, func: ast.Attribute) -> bool:
+        """`func` is taken from a followed client module itself (`requests.post`, `urllib.request.Request`,
+        `ur.urlopen`), the module's name bound once, by its import."""
+        recv = func.value
+        if isinstance(recv, ast.Attribute) and recv.attr == "request":
+            recv = recv.value  # `urllib.request.X`
+        if not isinstance(recv, ast.Name) or recv.id in self.declared:
+            return False
+        return recv.id in self.http_modules and len(self.bindings.get(recv.id) or []) == 1
 
     def _environ_changed(self, node: ast.AST) -> bool:
         """`node` is the environment, used other than to read one value (`os.environ.get(k)`,
@@ -1304,23 +1350,36 @@ class _Reader:
         return (None, name.id), self.scoped.get((None, name.id), [])
 
     def _own_function(self, name: ast.Name) -> bool:
-        """`name` is only ever a function this program defines with `def`."""
+        """`name` is only ever a plain function this program defines with `def` in the module or in a
+        function, never a method."""
         key, binds = self._scope_binds(name)
         if key not in self._name_own:
             self._name_own[key] = bool(binds) and all(
-                isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) for b in binds
+                isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) and not self._in_class(b)
+                for b in binds
             )
         return self._name_own[key]
+
+    def _in_class(self, node: ast.AST) -> bool:
+        """`node` is written in a class body (directly or under an `if`, `try`, …), not in a function."""
+        parent = self.parents.get(node)
+        while parent is not None and not isinstance(parent, (*_FUNCS, ast.Module)):
+            if isinstance(parent, ast.ClassDef):
+                return True
+            parent = self.parents.get(parent)
+        return False
 
     def _request_hosts(self, expr: ast.expr, seen: frozenset[object]) -> set[str] | None:
         """The hosts a request URL argument (or a `Request` it names) is aimed at, or None."""
         name = _call_name(expr.func) if isinstance(expr, ast.Call) else None
         if isinstance(expr, ast.Call) and name in ("Request", "build_request"):
             # The client's own: a `Request` the program defines or binds (`def Request(u)`, a method of that
-            # name, `Request = …`) may return any URL.
+            # name, `Request = …`) or one taken from anything but the client module may return any URL.
             if name in self.declared or len(self.bindings.get(name) or []) != (
                 1 if name in self.http_funcs else 0
             ):
+                return None
+            if isinstance(expr.func, ast.Attribute) and not self._module_receiver(expr.func):
                 return None
             inner = _url_arg(expr)
             return None if inner is None else self._request_hosts(inner, seen)
@@ -1377,7 +1436,7 @@ class _Reader:
         func = self.scope_of.get(param)
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) or func.decorator_list:
             return None
-        if isinstance(self.parents.get(func), ast.ClassDef) or func.name in self.declared:
+        if self._in_class(func) or func.name in self.declared:
             return None
         if len(self.bindings.get(func.name) or []) != 1:
             return None  # the name is bound to something else too, somewhere
