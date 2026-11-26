@@ -39,7 +39,14 @@ from dataclasses import dataclass
 from functools import lru_cache
 from urllib.parse import urljoin, urlsplit
 
-__all__ = ["CodeReach", "KernelEffects", "kernel_effects", "kernel_reads", "python_reach"]
+__all__ = [
+    "CodeReach",
+    "KernelEffects",
+    "kernel_effects",
+    "kernel_reads",
+    "plain_mentions",
+    "python_reach",
+]
 
 
 @dataclass(frozen=True)
@@ -395,6 +402,57 @@ _UNFOLLOWED_CALLS = frozenset(
 )
 #: Names that make a type or an object with methods of the program's choosing.
 _TYPE_FACTORIES = frozenset({"SimpleNamespace", "new_class", "make_dataclass", "prepare_class"})
+#: Modules whose functional APIs make types (`enum.Enum("E", {...})`, `abc.ABCMeta(...)`).
+_TYPE_MODULES = frozenset({"enum", "abc", "types", "typing", "copyreg"})
+#: Request keywords that let code change the request as it is sent.
+_RETARGET_KEYWORDS = frozenset({"auth", "hooks", "event_hooks"})
+#: Calls that set one header by a name this reading would have to follow.
+_HEADER_SETTERS = frozenset({"add_header", "add_unredirected_header", "putheader"})
+#: What a program may take from a client module (`requests.post`, `urllib.request.Request`,
+#: `urllib.parse.urljoin`): its request functions, its error and URL helpers. Anything else reached through
+#: the module (`urllib.request.os`, `requests.utils`) is not followed.
+_CLIENT_ATTRS = frozenset(
+    {
+        "Request",
+        "urlopen",
+        "urlretrieve",
+        "get",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "head",
+        "options",
+        "request",
+        "stream",
+        "Session",
+        "session",
+        "Client",
+        "AsyncClient",
+        "Timeout",
+        "HTTPError",
+        "URLError",
+        "HTTPStatusError",
+        "RequestError",
+        "RequestException",
+        "ConnectionError",
+        "TimeoutException",
+        "codes",
+        "urljoin",
+        "urlencode",
+        "quote",
+        "quote_plus",
+        "unquote",
+        "unquote_plus",
+        "urlparse",
+        "urlsplit",
+        "urlunparse",
+        "urlunsplit",
+        "parse_qs",
+        "parse_qsl",
+        *_UNFOLLOWED_CALLS,
+    }
+)
 _UNFOLLOWED_KEYWORDS = frozenset({"base_url", "proxies", "proxy", "mounts", "transport"})
 
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -625,6 +683,17 @@ def _scopes(tree: ast.Module) -> dict[ast.AST, ast.AST | None]:
     return out
 
 
+def _dunder(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
+
+
+def _host_header(value: object) -> bool:
+    """A `Host` header name (or the same in bytes), which sends the request to another site on the address."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    return isinstance(value, str) and value.strip().lower().rstrip(":") == "host"
+
+
 def _relative(text: str) -> bool:
     """A reference `urljoin` resolves against the base's host: no scheme, no `//` authority, nothing a parser
     strips or reads as a separator (spaces, controls, backslashes)."""
@@ -670,6 +739,8 @@ class _Reader:
         self.scoped: dict[tuple[ast.AST | None, str], list[_Bound]] = {}
         #: Names some scope declares `global` or `nonlocal`, or bound where no scope was given: read unscoped.
         self.declared: set[str] = set()
+        #: `import top.sub` statements per `top`: each binds the same package, so they count as one binding.
+        self.package_imports: dict[str, int] = {}
         #: Every read of each plain name, gathered when a parameter is resolved from the calls.
         self._loads: dict[str, list[ast.Name]] | None = None
         #: Names bound to a restricted module, with the attributes allowed through them.
@@ -711,6 +782,8 @@ class _Reader:
             bound = a.asname or top
             module = a.name if a.asname else top
             self._bind(bound, site=node)
+            if a.asname is None and "." in a.name:
+                self.package_imports[top] = self.package_imports.get(top, 0) + 1
             if a.name in _HTTP_MODULES:
                 self.http = True
                 self.http_modules.add(bound)
@@ -1130,7 +1203,9 @@ class _Reader:
             isinstance(parent, ast.Call) and parent.func is node
         ):
             raise _Unfollowed  # `reduce(getattr, …)`
-        if node.id in self.objects:
+        if node.id in self.objects and node.id not in self.http_modules:
+            # a client package (`import urllib.request, urllib.parse`): what is taken from it is checked
+            # where requests are read (`_known_client_attr`)
             self._check_chain(node)
         if node.id in self.restricted:
             # A restricted module is local only through its allowed attributes; the module used as a
@@ -1276,30 +1351,84 @@ class _Reader:
         return frozenset(hosts) if seen else None
 
     def _makes_types(self) -> bool:
-        """The program makes a type of its own (a `class`, `type(name, bases, ns)`, a namespace or class
-        factory) or defines a dunder method: its objects may answer `+`, `%` or a method call with any URL,
-        and a class body's names are not the scope around it. Its targets are not followed."""
+        """The program does something this reading does not model where a request goes, and its targets are
+        not followed:
+
+        - it makes a type of its own (a `class`, a dunder method, `type` used other than to look at a value,
+          the `enum`, `abc`, `types` or `typing` modules, a namespace or class factory): its objects may
+          answer `+`, `%`, a name lookup or a method call with any URL;
+        - it calls `__init__` or `__new__`, or takes a private or dunder attribute (`r.__init__(other)`
+          re-aims a built request);
+        - it takes from a client module anything but its known request functions and types
+          (`urllib.request.os.system`);
+        - it passes `auth=` or a hook (which may change the request as it is sent), or sets a `Host` header
+          (the request then reaches another site on the same address)."""
         for node in ast.walk(self.tree):
             if isinstance(node, ast.ClassDef):
                 return True
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-                node.name.startswith("__") and node.name.endswith("__")
-            ):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _dunder(node.name):
                 return True
             if isinstance(node, ast.Name) and node.id == "type" and isinstance(node.ctx, ast.Load):
-                call = self.parents.get(node)
-                if not (
-                    isinstance(call, ast.Call)
-                    and call.func is node
-                    and len(call.args) == 1
-                    and not call.keywords
-                ):
-                    return True  # `type(n, b, ns)`, `t = type`
+                if not self._type_looked_at(node):
+                    return True  # `type(n, b, ns)`, `t = type`, `type(x)(…)`
             if (isinstance(node, ast.Name) and node.id in _TYPE_FACTORIES) or (
                 isinstance(node, ast.Attribute) and node.attr in _TYPE_FACTORIES
             ):
                 return True
+            if isinstance(node, ast.Import) and any(
+                a.name.split(".")[0] in _TYPE_MODULES for a in node.names
+            ):
+                return True
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] in _TYPE_MODULES
+            ):
+                return True
+            if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+                return True
+            if isinstance(node, ast.keyword) and node.arg in _RETARGET_KEYWORDS:
+                return True
+            if isinstance(node, ast.Constant) and _host_header(node.value):
+                return True
+            if isinstance(node, ast.Call) and _call_name(node.func) in _HEADER_SETTERS:
+                return True  # `r.add_header(k, v)`: headers only from a literal `headers=`
+            if isinstance(node, ast.Name) and node.id in self.http_modules:
+                if not self._known_client_attr(node):
+                    return True
         return False
+
+    def _type_looked_at(self, node: ast.Name) -> bool:
+        """`type(x)` compared, passed on, or its `__name__` read: never called, bound or given more
+        arguments."""
+        call = self.parents.get(node)
+        if not (
+            isinstance(call, ast.Call)
+            and call.func is node
+            and len(call.args) == 1
+            and not call.keywords
+        ):
+            return False
+        use = self.parents.get(call)
+        if isinstance(use, ast.Compare) or isinstance(use, ast.FormattedValue):
+            return True
+        if isinstance(use, ast.Call) and call in use.args:
+            return True
+        return isinstance(use, ast.Attribute) and use.attr == "__name__"
+
+    def _known_client_attr(self, node: ast.Name) -> bool:
+        """`node` names a client module and the attributes taken from it are its known request functions
+        and types (`urllib.request.urlopen`, `requests.post`), not a way into anything else."""
+        parent = self.parents.get(node)
+        if not isinstance(parent, ast.Attribute):
+            return True  # the module used as a value: `_check_name` refuses it
+        allowed = _CLIENT_ATTRS
+        attr: ast.AST = parent
+        if parent.attr in ("request", "parse", "error"):
+            nxt = self.parents.get(parent)
+            if not isinstance(nxt, ast.Attribute) or nxt.value is not parent:
+                return parent.attr in ("request", "parse", "error")
+            attr = nxt
+        return getattr(attr, "attr", None) in allowed
 
     def _module_receiver(self, func: ast.Attribute) -> bool:
         """`func` is taken from a followed client module itself (`requests.post`, `urllib.request.Request`,
@@ -1309,7 +1438,12 @@ class _Reader:
             recv = recv.value  # `urllib.request.X`
         if not isinstance(recv, ast.Name) or recv.id in self.declared:
             return False
-        return recv.id in self.http_modules and len(self.bindings.get(recv.id) or []) == 1
+        return recv.id in self.http_modules and self._bound_once(recv.id)
+
+    def _bound_once(self, name: str) -> bool:
+        """`name` is bound once, counting repeated `import name.sub` statements as one."""
+        count = len(self.bindings.get(name) or [])
+        return count - max(self.package_imports.get(name, 0) - 1, 0) == 1
 
     def _environ_changed(self, node: ast.AST) -> bool:
         """`node` is the environment, used other than to read one value (`os.environ.get(k)`,
@@ -1469,7 +1603,7 @@ class _Reader:
             root = root.value
         if not isinstance(root, ast.Name) or root.id in self.declared:
             return False
-        if len(self.bindings.get(root.id) or []) != 1:
+        if not self._bound_once(root.id):
             return False
         if isinstance(func, ast.Name):
             return self.objects.get(func.id) is urllib.parse.urljoin
@@ -1811,6 +1945,522 @@ def python_reach(source: str) -> CodeReach | None:
         return CodeReach(network=True, targets=reader.targets())
     except (_Unfollowed, RecursionError):
         return _UNFOLLOWED
+
+
+# ------------------------------------------------------------------ a plain program's mentions
+
+#: Modules a plain program may import: files, JSON, text, time and `urllib`.
+_PLAIN_IMPORTS = frozenset(
+    {
+        "os",
+        "os.path",
+        "json",
+        "re",
+        "time",
+        "datetime",
+        "pathlib",
+        "sys",
+        "urllib",
+        "urllib.request",
+        "urllib.parse",
+        "urllib.error",
+    }
+)
+_PLAIN_URLLIB = frozenset({"request", "parse", "error"})
+#: Keywords a plain program's request calls may pass.
+_PLAIN_REQUEST_KEYWORDS = frozenset(
+    {"url", "data", "json", "headers", "params", "timeout", "method"}
+)
+#: Names a plain program never reads: each reaches objects, attributes or code by a computed name.
+_PLAIN_BANNED = frozenset(
+    {
+        "getattr",
+        "setattr",
+        "delattr",
+        "hasattr",
+        "exec",
+        "eval",
+        "compile",
+        "globals",
+        "locals",
+        "vars",
+        "__import__",
+        "type",
+        "super",
+        "object",
+        "breakpoint",
+        "memoryview",
+    }
+)
+#: Calls that put values into one string or URL: `"…{}".format(x)`, `sep.join(xs)`, `s.replace(a, b)`,
+#: `urljoin(base, ref)`, `re.sub(p, repl, s)`.
+_JOIN_CALLS = frozenset(
+    {
+        "format",
+        "format_map",
+        "join",
+        "replace",
+        "urljoin",
+        "urlunsplit",
+        "urlunparse",
+        "sub",
+        "subn",
+        "expand",
+    }
+)
+#: How many mentioned hosts one check takes.
+_MAX_MENTIONS = 64
+
+
+@lru_cache(maxsize=256)
+def plain_mentions(source: str, hosts: frozenset[str]) -> bool:
+    """`source` is a plain program and each of `hosts` it names stays text: it may count as only mentioned.
+
+    Plain: every request target is known (`python_reach`), imports come only from `_PLAIN_IMPORTS`, and the
+    program has no `lambda`, `class`, `global`, dunder name or attribute (other than `__name__ ==
+    "__main__"`), private attribute, `getattr`-like or `type`-like builtin, header set by name, `Host`
+    header, and passes its request calls only `_PLAIN_REQUEST_KEYWORDS`.
+
+    Text: a string holding one of `hosts`, and every value that string flows into (by assignment, a call's
+    argument, a return, a container it is added to), is never put into a string together with anything not
+    written in the code (`+`, `%`, an f-string, `.format`, `.join`, `.replace`): a link built with the key
+    (`"https://h/c?k=" + key`) is not text. The credential the program reads (an env file, the environment)
+    is only ever put into a string with written text that holds no URL. A request's reply carries neither:
+    it is what the server sent back. Names are followed by name, whatever their scope, which only adds flows."""
+    if not hosts or len(hosts) > _MAX_MENTIONS:
+        return False
+    reach = python_reach(source)
+    if reach is None or not reach.network or not reach.targets:
+        return False
+    try:
+        tree = _parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    reader = _Reader(tree)
+    try:
+        reader.scan()
+        return _Plain(reader, hosts).ok()
+    except (_Unfollowed, RecursionError):
+        return False
+
+
+class _Plain:
+    def __init__(self, reader: _Reader, hosts: frozenset[str]) -> None:
+        self.r = reader
+        self.tree = reader.tree
+        self.parents = reader.parents
+        self.hosts = tuple(sorted(h.lower() for h in hosts))
+        self.defs: dict[str, list[ast.FunctionDef]] = {}
+        for n in ast.walk(self.tree):
+            if isinstance(n, ast.FunctionDef):
+                self.defs.setdefault(n.name, []).append(n)
+        #: Names bound by an import: a call on them (`json.dumps(x)`) does not change them.
+        self.modules = {
+            (a.asname or a.name).split(".")[0]
+            for n in ast.walk(self.tree)
+            if isinstance(n, (ast.Import, ast.ImportFrom))
+            for a in n.names
+        }
+
+    def ok(self) -> bool:
+        if not self._plain():
+            return False
+        flows = self._flows()
+        mentions = self._tainted(flows, self._names_host)
+        secret = self._tainted(flows, self._names_secret)
+        if mentions & secret:
+            return False  # one value holds both a mentioned host and the credential
+        if not self._apart(mentions, secret):
+            return False
+        return self._joins_ok(self._tainted(flows, self._open_mention), secret)
+
+    # ---------------------------------------------------------------- the shape
+
+    def _plain(self) -> bool:
+        for node in ast.walk(self.tree):
+            if isinstance(
+                node,
+                (
+                    ast.Lambda,
+                    ast.ClassDef,
+                    ast.AsyncFunctionDef,
+                    ast.Global,
+                    ast.Nonlocal,
+                    ast.Await,
+                ),
+            ):
+                return False
+            if isinstance(node, ast.Import):
+                if any(a.name not in _PLAIN_IMPORTS for a in node.names):
+                    return False
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level or module not in _PLAIN_IMPORTS:
+                    return False
+                names = {a.name for a in node.names}
+                if "*" in names or (module == "urllib" and not names <= _PLAIN_URLLIB):
+                    return False
+            elif isinstance(node, ast.Name):
+                if node.id in _PLAIN_BANNED:
+                    return False
+                if _dunder(node.id) and not self._main_check(node):
+                    return False
+            elif isinstance(node, ast.Attribute):
+                if node.attr.startswith("_"):
+                    return False
+            elif isinstance(node, ast.FunctionDef):
+                if _dunder(node.name) or node.decorator_list:
+                    return False
+            elif isinstance(node, ast.Constant):
+                if _host_header(node.value):
+                    return False
+            elif isinstance(node, ast.Call):
+                name = _call_name(node.func)
+                if name in _HEADER_SETTERS:
+                    return False
+                if name in _REQUEST_CALLS and any(
+                    k.arg not in _PLAIN_REQUEST_KEYWORDS for k in node.keywords
+                ):
+                    return False
+        return True
+
+    def _main_check(self, node: ast.Name) -> bool:
+        """`if __name__ == "__main__":`"""
+        cmp = self.parents.get(node)
+        return (
+            node.id == "__name__"
+            and isinstance(cmp, ast.Compare)
+            and cmp.left is node
+            and len(cmp.comparators) == 1
+            and isinstance(cmp.comparators[0], ast.Constant)
+            and cmp.comparators[0].value == "__main__"
+        )
+
+    # ---------------------------------------------------------------- where values go
+
+    def _sending(self, node: ast.AST) -> bool:
+        """A request call, whose result is the reply, or a request built for one (`Request(u, data=…)`), whose
+        parts are sent and read back only as computed values."""
+        if not isinstance(node, ast.Call):
+            return False
+        name = _call_name(node.func)
+        if name not in _REQUEST_CALLS:
+            return False
+        if isinstance(node.func, ast.Attribute):
+            return self.r._module_receiver(node.func)
+        return node.func.id in self.r.http_funcs  # type: ignore[union-attr]
+
+    def _parts(self, expr: ast.AST) -> list[ast.AST]:
+        """The nodes of `expr`, less the inside of the request calls in it."""
+        out: list[ast.AST] = []
+        stack = [expr]
+        while stack:
+            n = stack.pop()
+            out.append(n)
+            if self._sending(n):
+                continue
+            stack.extend(ast.iter_child_nodes(n))
+        return out
+
+    def _flows(self) -> list[tuple[list[ast.AST], set[str]]]:
+        """(value nodes, names they flow into) for every way a value reaches a name."""
+        flows: list[tuple[list[ast.AST], set[str]]] = []
+
+        def add(values: list[ast.AST], targets: set[str]) -> None:
+            if targets:
+                flows.append(([p for v in values for p in self._parts(v)], targets))
+
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Assign):
+                add([node.value], set().union(*(_stored(t) for t in node.targets)))
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                add([node.value], _stored(node.target))
+            elif isinstance(node, ast.AugAssign):
+                add([node.value, node.target], _stored(node.target))
+            elif isinstance(node, (ast.For, ast.comprehension)):
+                add([node.iter], _stored(node.target))
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                add([node.context_expr], _stored(node.optional_vars))
+            elif isinstance(node, ast.NamedExpr):
+                add([node.value], {node.target.id})
+            elif (
+                isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom)) and node.value is not None
+            ):
+                func = self.r.scope_of.get(node)
+                if isinstance(func, ast.FunctionDef):
+                    add([node.value], {func.name})
+            elif isinstance(node, ast.FunctionDef):
+                a = node.args
+                params = [*a.posonlyargs, *a.args]
+                for arg, default in zip(
+                    params[len(params) - len(a.defaults) :], a.defaults, strict=True
+                ):
+                    add([default], {arg.arg})
+                for arg, default in zip(a.kwonlyargs, a.kw_defaults, strict=True):
+                    if default is not None:
+                        add([default], {arg.arg})
+            elif isinstance(node, ast.Call):
+                values: list[ast.AST] = [*node.args, *(k.value for k in node.keywords)]
+                func = node.func
+                if isinstance(func, ast.Attribute):
+                    root = _root_name(func)
+                    if root is not None and root not in self.modules:
+                        add(values, {root})  # `parts.append(link)`, `d.update(x)`
+                elif isinstance(func, ast.Name) and func.id in self.defs:
+                    for d in self.defs[func.id]:
+                        for target, value in _passed(node, d):
+                            add([value], {target})
+        return flows
+
+    def _tainted(self, flows, seeded) -> set[str]:
+        """The names a value `seeded` marks reaches, through `flows`."""
+        by_source: dict[str, list[int]] = {}
+        tainted: set[str] = set()
+        work: list[str] = []
+        for i, (parts, targets) in enumerate(flows):
+            if any(seeded(p) for p in parts):
+                for t in targets - tainted:
+                    tainted.add(t)
+                    work.append(t)
+            for p in parts:
+                if isinstance(p, ast.Name) and isinstance(p.ctx, ast.Load):
+                    by_source.setdefault(p.id, []).append(i)
+        while work:
+            name = work.pop()
+            for i in by_source.get(name, ()):
+                for t in flows[i][1] - tainted:
+                    tainted.add(t)
+                    work.append(t)
+        return tainted
+
+    def _names_host(self, node: ast.AST) -> bool:
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, (str, bytes)):
+            return False
+        text = node.value.decode("latin-1") if isinstance(node.value, bytes) else node.value
+        text = text.lower()
+        return any(h in text for h in self.hosts)
+
+    def _open_mention(self, node: ast.AST) -> bool:
+        """A string naming a mentioned host other than as a whole URL written in it: a value put before it
+        could add a scheme and userinfo, or one put after it extend the URL (`"https://h/c?k=" + key`)."""
+        if not self._names_host(node):
+            return False
+        value = node.value  # type: ignore[attr-defined]
+        text = (value.decode("latin-1") if isinstance(value, bytes) else value).lower()
+        last_end = max((i for i, ch in enumerate(text) if ch in _URL_END), default=-1)
+        for host in self.hosts:
+            start = text.find(host)
+            while start >= 0:
+                if not _closed_url(text, start, len(host), last_end):
+                    return True
+                start = text.find(host, start + len(host))
+        return False
+
+    def _names_secret(self, node: ast.AST) -> bool:
+        """The program reads its credential here: an env file it opens (`open(".../.env")`,
+        `Path(".../.env").read_text()`), or the environment."""
+        if isinstance(node, ast.Attribute) and node.attr in ("environ", "getenv"):
+            return True
+        if isinstance(node, ast.Name) and node.id in ("environ", "getenv"):
+            return True
+        if isinstance(node, ast.Call) and _call_name(node.func) in _FILE_READS:
+            # the file named in the call or in what it is called on
+            within: list[ast.AST] = [*node.args, *(k.value for k in node.keywords)]
+            if isinstance(node.func, ast.Attribute):
+                within.append(node.func.value)
+            return any(
+                isinstance(n, ast.Constant) and isinstance(n.value, str) and ".env" in n.value
+                for w in within
+                for n in ast.walk(w)
+            )
+        return False
+
+    # ---------------------------------------------------------------- strings put together
+
+    def _apart(self, mentions: set[str], secret: set[str]) -> bool:
+        """No expression holds both a mentioned host and the credential, other than a request (or the
+        request built for one) taking them as different arguments (`data=` the body, `headers=` the key)."""
+        groups: list[ast.AST] = [
+            c
+            for stmt in ast.walk(self.tree)
+            if isinstance(stmt, ast.stmt)
+            for c in _expr_children(stmt)
+        ]
+        while groups:
+            group = groups.pop()
+            host = key = False
+            stack = [group]
+            while stack:
+                n = stack.pop()
+                if self._sending(n):
+                    groups.extend(_call_values(n))  # type: ignore[arg-type]
+                    continue
+                if isinstance(n, ast.stmt):
+                    continue  # a nested statement is a group of its own
+                load = isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                host = host or self._names_host(n) or (load and n.id in mentions)  # type: ignore[attr-defined]
+                key = key or self._names_secret(n) or (load and n.id in secret)  # type: ignore[attr-defined]
+                if host and key:
+                    return False
+                stack.extend(ast.iter_child_nodes(n))
+        return True
+
+    def _joins_ok(self, mentions: set[str], secret: set[str]) -> bool:
+        """No string is built from a mentioned host and a computed value, and the credential is put into a
+        string only with written text that holds no URL."""
+        facts = self._facts(mentions, secret)
+        for node in ast.walk(self.tree):
+            parts = self._join_parts(node)
+            if parts is None:
+                continue
+            host = key = computed = other = url = False
+            for part in parts:
+                h, k, c, o, u = facts[part]
+                host, key, computed, other, url = (
+                    host or h,
+                    key or k,
+                    computed or c,
+                    other or o,
+                    url or u,
+                )
+            if host and computed:
+                return False  # `"https://h/c?k=" + key`, `f"see {link}"`
+            if key and (host or url or other):
+                return False  # the credential put into a URL, or with another computed value
+        return True
+
+    def _facts(self, mentions: set[str], secret: set[str]) -> dict[ast.AST, tuple[bool, ...]]:
+        """For every node, in one pass from the leaves up: (holds a mentioned host not written as a whole URL
+        (`_open_mention`), holds the credential, holds
+        a computed value, holds a computed value other than the credential or a builtin, holds a URL
+        written in the code). A request call's result is a computed value with nothing of what it was
+        given."""
+        facts: dict[ast.AST, tuple[bool, ...]] = {}
+        stack: list[tuple[ast.AST, bool]] = [(self.tree, False)]
+        while stack:
+            node, done = stack.pop()
+            children = list(ast.iter_child_nodes(node))
+            if not done:
+                stack.append((node, True))
+                stack.extend((c, False) for c in children)
+                continue
+            if self._sending(node):
+                facts[node] = (False, False, True, True, False)
+                continue
+            h = self._open_mention(node)
+            k = self._names_secret(node)
+            c = o = u = False
+            if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+                u = _url_like(node.value)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                h = h or node.id in mentions
+                k = k or node.id in secret
+                c = True
+                o = node.id not in secret and not (
+                    node.id in _BUILTINS and node.id not in self.r.bindings
+                )
+            elif isinstance(node, (ast.Call, ast.Attribute, ast.Subscript)):
+                c = True
+            for child in children:
+                ch, ck, cc, co, cu = facts[child]
+                h, k, c, o, u = h or ch, k or ck, c or cc, o or co, u or cu
+            facts[node] = (h, k, c, o, u)
+        return facts
+
+    def _join_parts(self, node: ast.AST) -> list[ast.AST] | None:
+        """The values `node` puts into one string, or None when it is no such operation."""
+        if isinstance(node, ast.BinOp):
+            return [node.left, node.right]
+        if isinstance(node, ast.AugAssign):
+            return [node.target, node.value]
+        if isinstance(node, ast.JoinedStr):
+            return list(node.values)
+        if isinstance(node, ast.Call) and _call_name(node.func) in _JOIN_CALLS:
+            values = [*node.args, *(k.value for k in node.keywords)]
+            if isinstance(node.func, ast.Attribute):
+                values.append(node.func.value)
+            return values
+        return None
+
+
+def _expr_children(stmt: ast.stmt) -> list[ast.AST]:
+    """The expressions a statement holds directly (its nested statements are groups of their own)."""
+    return [c for c in ast.iter_child_nodes(stmt) if not isinstance(c, ast.stmt)]
+
+
+def _call_values(call: ast.Call) -> list[ast.AST]:
+    """What a call is given: each argument a group of its own, and the object a method is called on."""
+    out: list[ast.AST] = [*call.args, *(k.value for k in call.keywords)]
+    if isinstance(call.func, ast.Attribute):
+        out.append(call.func.value)
+    return out
+
+
+#: Calls that read a file's text.
+_FILE_READS = frozenset({"open", "read_text", "read_bytes"})
+#: Characters that end a URL written in text (markdown, HTML, quotes, whitespace).
+_URL_END = frozenset(" \t\r\n)]>\"'<|`}")
+
+
+def _closed_url(text: str, start: int, length: int, last_end: int) -> bool:
+    """The host at `text[start:start + length]` is written as a whole URL inside `text`: right after a
+    `scheme://`, and the URL ends inside the text (a space, a bracket, a quote; `last_end` is where the
+    last such character is) rather than at its end."""
+    if start < 4 or not text.startswith("://", start - 3):
+        return False
+    c = text[start - 4]
+    if not (c.isalnum() or c in "+.-"):
+        return False
+    return last_end >= start + length
+
+
+def _url_like(value: str | bytes) -> bool:
+    text = value.decode("latin-1") if isinstance(value, bytes) else value
+    return "://" in text or text.lstrip().startswith("//") or "%3a%2f%2f" in text.lower()
+
+
+def _stored(target: ast.AST) -> set[str]:
+    """The names an assignment target changes: a name, or the name a subscript or attribute is taken from."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_stored(t) for t in target.elts)) if target.elts else set()
+    if isinstance(target, ast.Starred):
+        return _stored(target.value)
+    root = _root_name(target)
+    return {root} if root is not None else set()
+
+
+def _root_name(node: ast.AST) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _passed(call: ast.Call, func: ast.FunctionDef) -> list[tuple[str, ast.expr]]:
+    """(parameter, value) for what `call` passes `func`; every parameter for every value when the call
+    unpacks arguments."""
+    a = func.args
+    every = [p.arg for p in (*a.posonlyargs, *a.args, a.vararg, *a.kwonlyargs, a.kwarg) if p]
+    values = [*call.args, *(k.value for k in call.keywords)]
+    if any(isinstance(v, ast.Starred) for v in call.args) or any(
+        k.arg is None for k in call.keywords
+    ):
+        return [(p, v) for p in every for v in values]
+    out: list[tuple[str, ast.expr]] = []
+    params = [p for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    for p in params:
+        value = _argument(call, a, p)
+        if value is not None:
+            out.append((p.arg, value))
+    for i, v in enumerate(call.args):
+        if i >= len(a.posonlyargs) + len(a.args):
+            out.extend((p, v) for p in every)  # more than the named parameters take
+    named = {p.arg for p in params}
+    for k in call.keywords:
+        if k.arg not in named:
+            out.extend((p, k.value) for p in every)
+    return out
 
 
 # ------------------------------------------------------------------ what a program leaves in the interpreter

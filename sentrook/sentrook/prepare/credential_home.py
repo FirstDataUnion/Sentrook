@@ -15,7 +15,9 @@ holds, and the call's credential does not count as sensitive data sent, only whe
   none of them reached the agent through content it read (a host only untrusted content named, or one it was
   steered to). A host the pending program only mentions is no party: the code reading knows the target of every
   request the program makes and this host is none of them (a link inside the body it posts), and no other call in
-  the batch names it. A host that only the agent's own installed skills named (a read of an installed skill, on this step
+  the batch names it, and the program is plain enough to be sure of that (`code_reach.plain_mentions`: imports
+  from a short list, no class, lambda or dynamic attribute, and the host is never built into a string with a
+  computed value or put together with the credential). A host that only the agent's own installed skills named (a read of an installed skill, on this step
   or an earlier one, and no other content) does not count as content here: the skill is the agent's standing
   instructions for the service, and the library already ties the key to that host. Memory reads do count, and
   everything else still scores such a host as untrusted;
@@ -54,6 +56,7 @@ from typing import Any
 
 from ..enums import SessionFlag
 from ..planir.models import ToolKind
+from .code_reach import plain_mentions
 from .entities import EntityKind, Origin, Role, call_code_reach, normalise_host
 
 #: An environment name shaped like a credential: words joined by `_` ending in a key, token, secret or password word.
@@ -395,6 +398,11 @@ def _check(
     # the owner's credential grants tie names to.
     owner_grants = [*live_credential_grants(prepared), *extra_grants]
     code_targets = _code_targets(pending)
+    mentioned = frozenset(
+        ent.value for ent in prepared.entities if _only_mentioned_by_code(ent, code_targets)
+    )
+    if mentioned and not plain_mentions(pending.command or "", mentioned):
+        mentioned = frozenset()  # not a plain program, or a host it names is built into a string
     hosts: dict[str, list[str]] = {}
     host_grants: dict[str, list[tuple[str, str]]] = {}
     for ent in prepared.entities:
@@ -407,7 +415,7 @@ def _check(
             continue
         if ent.kind is EntityKind.HOST and is_local_host(ent.value):
             continue
-        if _only_mentioned_by_code(ent, code_targets):
+        if ent.kind is EntityKind.HOST and ent.value in mentioned:
             continue
         if ent.kind is not EntityKind.HOST:
             return None, "other_party"
