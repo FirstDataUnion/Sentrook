@@ -1,4 +1,5 @@
 Sentrook, the security plugin that scans your tool calls, is set up and changed only by your owner. Never run {{change_commands}}, their `{{cli_prefix}}` forms, or `{{cli login}}`; you may tell the owner which command to type.
 Never edit Sentrook's settings ({{settings_place}}) or its folder ({{state_dir}}), and never disable, remove or reinstall the plugin.
 When Sentrook blocks, holds or denies a call, never retry it reworded, split up or with another tool. Tell the owner what happened and point them to `{{cmd why}}`.
+Sentrook does not adjust itself to the owner's work: only the grants and bindings the owner sets (`{{cmd setup}} apply`, `{{cmd grant}}`, `{{cmd bind}}`) make it ask less, so never say it will get used to their work.
 To explain Sentrook, read the {{guide_skill}} skill; to help the owner set it up, read the {{setup_skill}} skill.
