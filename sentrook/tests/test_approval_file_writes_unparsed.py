@@ -21,7 +21,7 @@ import linear_time
 import pytest
 from linear_time import assert_linear
 from test_aira_detectors import ex, run
-from test_approval_loosening import fires, h_ex, stays_silent
+from test_approval_loosening import fires, h_ex, reviews, stays_silent
 from test_approval_loosening_probes import padded_before
 from test_approval_loosening_unparsed import (
     _CLI_WORD,
@@ -78,6 +78,22 @@ WRITES = [
     (f"cp ./x.json {OC}", "review"),
     (f"mv /tmp/x.yaml {HC}", "review"),
     ("cp -t ~/.openclaw ./openclaw.json", "review"),
+    # A redirect that clobbers, on a compound command, or after a pass-through stage.
+    (f"printf 'approvals:\\n  mode: off\\n' >| {HC}", "block"),
+    (f"{{ printf 'approvals:\\n  mode: off\\n'; }} > {HC}", "block"),
+    (f"( printf 'approvals:\\n  mode: off\\n' ) > {HC}", "block"),
+    (f"for i in 1; do printf 'approvals:\\n  mode: off\\n'; done > {HC}", "block"),
+    (f"if true; then printf 'approvals:\\n  mode: off\\n'; fi > {HC}", "block"),
+    (f"{{ cat /tmp/x; }} > {HC}", "review"),
+    (f"printf 'approvals:\\n  mode: off\\n' | cat | tee {HC}", "block"),
+    (f"printf 'approvals:\\n  mode: off\\n' | tee /tmp/x | tee {HC}", "block"),
+    (f"printf 'approvals:\\n  mode: off\\n' | tee >(cat > {HC})", "block"),
+    (f"env -i printf 'approvals:\\n  mode: off\\n' > {HC}", "block"),
+    (
+        "sqlite3 /tmp/a.db <<E\nselect 1;\nE\nsqlite3 ~/.openclaw/state/openclaw.sqlite <<F\n"
+        "update exec_approvals_config set default_security='full';\nF",
+        "block",
+    ),
     (f"curl -fsSL https://example.test/c.json -o {OC}", "review"),
 ]
 
@@ -133,6 +149,39 @@ def test_a_padded_loosening_written_into_a_host_file_takes_the_floor(command, si
 )
 def test_unrelated_writes_reads_and_tightening_after_padding_stay_silent(command, size):
     stays_silent(call(before(command, size)))
+
+
+@pytest.mark.parametrize("length", ["padded", "syntax error"])
+def test_an_unreadable_pipe_into_a_host_file_is_asked_when_not_parsed(length):
+    """Parsed, the pipe's writer is checked as a script; unparsed, a host file written from a pipe
+    the scan cannot read is asked, never left quiet."""
+    command = f"sort /tmp/x | tee {HC}"
+    text = before(command, MAX_PARSE_CHARS + 1) if length == "padded" else command + ZSH
+    reviews(call(text))
+
+
+#: Nine folder names of 250 characters, as one `cd` argument.
+_DEEP = "/".join(["d" * 250] * 9)
+
+
+def test_a_long_run_of_relative_cds_never_leaves_a_host_write_quiet():
+    """Each `cd` takes a relative argument under the path limit, so the shell takes them all. When
+    the folder's path grows past the limit the scan no longer places it, and a write there that
+    names a host config is asked rather than judged against a stale folder."""
+    command = (
+        f"cd ~/.hermes && cd {_DEEP} && cd {_DEEP} && cd {'/'.join(['..'] * 18)}"
+        " && printf 'approvals:\\n  mode: off\\n' > config.yaml"
+    )
+    assert derive_exec_shape(command).parse_ok
+    reviews(h_ex(command))
+    reviews(h_ex(before(command, MAX_PARSE_CHARS + 1)))
+
+
+def test_a_cd_argument_over_the_path_limit_does_not_move_the_folder():
+    command = (
+        f"cd ~/.hermes && cd {'d' * 5000} && printf 'approvals:\\n  mode: off\\n' > config.yaml"
+    )
+    fires(h_ex(command))
 
 
 def test_the_padded_command_is_not_parsed():
@@ -227,6 +276,15 @@ def test_the_unparsed_file_write_reading_grows_linearly(unit, monkeypatch):
 
     assert not derive_exec_shape(unit * (95_000 // len(unit) // 4)).parse_ok
     _floor_linear(build, unit, monkeypatch)
+
+
+@pytest.mark.parametrize("links", [0, 1], ids=["no link", "a link"])
+def test_a_long_path_word_reads_linearly(links, monkeypatch):
+    def build(d: int) -> dict:
+        word = "a/" * (45_000 // d)
+        return ex("ln -s ~/.hermes h; " * links + f"echo x > {word}")
+
+    _floor_linear(build, "a long path word", monkeypatch)
 
 
 def test_a_long_run_of_symlinks_reads_linearly(monkeypatch):

@@ -47,7 +47,7 @@ from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
-from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
+from .exec_shape import WRAPPER_VALUE_FLAGS, ExecSegment, ExecShape, derive_exec_shape
 from .linear_search import finditer as _finditer
 from .linear_search import found as _found
 from .linear_search import search as _search
@@ -2157,7 +2157,7 @@ def _cli_segments(a: CallAnalysis, lists: Lists) -> list[tuple[list[str], str]]:
 #: (`$(`), a control operator or backtick, a here-string or heredoc operator, a single-quoted or
 #: ANSI-C string (an unclosed one runs to the end), a double quote, an escape, or plain text.
 _SH_PIECE = re.compile(
-    r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<redir>[<>]&|&>>?)"
+    r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<redir>[<>]&|&>>?|>\|)"
     r"|(?P<arith>\$\(\(|\$\[)|(?P<param>\$\{)|(?P<sub>\$\()"
     r"|(?P<op>&&|\|\||[;&|()`])|(?P<hs><<<)|(?P<hd><<-?)"
     r"""|(?P<sq>'[^']*'?)|(?P<ansi>\$'[^'\\]*(?:\\.[^'\\]*)*'?)|(?P<dq>")"""
@@ -2188,7 +2188,17 @@ class _ShFrame:
     """One nesting level of `_shell_commands`: a command list (the top, a `$(…)` or a backtick
     substitution), a double-quoted string, or arithmetic or a parameter being skipped."""
 
-    __slots__ = ("close", "depth", "kind", "owner", "pipe", "started", "word", "words")
+    __slots__ = (
+        "close",
+        "depth",
+        "heredocs",
+        "kind",
+        "owner",
+        "pipe",
+        "started",
+        "word",
+        "words",
+    )
 
     def __init__(self, kind: str, close: str | None = None, owner: _ShFrame | None = None) -> None:
         self.kind = kind
@@ -2199,6 +2209,7 @@ class _ShFrame:
         self.word: list[str] = []
         self.started = False  # an empty quoted string is still a word
         self.pipe = False  # the next command of this list reads the last one's output
+        self.heredocs: list[list[int]] = []  # holders of the current command's position
 
     def end_word(self) -> None:
         if self.started:
@@ -2211,11 +2222,16 @@ class _ShFrame:
             if self.pipe and piped is not None:
                 piped.add(len(commands))
             self.pipe = False
+            for holder in self.heredocs:
+                holder.append(len(commands))
             commands.append(self.words)
+        self.heredocs = []
         self.words = []
 
 
-def _shell_commands(text: str, piped: set[int] | None = None) -> list[list[str]]:
+def _shell_commands(
+    text: str, piped: set[int] | None = None, bodies: dict[int, list[str]] | None = None
+) -> list[list[str]]:
     """The simple commands of shell text the parser did not take, as words after quote removal
     (a quoted string stays in its word): split at control operators and newlines, with the
     commands of `$(…)` and backtick substitutions (also inside double quotes) read as commands of
@@ -2227,10 +2243,11 @@ def _shell_commands(text: str, piped: set[int] | None = None) -> list[list[str]]
     findings. Unclosed quotes and substitutions run to the end.
 
     `piped`, when given, collects the positions of the commands that read the output of the one
-    before them in their list (after a `|`)."""
+    before them in their list (after a `|`); `bodies`, the heredoc bodies fed to each command."""
     commands: list[list[str]] = []
     stack = [_ShFrame("cmd")]
-    pending: list[str] = []  # heredoc tags whose bodies start at the next newline
+    # Heredoc tags whose bodies start at the next newline, each with its command's position.
+    pending: list[tuple[str, list[int]]] = []
     heredocs = True
     pos, n = 0, len(text)
 
@@ -2292,14 +2309,18 @@ def _shell_commands(text: str, piped: set[int] | None = None) -> list[list[str]]
             f.end_command(commands, piped)
             if pending:
                 tags, pending = pending, []
-                for tag in tags:
+                for tag, holder in tags:
                     # The body: the lines up to one holding only the tag.
-                    line_at = pos
+                    line_at = start = pos
                     while line_at < n:
                         nl = text.find("\n", line_at)
                         line_end = n if nl < 0 else nl
                         if text[line_at:line_end].strip() == tag:
                             pos = min(n, line_end + 1)
+                            if bodies is not None and holder:
+                                bodies.setdefault(holder[0], []).append(
+                                    text[start : max(start, line_at - 1)]
+                                )
                             break
                         line_at = line_end + 1
                     else:
@@ -2330,7 +2351,9 @@ def _shell_commands(text: str, piped: set[int] | None = None) -> list[list[str]]
             f.end_word()
             t = _SH_HEREDOC_TAG.match(text, pos)
             if t is not None and heredocs:
-                pending.append(t.group("tag"))
+                holder: list[int] = []
+                f.heredocs.append(holder)
+                pending.append((t.group("tag"), holder))
                 pos = t.end()
         elif kind == "hs":
             f.end_word()
@@ -2364,20 +2387,30 @@ _COMMAND_PREFIXES = frozenset(
     }
 )
 _ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+#: The options that take a value, per wrapper whose options are known.
+_PREFIX_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    **WRAPPER_VALUE_FLAGS,
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+}
 
 
 def _program_at(words: list[str], heads: set[str]) -> int:
     """The position of a command's program after its prefixes (`nice`, `time -p`, `timeout 5`,
     `sudo -u me`, `env X=1`, `{`, `!`, `then`); a host CLI word ends the prefixes."""
     after_option = False
+    valued: frozenset[str] | None = None  # the options of the last prefix that take a value
     for i, w in enumerate(words):
         low = w.lower()
         if _program_name(w) in heads:
             return i
         if low in _COMMAND_PREFIXES or _ASSIGNMENT_WORD.match(w):
             after_option = low in ("timeout", "function")  # `timeout 5`, `function f {`
+            valued = _PREFIX_VALUE_FLAGS.get(low)
         elif w.startswith("-") and len(w) > 1:
-            after_option = "=" not in w
+            # A known wrapper's option takes a value only when it is one that does (`env -i`,
+            # `sudo -E` do not); another's might.
+            after_option = "=" not in w and (valued is None or w in valued)
         elif after_option:
             after_option = False
         else:
@@ -2408,18 +2441,33 @@ def _unparsed_cli_readings(
 
 
 #: A redirection among the words of `_shell_commands`: an optional descriptor (`2`, `&`), then `>`,
-#: `>>` (a write) or `<` (a read), with its target in the same word or the next one.
-_REDIRECT_WORD = re.compile(r"(?:\d+|&)?(?P<op>>>?|<)(?P<target>.*)", re.S)
+#: `>>`, `>|` (a write) or `<` (a read), with its target in the same word or the next one.
+_REDIRECT_WORD = re.compile(r"(?:\d+|&)?(?P<op>>\||>>?|<)(?P<target>.*)", re.S)
 #: Words that end a compound command, read past to the command after them.
 _CLOSERS = frozenset({"}", "fi", "done", "esac"})
-#: The longest path a `cd` can move to (Linux `PATH_MAX`).
+#: The longest path a `cd` takes (Linux `PATH_MAX`). A working folder whose path grows past it
+#: is not placed (`_UNPLACED`): the files written relative to it that name a host config are
+#: asked.
 _PATH_MAX = 4096
+_UNPLACED = "<unplaced folder>"
 
 
 class _UnparsedSegment(NamedTuple):
     seg: ExecSegment
     stdin: str | None  # the file a `<` feeds it
     piped: bool  # it reads the output of the command before it
+    heredoc: str  # the bodies of the heredocs fed to it
+
+
+#: The head of an unparsed segment that is only a redirection after a compound command
+#: (`{ …; } > f`, `( … ) > f`, `done > f`, `fi > f`): it writes what the compound's last command
+#: printed.
+_COMPOUND = "{…}"
+#: Commands that print text the scan does not read and carry no script of their own: a host file
+#: written from what they print is asked (besides `blind_output_heads`).
+_DATA_FILTERS = frozenset(
+    {"sort", "uniq", "grep", "egrep", "fgrep", "rg", "cut", "tr", "paste", "join", "rev", "fold"}
+)
 
 
 def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
@@ -2431,7 +2479,8 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
     `/dev/null` names no file, as in the parse. Linear in the text."""
     out: list[_UnparsedSegment] = []
     piped: set[int] = set()
-    for index, words in enumerate(_shell_commands(text, piped)):
+    bodies: dict[int, list[str]] = {}
+    for index, words in enumerate(_shell_commands(text, piped, bodies)):
         kept: list[str] = []
         redirects: list[str] = []
         stdin = None
@@ -2454,7 +2503,12 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
         at = _program_at(kept, set())
         while at < len(kept) and kept[at] in _CLOSERS:
             at += 1
+        heredoc = "\n".join(bodies.get(index, ()))
         if at >= len(kept):
+            if redirects:
+                # A redirection of a compound command (`{ …; } > f`, `( … ) > f`, `done > f`).
+                seg = ExecSegment(head=_COMPOUND, redirects=redirects)
+                out.append(_UnparsedSegment(seg, stdin, index in piped, heredoc))
             continue
         argv = kept[at + 1 :]
         seg = ExecSegment(
@@ -2465,7 +2519,7 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
             redirects=redirects,
             env_assignments=[w for w in kept[:at] if _ASSIGNMENT_WORD.match(w)],
         )
-        out.append(_UnparsedSegment(seg, stdin, index in piped))
+        out.append(_UnparsedSegment(seg, stdin, index in piped, heredoc))
     return out
 
 
@@ -3795,6 +3849,9 @@ def _approval_loosening(
             user = m.group(1)
             base = home if os.path.basename(home) == user else os.path.dirname(home) + "/" + user
             path = base + path[m.end() :]
+        if cwd == _UNPLACED and path and not path.startswith(("/", "~", "$")):
+            # Relative to a folder the scan cannot place (see `_PATH_MAX`).
+            return _UNPLACED + "/" + os.path.normpath(path)
         base = cwd or a.cwd or ws
         if path and not path.startswith(("/", "~", "$")):
             # `normalise_path` keeps a bare or `../` relative path as it is; this floor anchors on
@@ -3805,7 +3862,17 @@ def _approval_loosening(
         return os.path.normpath(value) if value.startswith("/") else value
 
     def display(value: str) -> str:
-        return display_path(value, home)
+        return value if value.startswith(_UNPLACED) else display_path(value, home)
+
+    def unplaced(value: str) -> bool:
+        """A path in a folder the scan cannot place that names a host approvals or main config
+        file: what is written there is asked."""
+        if not value.startswith(_UNPLACED + "/"):
+            return False
+        rel = value[len(_UNPLACED) + 1 :]
+        names = {rel, os.path.basename(rel)}
+        patterns = [*rules.approvals_files, *rules.main_config_files.values()]
+        return any(p.fullmatch(n) for p in patterns for n in names)
 
     # 1. File tools: write, edit, patch (also MCP and other tools that name the path).
     if a.kind in _WRITE_KINDS | {ToolKind.MCP, ToolKind.OTHER}:
@@ -3875,6 +3942,13 @@ def _approval_loosening(
         """One file a command writes. `content` is what it writes when the scan can read it
         (an `echo`, `printf` or heredoc, a substitution's replacement); `script` is the text of
         a writer whose output the scan cannot read (`jq`, inline code), for the script checks."""
+        if unplaced(value):
+            report(
+                {("written in", "a folder the scan cannot place", REVIEW)},
+                None,
+                {"path": display(value), "mechanism": mechanism},
+            )
+            return
         where = _host_where(value, rules, ctx)
         if not where:
             return
@@ -4232,6 +4306,7 @@ def _approval_loosening(
         parsed = shape.parse_ok
         variables = {m.group(1): m.group(3) for m in _ASSIGNMENT.finditer(command)}
         links: dict[str, str] = {}
+        link_len = [0]  # the longest link's name
 
         def expand(token: str) -> str:
             def var(m: re.Match[str]) -> str:
@@ -4240,14 +4315,21 @@ def _approval_loosening(
 
             token = _VAR_REF.sub(var, token)
             if not parsed:
-                # Only the links that name a leading part of the word are looked up, so a long
-                # run of `ln -s` stays linear; a link to a link is followed a few steps.
+                # Only the links that name a leading part of the word, up to the longest link, are
+                # looked up, so a long run of `ln -s` or a long word stays linear; a link to a link
+                # is followed a few steps.
                 for _ in range(4):
+                    if not links:
+                        break
+                    head_part = token[: link_len[0] + 1]
                     cut = next(
                         (
                             k
-                            for k in (len(token), *(m.start() for m in re.finditer("/", token)))
-                            if token[:k] in links
+                            for k in (
+                                len(token),
+                                *(m.start() for m in re.finditer("/", head_part)),
+                            )
+                            if k <= link_len[0] and token[:k] in links
                         ),
                         None,
                     )
@@ -4275,8 +4357,8 @@ def _approval_loosening(
             st: p[k - 1] for p in (shape.pipelines if parsed else []) for k, st in enumerate(p) if k
         }
         pipe_source.update((i, i - 1) for i, u in enumerate(unparsed) if u.piped and i)
-        sqlite_dbs: list[tuple[str, str]] = []  # unparsed: each database and its cwd
         printed: dict[int, str | None] = {}
+        prev_head = ""  # the head of the segment before (unparsed: a pipe's writer)
         for index, seg in enumerate(segments):
             head = seg.head
             words = [head, *[expand(w) for w in seg.argv]]
@@ -4284,27 +4366,34 @@ def _approval_loosening(
             args = [expand(t) for t in seg.positional]
             if head in rules.cd_heads:
                 if args:
-                    moved = resolve(args[0], cwd)
-                    # A folder path longer than the system allows is a `cd` that fails (and a long
-                    # run of `cd a` would make each later path longer to read).
-                    cwd = moved if len(moved) <= _PATH_MAX else cwd
+                    if len(args[0]) <= _PATH_MAX:  # a longer argument is a `cd` that fails
+                        moved = resolve(args[0], cwd)
+                        # A folder too long to name is one the scan does not place: a long run
+                        # of `cd a` would make each later path longer to read.
+                        cwd = _UNPLACED if len(moved) > _PATH_MAX else moved
                 continue
             script = _shell_script([_shell_word(w) for w in words], shells)
             if script is not None and depth < 3:
                 shell(script, cwd, depth + 1)
-            rendered = _render(head, seg, heredocs)
+            # Unparsed, each command reads only the heredocs fed to it.
+            fed = heredocs if parsed else unparsed[index].heredoc
+            # Unparsed, what a pipe feeds this command when the scan cannot read it.
+            unread_pipe = (
+                not parsed
+                and unparsed[index].piped
+                and not produced
+                and (prev_head in rules.blind_heads or prev_head in _DATA_FILTERS)
+            )
+            rendered = _render(head, seg, fed)
             if head == "ln" and args and len(args) >= 2 and (seg.has_flag_letter("s")):
                 links[args[-1].rstrip("/")] = args[-2].rstrip("/")
+                link_len[0] = max(link_len[0], len(args[-1].rstrip("/")))
             if head == "sqlite3":
                 db_arg, sql, init = _sqlite_cli(words[1:])
-                # Unparsed, the heredocs fed to `sqlite3` are read once, after the last segment:
-                # reading the whole command again for each one is quadratic in a long chain.
-                fed = _heredocs_after(command, "sqlite3") if parsed else ""
-                sql_text = ";\n".join([*sql, fed, *produced])
+                sql_fed = _heredocs_after(command, "sqlite3") if parsed else fed
+                sql_text = ";\n".join([*sql, sql_fed, *produced])
                 opened = [m.group("o") or m.group("a") for m in _SQL_OPEN.finditer(sql_text)]
                 dbs = [d for d in (db_arg, *opened) if d]
-                if not parsed:
-                    sqlite_dbs.extend((d, cwd) for d in dbs)
                 if dbs:
                     sqlite_write(sql_text, list(dbs), cwd, "sqlite3")
                 if db_arg and "$" not in db_arg and state_db(resolve(db_arg, cwd)):
@@ -4361,8 +4450,18 @@ def _approval_loosening(
                         shell(source + " | " + inner.group(1), cwd, depth + 1)
                     continue
                 value = resolve(expand(target), cwd)
-                if head == "cat" and not sources and rendered is None:
+                if head == _COMPOUND or (head == "cat" and not sources and rendered is None):
+                    # What the compound's last command, or the pipe into `cat`, printed; when
+                    # the scan cannot read it and the writer's script shows nothing, it is asked.
+                    found = len(out)
                     judge(value, "redirect", content=piped_in, script=previous or None)
+                    unread = unread_pipe or (
+                        head == _COMPOUND
+                        and (prev_head in rules.blind_heads or prev_head in _DATA_FILTERS)
+                    )
+                    if piped_in is None and unread and len(out) == found:
+                        blind(value, "unreadable input")
+                        written_blind.add(value)
                     written_content[value] = piped_in
                 elif head in rules.blind_heads and rendered is None:
                     # A file, a download or decoded input the scan cannot read.
@@ -4394,7 +4493,12 @@ def _approval_loosening(
             if head in ("tee", "sponge"):
                 for tok in args:
                     value = resolve(tok, cwd)
+                    found = len(out)
                     judge(value, f"head:{head}", content=rendered or piped, script=previous or None)
+                    if rendered is None and piped is None and unread_pipe and len(out) == found:
+                        # A pipe the scan cannot read, whose writer's script shows nothing.
+                        blind(value, "unreadable input")
+                        written_blind.add(value)
                     written_content[value] = rendered or piped
             elif head == "dd":
                 for tok in args:
@@ -4435,33 +4539,19 @@ def _approval_loosening(
                     cli(tokens, line, command)
                 if rendered is not None:
                     produced.append(rendered)
-            else:
+            elif rendered is not None:
                 # Unparsed, a pipe's source is the command just before, not all earlier output:
                 # reading all of it again at each writer is quadratic in a long chain.
-                produced[:] = [rendered] if rendered is not None else []
+                produced[:] = [rendered]
+            elif not (
+                unparsed[index].piped
+                and (head == "tee" or (head == "cat" and not [t for t in sources if t != "-"]))
+            ):
+                # `cat` and `tee` in a pipe pass what they read on.
+                produced.clear()
             printed[index] = rendered
             previous = line
-        if sqlite_dbs:
-            # The heredocs fed to `sqlite3` in a command the scan does not parse, read once against
-            # every database the command opens with it.
-            fed = _heredocs_after(command, "sqlite3")
-            if fed:
-                places = [
-                    resolve(d, c) if "$" not in d and d != ":memory:" else d for d, c in sqlite_dbs
-                ]
-                opened = [m.group("o") or m.group("a") for m in _SQL_OPEN.finditer(fed)]
-                sqlite_write(fed, [*places, *opened], cwd, "sqlite3")
-                read = next(
-                    (m.group("f") for m in _SQL_READ.finditer(fed) if m.group("f") not in _NO_SQL),
-                    None,
-                )
-                db = next((p for p in places if "$" not in p and state_db(p)), None)
-                if read and db is not None:
-                    report(
-                        {("sql from", read, REVIEW)},
-                        None,
-                        {"path": display(db), "mechanism": "sqlite3"},
-                    )
+            prev_head = head
         if not shape.parse_ok:
             # A command the scan does not parse (one over the parse limit, padded with options to
             # get there, or one whose parse it does not trust): the host CLIs it runs are read
@@ -4483,7 +4573,11 @@ def _approval_loosening(
             )
 
     def blind(value: str, source: str) -> None:
-        if _host_where(value, rules, ctx).classes & {"approvals", "main"} or state_db(value):
+        if (
+            unplaced(value)
+            or _host_where(value, rules, ctx).classes & {"approvals", "main"}
+            or state_db(value)
+        ):
             shown = (
                 source if source in ("a download", "unreadable input") else display(resolve(source))
             )
