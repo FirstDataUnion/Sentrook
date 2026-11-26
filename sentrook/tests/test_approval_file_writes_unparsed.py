@@ -184,6 +184,15 @@ def test_a_cd_argument_over_the_path_limit_does_not_move_the_folder():
     fires(h_ex(command))
 
 
+@pytest.mark.parametrize("length", ["padded", "syntax error"])
+def test_a_write_in_a_heredoc_with_no_closing_line_is_asked_not_blocked(length):
+    """The shell runs nothing of such a body: what it would write is only asked about."""
+    command = f"cat > docs/guide.md <<'EOF'\n# Guide\nprintf 'approvals:\\n  mode: off\\n' > {HC}\n"
+    text = before(command, MAX_PARSE_CHARS + 1) if length == "padded" else command + ZSH
+    assert not derive_exec_shape(text).parse_ok
+    reviews(call(text))
+
+
 def test_the_padded_command_is_not_parsed():
     text = before(f"printf 'approvals:\\n  mode: off\\n' > {HC}", MAX_PARSE_CHARS + 1)
     assert not derive_exec_shape(text).parse_ok

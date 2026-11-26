@@ -2474,6 +2474,7 @@ class _UnparsedSegment(NamedTuple):
     stdin: str | None  # the file a `<` feeds it
     piped: bool  # it reads the output of the command before it
     heredoc: str  # the bodies of the heredocs fed to it
+    unsure: bool  # read from a heredoc body with no closing line, which the shell never runs
 
 
 #: The head of an unparsed segment that is only a redirection after a compound command
@@ -2497,7 +2498,10 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
     out: list[_UnparsedSegment] = []
     piped: set[int] = set()
     bodies: dict[int, list[str]] = {}
-    for index, words in enumerate(_shell_commands(text, piped, bodies)):
+    unclosed: list[int] = []
+    commands = _shell_commands(text, piped, bodies, unclosed)
+    for index, words in enumerate(commands):
+        unsure = bool(unclosed) and index >= unclosed[0]
         kept: list[str] = []
         redirects: list[str] = []
         stdin = None
@@ -2525,7 +2529,7 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
             if redirects:
                 # A redirection of a compound command (`{ …; } > f`, `( … ) > f`, `done > f`).
                 seg = ExecSegment(head=_COMPOUND, redirects=redirects)
-                out.append(_UnparsedSegment(seg, stdin, index in piped, heredoc))
+                out.append(_UnparsedSegment(seg, stdin, index in piped, heredoc, unsure))
             continue
         argv = kept[at + 1 :]
         seg = ExecSegment(
@@ -2536,7 +2540,7 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
             redirects=redirects,
             env_assignments=[w for w in kept[:at] if _ASSIGNMENT_WORD.match(w)],
         )
-        out.append(_UnparsedSegment(seg, stdin, index in piped, heredoc))
+        out.append(_UnparsedSegment(seg, stdin, index in piped, heredoc, unsure))
     return out
 
 
@@ -3877,9 +3881,14 @@ def _approval_loosening(
     home = ctx.prepared.home.rstrip("/")
     ws = ctx.prepared.workspace_root
 
+    # Set while reading what a command may do but cannot be sure it runs: it is asked.
+    review_only = [False]
+
     def report(hits: set[Hit], subject: str | None, detail: dict[str, Any]) -> None:
         if not hits:
             return
+        if review_only[0]:
+            hits = {(k, v, REVIEW) for k, v, _ in hits}
         tier = BLOCK if any(t == BLOCK for _, _, t in hits) else REVIEW
         settings = sorted(f"{k}={v}" for k, v, t in hits if t == tier)
         out.append((tier, subject, {**detail, "settings": settings[:4]}))
@@ -4402,7 +4411,10 @@ def _approval_loosening(
         pipe_source.update((i, i - 1) for i, u in enumerate(unparsed) if u.piped and i)
         printed: dict[int, str | None] = {}
         prev_head = ""  # the head of the segment before (unparsed: a pipe's writer)
+        outer_review = review_only[0]
         for index, seg in enumerate(segments):
+            # A command read from a heredoc body with no closing line never runs: asked only.
+            review_only[0] = outer_review or (not parsed and unparsed[index].unsure)
             head = seg.head
             words = [head, *[expand(w) for w in seg.argv]]
             line = " ".join(words)
@@ -4595,6 +4607,7 @@ def _approval_loosening(
             printed[index] = rendered
             previous = line
             prev_head = head
+        review_only[0] = outer_review
         if not shape.parse_ok:
             # A command the scan does not parse (one over the parse limit, padded with options to
             # get there, or one whose parse it does not trust): the host CLIs it runs are read
