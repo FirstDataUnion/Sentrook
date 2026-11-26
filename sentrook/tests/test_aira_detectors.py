@@ -739,6 +739,83 @@ def test_c4_mechanisms(raw, reason, value):
     assert of(env, SELF, reason)[0].value == value
 
 
+def _code(code: str) -> dict:
+    return planir("execute_code", "exec", {"code": code}, platform="hermes")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ex("at now + 1 minute -f job.sh"),
+        ex("at 09:00 -f job.sh"),
+        ex("sudo at now -f job.sh"),
+        ex("nohup at now -f job.sh"),
+        ex("env A=1 at now -f job.sh"),
+        ex("time batch -f job.sh"),
+        ex("echo 'rm x' | at now"),
+        ex("cd /tmp && at now -f job.sh"),
+        ex("bash -c 'at now -f job.sh'"),
+        ex("x=$(at now -f job.sh)"),
+        _code("import os\nos.system('at now -f job.sh')"),
+        _code('import subprocess\nsubprocess.run("echo hi | at now", shell=True)'),
+        _code("import os\nos.system('at 09:00 -f job.sh')"),
+        ex("bash -lc 'at now -f job.sh'"),
+        ex("sh -ec 'at now -f job.sh'"),
+        ex("exec at now -f job.sh"),
+        ex("eval 'at now -f job.sh'"),
+        ex("ionice -c3 at now -f job.sh"),
+        ex("setsid at now -f job.sh"),
+        ex("find . -name '*.sh' -exec at now -f {} \\;"),
+        ex("ssh host 'at now -f job.sh'"),
+        ex("bash -lc 'at 9pm tomorrow -f job.sh'"),
+        ex("bash -lc 'at 10:30 tomorrow < job.sh'"),
+        ex("ionice -c3 at 10:30 < job.sh"),
+        ex("ssh host 'at 10:30 tomorrow -f job.sh'"),
+        ex("eval 'at 10:30 tomorrow -f job.sh'"),
+        ex("flock /tmp/l at 10:30 < job.sh"),
+        ex("echo 'sh job.sh' | sudo -u bob at 10:30 tomorrow"),
+    ],
+)
+def test_c4_at_and_batch_schedule_a_job(raw):
+    _, env = run(raw)
+    assert of(env, SELF, "selfmod.scheduler")[0].value == 0.6
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ex("echo meet at 5"),
+        ex("git commit -m 'Cap the log at 50 MB'"),
+        _code(
+            "T='The log has no age limit, only rotation at 50 MB to one file.'\n"
+            "open('/tmp/drafts.md','w').write(T)"
+        ),
+        _code("print('Back at 9, then a batch 2 run')"),
+        _code("print('batch 2 of 3')"),
+        _code("msg = 'at 5pm the job runs'\nprint(msg)"),
+        ex("echo 'lunch at noon'"),
+        ex("git commit -m 'Rotate logs at midnight'"),
+        _code("post('Backups run at midnight UTC, see you at teatime')"),
+        _code("print('Look at -t to set a time; use batch -m for mail')"),
+    ],
+    ids=[
+        "echo",
+        "commit-message",
+        "code-string",
+        "code-print",
+        "code-batch",
+        "code-at-start",
+        "echo-noon",
+        "commit-midnight",
+        "code-midnight",
+        "code-options",
+    ],
+)
+def test_c4_at_or_batch_in_prose_schedules_nothing(raw):
+    _, env = run(raw)
+    assert "selfmod.scheduler" not in reasons(env)
+
+
 def test_c4_workspace_skill_scripts_score_lower_than_the_plugin_tree():
     """A skill script inside the workspace is the owner's project file."""
     p, env = run(

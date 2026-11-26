@@ -7,7 +7,7 @@
 # schedulers score at `host_scheduler`, 0.6, because a crontab entry is host persistence rather than
 # the agent's own scheduler).
 
-version: 4
+version: 5
 
 # Regex over one shell segment of the exec text.
 cli:
@@ -33,7 +33,17 @@ cli:
   - pattern: '\blaunchctl\s+(?:load|bootstrap|enable|submit|setenv)\b'
     reason: selfmod.scheduler
     weight: host_scheduler
-  - pattern: '(?:\A|[\s;&|(])(?:at|batch)\s+(?:now|\d|-f)'
+  # `at` and `batch`. A plain time ("at 5", "batch 2") is English as often as a command, so it counts only
+  # where a command starts: the start of a segment (the parse peels `sudo`, `nohup`, `env`, `$(…)`), a
+  # shell separator, or a common launcher (with its options, or the one argument `flock`, `chroot`, `ssh`,
+  # `timeout` and `watch` take) in text the parse did not split. A form only
+  # the command takes counts anywhere: `now`, `-f`, `-q`, or a time (and `today`/`tomorrow`) followed by
+  # `-f` or an input redirect. So `bash -lc 'at now …'`, `ssh host 'at 9 -f job'`, `ionice -c3 at …` and
+  # `os.system('at 9:00 -f job')` stay covered; "at midnight", "at noon" and "at -t" in prose do not.
+  - pattern: '(?:\A|[;&|\n`]|\$\()\s*(?:(?:sudo|doas|nohup|exec|eval|setsid|time|nice|ionice|stdbuf|env)(?:\s+(?:-[^\s;&|]+(?:\s+(?!(?:at|batch)\b)\w+)?|\w+=[^\s;&|]*))*\s+|(?:flock|chroot|ssh|timeout|watch)(?:\s+-[^\s;&|]+)*\s+[^\s;&|]+\s+)*["'']?(?:at|batch)\s+(?:now|\d|-f)'
+    reason: selfmod.scheduler
+    weight: host_scheduler
+  - pattern: '(?<![\w.-])(?:at|batch)\s+(?:now\b|-[fq]\b|\d{1,4}(?::\d{2})?(?:\s*[aApP][mM])?(?:\s+(?:today|tomorrow))?\s*(?:<|-f\b))'
     reason: selfmod.scheduler
     weight: host_scheduler
   - pattern: '\bgit\s+config\s+(?:--global\s+|--system\s+)?core\.hooksPath\b'
