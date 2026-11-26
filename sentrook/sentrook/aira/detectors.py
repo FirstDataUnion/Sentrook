@@ -3085,26 +3085,42 @@ class _Where:
         return bool(self.classes)
 
 
+def _path_flags(ctx: Context) -> int:
+    """A case-insensitive file system names one file however the case is written."""
+    return re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
+
+
+@functools.lru_cache(maxsize=64)
+def _tree_roots(
+    trees: tuple[_Tree, ...], home: str, ws: str, flags: int
+) -> tuple[tuple[_Tree, re.Pattern[str], bool], ...]:
+    """Each host tree with its root compiled once rather than for every path a call names: the tree,
+    a pattern for a file under it (its path below the root in `rel`), and whether the workspace `ws`
+    sits strictly inside it."""
+    home = re.escape(home.rstrip("/"))
+    out = []
+    for tree in trees:
+        root = tree.root.replace("{home}", home)
+        under = re.compile(r"(?:" + root + r")/(?P<rel>.+)\Z", flags)
+        out.append((tree, under, bool(ws) and under.match(ws) is not None))
+    return tuple(out)
+
+
 def _host_where(value: str, rules: _LooseningRules, ctx: Context) -> _Where:
     """`tree` (a host tree), `approvals`, `main` and `include` (host files at a tree root), and
     `env` (a file that sets the environment a host starts with, or a host tree). Documentation is
     none of them."""
     if _match_any(rules.doc_files, value):
         return _Where(frozenset())
-    home = re.escape(ctx.prepared.home.rstrip("/"))
     ws = ctx.prepared.workspace_root.rstrip("/")
-    # A case-insensitive file system names one file however the case is written.
-    flags = re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
     classes: set[str] = set()
     host: str | None = None
     excluded = False
-    for tree in rules.trees:
-        root = tree.root.replace("{home}", home)
-        m = re.match(r"(?:" + root + r")/(?P<rel>.+)\Z", value, flags)
+    for tree, under, ws_in in _tree_roots(rules.trees, ctx.prepared.home, ws, _path_flags(ctx)):
+        m = under.match(value)
         if m is None:
             continue
         # The workspace excludes its files only when it sits strictly inside this tree.
-        ws_in = re.match(r"(?:" + root + r")/.+\Z", ws, flags) if ws else None
         if ws_in and (value == ws or value.startswith(ws + "/")):
             continue
         rel = m.group("rel")
@@ -3131,12 +3147,11 @@ def _tree_file(
     value: str, host: str, rel: re.Pattern[str], rules: _LooseningRules, ctx: Context
 ) -> bool:
     """Whether `value` is the file `rel` (relative to a tree root) in one of `host`'s trees."""
-    home = re.escape(ctx.prepared.home.rstrip("/"))
-    flags = re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
-    for tree in rules.trees:
+    ws = ctx.prepared.workspace_root.rstrip("/")
+    for tree, under, _ in _tree_roots(rules.trees, ctx.prepared.home, ws, _path_flags(ctx)):
         if tree.host != host:
             continue
-        m = re.match(r"(?:" + tree.root.replace("{home}", home) + r")/(?P<rel>.+)\Z", value, flags)
+        m = under.match(value)
         if m is not None and rel.fullmatch(m.group("rel")):
             return True
     return False
@@ -4002,7 +4017,25 @@ def _approval_loosening(
         settings = sorted(f"{k}={v}" for k, v, t in hits if t == tier)
         out.append((tier, subject, {**detail, "settings": settings[:4]}))
 
+    # A call can name the same path, or many paths in one folder, thousands of times (`sed -i` with
+    # many expressions): each path is resolved and placed once, each folder normalised once.
+    base_abs_of: dict[str, str] = {}
+    resolved: dict[tuple[str, str | None], str] = {}
+    placed: dict[str, _Where] = {}
+
     def resolve(path: str, cwd: str | None = None) -> str:
+        value = resolved.get((path, cwd))
+        if value is None:
+            value = resolved[(path, cwd)] = _resolve(path, cwd)
+        return value
+
+    def where_of(value: str) -> _Where:
+        where = placed.get(value)
+        if where is None:
+            where = placed[value] = _host_where(value, rules, ctx)
+        return where
+
+    def _resolve(path: str, cwd: str | None) -> str:
         path = path.strip().strip("'\"")
         path = path.replace("${HOME}", "~").replace("$HOME", "~")
         m = _TILDE_USER.match(path)
@@ -4017,7 +4050,10 @@ def _approval_loosening(
         if path and not path.startswith(("/", "~", "$")):
             # `normalise_path` keeps a bare or `../` relative path as it is; this floor anchors on
             # the host trees, so it resolves one against the cwd (or the workspace) first.
-            base_abs = normalise_path(base, home=home, workspace_root=ws, cwd=None)
+            base_abs = base_abs_of.get(base)
+            if base_abs is None:
+                base_abs = normalise_path(base, home=home, workspace_root=ws, cwd=None)
+                base_abs_of[base] = base_abs
             path = os.path.join(base_abs, path)
         value = normalise_path(path, home=home, workspace_root=ws, cwd=base)
         return os.path.normpath(value) if value.startswith("/") else value
@@ -4050,7 +4086,7 @@ def _approval_loosening(
             for path, old, new in _patch_sections(patch):
                 value = resolve(path)
                 p = a.path(value)
-                where = _host_where(value, rules, ctx)
+                where = where_of(value)
                 report(
                     _loosened([(old, new)], rules, where, fragment=True),
                     p.entity_id if p else None,
@@ -4072,7 +4108,7 @@ def _approval_loosening(
             value = resolve(raw_path)
             targets.setdefault(value, (None, display(value), a.kind.value))
         for value, (subject, shown, mechanism) in targets.items():
-            where = _host_where(value, rules, ctx)
+            where = where_of(value)
             report(
                 _loosened(pairs, rules, where, fragment=bool(edits)),
                 subject,
@@ -4110,7 +4146,7 @@ def _approval_loosening(
                 {"path": display(value), "mechanism": mechanism},
             )
             return
-        where = _host_where(value, rules, ctx)
+        where = where_of(value)
         if not where:
             return
         # The same write judged again (a heredoc read by many `cat`s) finds nothing new.
@@ -4409,7 +4445,7 @@ def _approval_loosening(
                     continue
                 val = val if eq else (tokens[j + 1] if j + 1 < n else "")
                 src = resolve(val)
-                if val and not _host_where(src, rules, ctx).classes & {"approvals"}:
+                if val and not where_of(src).classes & {"approvals"}:
                     cli_hit(line, mech, {("read from", display(src), REVIEW)})
         add = entry.get("allowlist_add")
         if add and v + 1 < n and tokens[v + 1].lower() == str(add):
@@ -4739,11 +4775,7 @@ def _approval_loosening(
             )
 
     def blind(value: str, source: str) -> None:
-        if (
-            unplaced(value)
-            or _host_where(value, rules, ctx).classes & {"approvals", "main"}
-            or state_db(value)
-        ):
+        if unplaced(value) or where_of(value).classes & {"approvals", "main"} or state_db(value):
             shown = (
                 source if source in ("a download", "unreadable input") else display(resolve(source))
             )
@@ -4806,7 +4838,7 @@ def _approval_loosening(
                     script=written_script.get(src_value) if content is None else None,
                 )
                 continue
-            if _host_where(src_value, rules, ctx).classes & {"approvals", "main", "include"}:
+            if where_of(src_value).classes & {"approvals", "main", "include"}:
                 continue  # another host config or approvals file
             blind(dest_value, src)
 
@@ -5028,32 +5060,121 @@ def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
     return found
 
 
-_SENTROOK_PATH = re.compile(r"[\w~$./-]*(?:/|\A)sentrook(?:/[\w./-]*)?")
+_SENTROOK_WORD = re.compile("sentrook", re.IGNORECASE)
 _PATH_CHAR = re.compile(r"[\w~$./-]")
+_PATH_RUN = re.compile(r"[\w~$./-]*")
+#: How many path components, up to and including a `sentrook` one, a location pattern is read over.
+_LOCATION_COMPONENTS = 6
 
 
-def _sentrook_paths(text: str) -> Iterator[re.Match[str]]:
-    """`_SENTROOK_PATH.finditer(text)` in linear time. The regex, tried from every start, reads each
-    run of path characters to its end again (quadratic in a long `a/a/…`); a match from a position
-    exists exactly when the run from there holds `/sentrook` (or the text starts with `sentrook`),
-    so the leftmost one starts where the run holding the first such word begins, and the regex
-    matches from there."""
+def _sentrook_runs(text: str) -> Iterator[tuple[int, int]]:
+    """The spans of the runs of path characters in `text` that hold `sentrook` in any case, in
+    linear time: each run is found from the word and read once, and the next search starts after it."""
     pos = 0
-    while pos <= len(text):
-        if pos == 0 and text.startswith("sentrook"):
-            start = 0
-        else:
-            o = text.find("/sentrook", pos)
-            if o < 0:
-                return
-            start = o
-            while start > pos and _PATH_CHAR.match(text, start - 1):
-                start -= 1
-        m = _SENTROOK_PATH.match(text, start)
+    while True:
+        m = _SENTROOK_WORD.search(text, pos)
         if m is None:
             return
-        yield m
-        pos = m.end() if m.end() > m.start() else m.end() + 1
+        start = m.start()
+        while start > pos and _PATH_CHAR.match(text, start - 1):
+            start -= 1
+        end = _PATH_RUN.match(text, m.end()).end()  # type: ignore[union-attr]
+        yield start, end
+        pos = end
+
+
+_TO_BACKTICK = re.compile(r"[^`\n]*")
+
+
+def _slash_command(text: str, start: int, end: int) -> bool:
+    """Whether the run `text[start:end]` is a slash command in prose (`/sentrook status`, `` `/sentrook
+    report` ``): `/sentrook` alone, after the start of a line, a space or a backtick that opens inline
+    code (itself after the start of the text or a space, and closed later on the line; a shell
+    substitution's closing backtick, `` `echo $H`/sentrook ``, is not one), and before a space and a
+    word, or the end of a line."""
+    if end - start != len("/sentrook") or text[start:end] != "/sentrook":
+        return False
+    if start:
+        before = text[start - 1]
+        if before == "`":
+            if start > 1 and not text[start - 2].isspace():
+                return False
+            close = _TO_BACKTICK.match(text, end).end()  # type: ignore[union-attr]
+            if close == len(text) or text[close] != "`":
+                return False
+        elif before not in " \t\n":
+            return False
+    if end == len(text) or text[end] in "\r\n":
+        return True
+    rest = end
+    while rest < len(text) and text[rest] in " \t":
+        rest += 1
+    return rest > end and rest < len(text) and (text[rest].isalnum() or text[rest] == "_")
+
+
+def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
+    """The paths in inline code's text that may name Sentrook's state or install folders, per
+    `guardrail.yaml: code_text_paths`: the known state and install folders in any case, and every
+    other lowercase `sentrook` path component except a slash command in prose and a citation of
+    Sentrook's source tree. Linear in the text: one search for a `..` component, and each component
+    read with its neighbours and at most a few components before it."""
+    key = ("guardrail", "code_text_paths")
+    locations = lists.patterns(*key, "location_patterns")
+    packages = {s.lower() for s in lists.strings(*key, "source_packages")}
+    tops = {s.lower() for s in lists.strings(*key, "source_top_folders")}
+    legacy = {s.lower() for s in lists.strings("guardrail", "legacy_basenames")}
+    # A `..`, or a call that cuts a path back, anywhere may climb out of a cited folder into the state
+    # folder (`h + '/sentrook/tests' + '/../x'`, `dirname(dirname(...))`): then nothing is a citation.
+    climbs = _found_any(lists.patterns(*key, "climb_patterns"), text)
+
+    def package_citation(j: int, parts: list[str]) -> bool:
+        # `sentrook/sentrook/<package or module>/...`, starting at component `j`.
+        return (
+            0 <= j
+            and j + 2 < len(parts)
+            and parts[j] == "sentrook"
+            and parts[j + 1] == "sentrook"
+            and parts[j + 2].lower() in packages
+        )
+
+    for start, end in _sentrook_runs(text):
+        run = text[start:end]
+        norm = posixpath.normpath(run)
+        absolute = norm.startswith("/")
+        parts = norm.lstrip("/").split("/")
+        if parts[-1].lower() in legacy:
+            yield run
+            continue
+        # A path as written (`./sentrook/x` normalises to one word but is a path), or one quoted part
+        # of a path (`'sentrook'`); not a word in prose.
+        quoted = (
+            start > 0
+            and end < len(text)
+            and text[start - 1] in "'\""
+            and text[end] == text[start - 1]
+        )
+        if "/" not in run and not quoted:
+            continue
+        slash_command = _slash_command(text, start, end)
+        for i, part in enumerate(parts):
+            if part.lower() != "sentrook":
+                continue
+            first = max(0, i - _LOCATION_COMPONENTS + 1)
+            prefix = ("/" if absolute and first == 0 else "") + "/".join(parts[first : i + 1])
+            if _found_any(locations, prefix):
+                yield run
+                break
+            # Real state folders are lowercase; a capitalised one counts only at a known location.
+            if part != "sentrook" or slash_command:
+                continue
+            if not climbs and (
+                package_citation(i, parts)
+                or package_citation(i - 1, parts)
+                or (i + 2 < len(parts) and parts[i + 1].lower() in tops)
+            ):
+                continue
+            yield run
+            break
 
 
 #: Guardrail reasons of the review tier: the owner is always asked, the floor never blocks.
@@ -5167,7 +5288,8 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
 
     # 2. Inline interpreter code (Hermes `execute_code`, `python -c`). A file the code writes, deletes,
     #    moves or changes whose path the scan resolves into Sentrook's state takes the block floor.
-    #    Otherwise a guardrail path anywhere in the text plus a write marker takes the review floor:
+    #    Otherwise a path into Sentrook's state or install folders anywhere in the text
+    #    (`code_text_paths`; not a mention of its source tree) plus a write marker takes the review floor:
     #    the text may only mention the path (a note, a message, data the code writes elsewhere), or
     #    reach it in a way the scan cannot follow, so the owner is asked.
     if a.inline_code or (a.shape is not None and a.shape.inline_eval):
@@ -5180,14 +5302,13 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 break
         markers = lists.patterns("guardrail", "content_write_marker_patterns")
         if not blocked and _match_any(markers, a.scan_text):
-            for m in _sentrook_paths(a.scan_text):
-                if _guardrail_path_reason(m.group(0), None, ctx):
-                    emit(
-                        "guardrail.state_dir_write_review",
-                        None,
-                        {"path": m.group(0), "mechanism": "content_match"},
-                    )
-                    break
+            for path in _code_text_state_paths(a.scan_text, lists):
+                emit(
+                    "guardrail.state_dir_write_review",
+                    None,
+                    {"path": path[:300], "mechanism": "content_match"},
+                )
+                break
 
     # 3. CLI forms: plugin disable/remove, the plugin's own commands, config entry, gateway stop,
     #    host approvals, process kill. `<head> [options] <subcommand> [options] <verb> …`,
