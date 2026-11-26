@@ -390,6 +390,27 @@ test("the plugin's own answered call is not taken for another plugin's", async (
   assert.equal((await h.ask(OWNER, "user", "c2")).hook, undefined);
 });
 
+for (const wrapperName of ["dispatch_action", "tool_call"]) {
+  test(`asked for through OpenClaw's ${wrapperName} wrapper: the wrapper is not scanned, the report is answered`, async () => {
+    const h = harness();
+    await h.fire("before_agent_run", { runId: "r1", prompt: "help me set up Sentrook", senderIsOwner: true }, { ...OWNER, trigger: "user" });
+    const outer = { id: report.TOOL, args: {} };
+    assert.equal(await h.fire("before_tool_call", { toolName: wrapperName, params: outer, runId: "r1", toolCallId: "w1" }, OWNER), undefined);
+    const inner = `tool_call:w1:${report.TOOL}:1`;
+    const tool = h.offer({ senderIsOwner: true, sessionKey: OWNER.sessionKey, sessionId: OWNER.sessionId });
+    assert.equal(await h.fire("before_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: inner }, OWNER), undefined);
+    const t = await h.run(tool, inner);
+    assert.ok(t.startsWith("Sentrook setup report (read-only)."));
+    await h.fire("after_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: inner, result: t }, OWNER);
+    await h.fire("after_tool_call", { toolName: wrapperName, params: outer, runId: "r1", toolCallId: "w1", result: JSON.stringify({ result: t }) }, OWNER);
+    assert.equal(h.scans.length, 0, "neither the wrapper nor the report is scanned");
+    assert.deepEqual(
+      h.records().map((r) => r.outcome),
+      ["answered"],
+    );
+  });
+}
+
 test("its result goes to the next scan like any tool result", async () => {
   const h = harness();
   const { tool } = await h.ask(OWNER, "user");
