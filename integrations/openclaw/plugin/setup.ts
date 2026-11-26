@@ -128,19 +128,15 @@ export function minutesOf(text: unknown): number | null {
 // ---- evidence -----------------------------------------------------------------------------------------------------
 
 /**
- * The scan response says the agent had read content aimed at steering it: an `exposure.*` reason, or the exposure or
- * session_exposure score above 0.
+ * The scan response says the agent had read content aimed at steering it: an `exposure.*` reason. The scanner gives
+ * one when this call's check scores at its reason line or above, and on every later call of a session it judged
+ * tainted. The exposure and session_exposure scores alone say nothing: almost any content scores a little.
  */
 export function exposureFlagged(resp: unknown): boolean {
   if (!resp || typeof resp !== "object" || Array.isArray(resp)) return false;
   const r = resp as Entry;
   for (const reason of Array.isArray(r.reasons) ? r.reasons : []) {
     if (typeof reason?.code === "string" && reason.code.startsWith("exposure.")) return true;
-  }
-  const suspicion = r.tree?.suspicion;
-  for (const k of ["exposure", "session_exposure"]) {
-    const v = suspicion && typeof suspicion === "object" ? suspicion[k] : undefined;
-    if (typeof v === "number" && v > 0) return true;
   }
   return false;
 }
