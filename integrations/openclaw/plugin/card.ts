@@ -239,10 +239,15 @@ export const ERROR_CAUSES = {
   unreachable: "Its scan service did not answer.",
   not_signed_in: "Sentrook isn't signed in yet. Run on the gateway machine: openclaw sentrook login",
   sign_in_rejected: "Sentrook's sign-in was revoked or is wrong. Run on the gateway machine: openclaw sentrook login",
+  consent_withdrawn:
+    "Consent for Sentrook was withdrawn on the FIDU portal. Run on the gateway machine: openclaw sentrook login",
 } as const;
 export type ErrorCause = keyof typeof ERROR_CAUSES;
-/** Why the credentials did not work, when known: none stored, or refused by the identity service. */
-export type SignInProblem = "not_signed_in" | "sign_in_rejected";
+/**
+ * Why the credentials did not work, when known: none stored, refused by the identity service, or refused because the
+ * owner withdrew consent on the FIDU portal.
+ */
+export type SignInProblem = "not_signed_in" | "sign_in_rejected" | "consent_withdrawn";
 export const ERROR_RUNS_UNCHECKED = "If you allow it, it runs without a security check.";
 
 export function errorCause(kind: string, auth: boolean, setup?: SignInProblem): ErrorCause {

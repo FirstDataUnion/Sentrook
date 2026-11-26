@@ -6,12 +6,26 @@
  * attended, block when unattended). Auth and configuration failures never fail open.
  */
 
+import { ConsentWithdrawnError } from "./auth.ts";
 import { errorCard, errorCause, type SignInProblem } from "./card.ts";
 
 export type OnScanError = "allow" | "deny" | "review";
 export type ScanFailureKind = "rate_limited" | "http" | "timeout" | "network" | "config" | "scan_error";
 
 export const DEFAULT_ON_SCAN_ERROR: OnScanError = "review";
+
+/**
+ * What happens to tool calls while an endpoint setting is invalid, for the owner's log. Every scan fails as a
+ * configuration error, which `scanErrorToHookResult` never lets through; observe mode lets everything run.
+ * Keep it identical to `invalid_endpoint_effect` in the Hermes plugin's `scan_error_policy.py`.
+ */
+export function invalidEndpointEffect(mode: string, onScanError: OnScanError): string {
+  if (mode === "observe") return "no tool call is scanned until this is fixed (observe mode: nothing is blocked)";
+  if (onScanError === "review") {
+    return "every tool call will be held for review, or blocked on unattended runs, until this is fixed";
+  }
+  return "every tool call will be blocked until this is fixed";
+}
 
 export interface ScanFailure {
   ok: false;
@@ -76,6 +90,9 @@ export function isAuthFailure(failure: ScanFailure): boolean {
 
 /** Map OIDC mint / discovery errors to a scan failure (Hermes scan-auth path). */
 export function scanAuthErrorToFailure(err: unknown): ScanFailure {
+  if (err instanceof ConsentWithdrawnError) {
+    return { ok: false, kind: "http", status: err.status, detail: "consent withdrawn on the FIDU portal", setup: "consent_withdrawn" };
+  }
   const detail = (err instanceof Error ? err.message : String(err))
     .replace(/\n/g, " ")
     .trim()
@@ -124,6 +141,11 @@ export const SIGN_IN_FIXES: Record<SignInProblem, string> = {
     "Sentrook's sign-in was revoked or is wrong, so this tool call was not scanned or run. This is a setup problem, " +
     "not a security finding. Tell the owner to run `openclaw sentrook login` again in a terminal on the gateway " +
     "machine. Do not try to run it yourself or work around this.",
+  consent_withdrawn:
+    "The owner withdrew consent for Sentrook on the FIDU portal, so this tool call was not scanned or run. This is a " +
+    "setup problem, not a security finding. Tell the owner to reconnect by running `openclaw sentrook login` in a " +
+    "terminal on the gateway machine, or to switch Sentrook to observe mode. Do not try to run it yourself or work " +
+    "around this.",
 };
 
 function blockReasonFor(failure: ScanFailure): string {

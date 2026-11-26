@@ -28,6 +28,8 @@ _LOCK = threading.Lock()
 def reason_of(failure: ScanFailure) -> str:
     """Why the scan gave no answer, in words for the owner; never the failure's detail, which can carry
     anything."""
+    if failure.setup == "consent_withdrawn":
+        return "consent for Sentrook was withdrawn on the FIDU portal"
     if is_auth_failure(failure):
         return "Sentrook's endpoint or credentials are not configured correctly"
     return {
