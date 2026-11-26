@@ -5051,15 +5051,46 @@ def _sentrook_runs(text: str) -> Iterator[tuple[int, int]]:
         pos = end
 
 
+def _slash_command(text: str, start: int, end: int) -> bool:
+    """Whether the run `text[start:end]` is a slash command in prose (`/sentrook status`, `` `/sentrook
+    report` ``): `/sentrook` alone, after the start of a line, a space or an opening backtick, and
+    before a space and a word, or the end of a line."""
+    if text[start:end] != "/sentrook":
+        return False
+    if start and text[start - 1] not in " \t\n`":
+        return False
+    if end == len(text) or text[end] in "\r\n":
+        return True
+    rest = end
+    while rest < len(text) and text[rest] in " \t":
+        rest += 1
+    return rest > end and rest < len(text) and (text[rest].isalnum() or text[rest] == "_")
+
+
 def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
     """The paths in inline code's text that may name Sentrook's state or install folders, per
-    `guardrail.yaml: code_text_paths`: every lowercase `sentrook` path component unless the path is
-    a mention of Sentrook's source tree, and the known state and install folders in any case. Linear
-    in the text: each component is read with its neighbours and at most a few components before it."""
+    `guardrail.yaml: code_text_paths`: the known state and install folders in any case, and every
+    other lowercase `sentrook` path component except a slash command in prose and a citation of
+    Sentrook's source tree. Linear in the text: one search for a `..` component, and each component
+    read with its neighbours and at most a few components before it."""
     key = ("guardrail", "code_text_paths")
     locations = lists.patterns(*key, "location_patterns")
-    source_tree = {s.lower() for s in lists.strings(*key, "source_tree_segments")}
+    packages = {s.lower() for s in lists.strings(*key, "source_packages")}
+    tops = {s.lower() for s in lists.strings(*key, "source_top_folders")}
     legacy = {s.lower() for s in lists.strings("guardrail", "legacy_basenames")}
+    # A `..` anywhere may climb out of a cited folder (`h + '/sentrook/tests' + '/../x'`): no citation.
+    climbs = _found_any(lists.patterns(*key, "parent_component_patterns"), text)
+
+    def package_citation(j: int, parts: list[str]) -> bool:
+        # `sentrook/sentrook/<package or module>/...`, starting at component `j`.
+        return (
+            0 <= j
+            and j + 2 < len(parts)
+            and parts[j] == "sentrook"
+            and parts[j + 1] == "sentrook"
+            and parts[j + 2].lower() in packages
+        )
+
     for start, end in _sentrook_runs(text):
         run = text[start:end]
         norm = posixpath.normpath(run)
@@ -5067,6 +5098,15 @@ def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
         parts = norm.lstrip("/").split("/")
         if parts[-1].lower() in legacy:
             yield run
+            continue
+        # A path, or one quoted part of a path (`'sentrook'`); not a word in prose.
+        quoted = (
+            start > 0
+            and end < len(text)
+            and text[start - 1] in "'\""
+            and text[end] == text[start - 1]
+        )
+        if len(parts) == 1 and not absolute and not quoted:
             continue
         for i, part in enumerate(parts):
             if part.lower() != "sentrook":
@@ -5077,23 +5117,14 @@ def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
                 yield run
                 break
             # Real state folders are lowercase; a capitalised one counts only at a known location.
-            if part != "sentrook":
+            if part != "sentrook" or _slash_command(text, start, end):
                 continue
-            # A source-tree mention: `<checkout>/sentrook/integrations/...`, `sentrook/sentrook/...`.
-            if i + 1 < len(parts) and parts[i + 1].lower() in source_tree:
+            if not climbs and (
+                package_citation(i, parts)
+                or package_citation(i - 1, parts)
+                or (i + 2 < len(parts) and parts[i + 1].lower() in tops)
+            ):
                 continue
-            if i > 0 and parts[i - 1].lower() == "sentrook":
-                continue
-            if i + 1 == len(parts):
-                # Nothing after it: only a whole quoted string, or the end of an interpolation, so a
-                # slash command in prose is not read as a path.
-                before = text[start - 1] if start else ""
-                after = text[end] if end < len(text) else ""
-                if not (
-                    (before in ("'", '"') and after == before)
-                    or (before == "}" and after in ("'", '"', "`"))
-                ):
-                    continue
             yield run
             break
 

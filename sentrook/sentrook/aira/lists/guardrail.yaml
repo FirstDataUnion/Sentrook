@@ -537,37 +537,62 @@ content_write_marker_patterns:
   - '\bfs\.promises\.\w+\('
 
 # Which paths in inline code's text count for the review floor above. The text tier fails closed:
-# any lowercase `sentrook` path component counts (`./sentrook/x`, `../plugins/sentrook`, a state
-# folder moved to `/srv/x/sentrook/`, a home name split across strings), except a mention of
-# Sentrook's own source tree. Each run of path characters holding `sentrook` is normalised
-# (`a/../b` read as `b`), then counts when:
+# every `sentrook` path component counts unless it is plainly not Sentrook's state. Each run of path
+# characters holding `sentrook` is normalised (`a/../b` read as `b`), then counts when:
 # - the path up to a `sentrook` component, its last six components, matches a `location_patterns`
 #   entry (the plugins' state folders, Hermes and OpenClaw profiles, the plugin and extension
 #   folders), in any case and whatever follows, or
 # - its last component is a `legacy_basenames` file, or
-# - it holds a lowercase `sentrook` component that is not a source-tree mention: the next component
-#   is not in `source_tree_segments` (the source repository's top-level folders and its Python
-#   project's folders: `<checkout>/sentrook/integrations/...`, `sentrook/sentrook/jev/client.py`),
-#   and the component before it is not `sentrook` (the inner one of `sentrook/sentrook`).
-# A run that ends at the component counts only as a whole quoted string or right after an
-# interpolation (`'./sentrook'`, `f"{home}/sentrook"`), so a slash command in prose
-# (`/sentrook status`) does not. A capitalised `Sentrook` counts only at a known location, so a
-# checkout at `~/projects/Sentrook/` or prose like `Sentrook/Hermes` does not.
+# - it holds any other lowercase `sentrook` component, however the path is built around it (quotes,
+#   `%s`, `{h}`, `$HERMES_HOME`, shell words), with two exceptions:
+#   - a slash command in prose: `/sentrook` alone, after the start of a line, a space or an opening
+#     backtick, and before a space and a word or the end of a line (`/sentrook status`);
+#   - a citation of Sentrook's source tree: `sentrook/sentrook/<one of source_packages>/...` or
+#     `sentrook/<one of source_top_folders>/<something>`, only when the code's text holds no `..`
+#     path component anywhere (`parent_component_patterns`; a `..` in any string part may climb
+#     out of a cited folder into the state folder).
+# A word `sentrook` with no slash counts only as a whole quoted string (a path part); a capitalised
+# `Sentrook` counts only at a known location, so a checkout at `~/projects/Sentrook/` or prose like
+# `Sentrook/Hermes` does not.
+# Known limit: a plugin installed by linking to a source checkout (for example an OpenClaw extension
+# loaded from `~/src/sentrook/integrations/openclaw/plugin/dist/`) reads as a source citation here,
+# so a write into that checkout through the text tier is not asked about. Resolved writes are still
+# found by the block floor's path rules.
 code_text_paths:
   location_patterns:
     - '(?:\A|/)\.hermes/(?:profiles/[^/]+/)?(?:plugins/)?sentrook\Z'
     - '(?:\A|/)\.openclaw(?:-[^/]+)?/(?:extensions/|plugins/)?sentrook\Z'
     - '(?:\A|/)\$(?:HERMES_HOME|HERMES_STATE_DIR|OPENCLAW_STATE_DIR)/(?:profiles/[^/]+/)?(?:plugins/|extensions/)?sentrook\Z'
     - '\A/opt/data/(?:profiles/[^/]+/)?(?:plugins/)?sentrook\Z'
-  source_tree_segments:
-    - sentrook
-    - tests
+  # The scanner package's subpackages and modules (`sentrook/sentrook/<name>`).
+  source_packages:
+    - __init__.py
+    - aira
+    - cli
+    - contracts.py
+    - converge
+    - enums.py
+    - jev
+    - oracle
+    - planir
+    - prepare
+    - probes
+    - response
+    - scan.py
+    - serve
+    - state
+  # The source repository's top-level folders, and the Python project's tests (`sentrook/<name>/...`).
+  source_top_folders:
     - integrations
     - schema
     - brand
     - testnest
+    - tests
     - .github
     - .changeset
+  # A `..` path component anywhere in the text (not `...`).
+  parent_component_patterns:
+    - '(?<![\w.~$-])\.\.(?![\w.~$-])'
 
 # Calls in inline code that change the file their argument names (`arg`, 1-based) or, for a
 # `method`, the path they are called on (a `pathlib` path written in place only: a DataFrame or a

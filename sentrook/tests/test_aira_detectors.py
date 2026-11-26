@@ -1523,6 +1523,29 @@ def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
         "open('/tmp/n.md','w').write('see sentrook/README.md')",
         # A 1.x file name, wherever it is.
         "open(resolve('sentrook-allowlist.json'),'w').write('{}')",
+        # A path ending in the folder, built with formatting, shell words or template strings.
+        "import shutil\nshutil.rmtree('%s/sentrook' % h)",
+        "import shutil\nshutil.rmtree('%s/plugins/sentrook' % h)",
+        "import shutil\nshutil.rmtree('%s/sentrook/' % h)",
+        "import shutil\nshutil.rmtree('%(h)s/sentrook' % {'h': h})",
+        "import subprocess\nsubprocess.run(f'rm -rf {h}/sentrook && echo ok', shell=True)",
+        "import subprocess\nsubprocess.run('rm -rf ${HERMES_HOME}/sentrook; echo', shell=True)",
+        "import subprocess\nsubprocess.run(['sh','-c','rm -rf \"$HERMES_HOME\"/sentrook'])",
+        "const fs=require('fs');fs.rmSync(h+`/sentrook`,{recursive:true})",
+        # A source-tree shape left again with `..` in another string part.
+        "open(h + '/sentrook/tests' + '/../grants.json','w')",
+        "open(h + '/sentrook/schema/' + '../snooze.json','w')",
+        "open(h + '/sentrook/sentrook' + '/../grants.json','w')",
+        "p = h + '/sentrook/tests/'\nopen(p + '../grants.json','w')",
+        "import os\nopen(os.path.join(h + '/sentrook/brand', '..', 'grants.json'),'w')",
+        "const fs=require('fs');fs.writeFileSync(h+'/extensions/sentrook/schema'+'/../index.js','')",
+        "open(h + '/sentrook/tests/a' + '/../../grants.json','w')",
+        "import os\nopen(os.path.join(h + '/sentrook/sentrook/jev', '..', '..', 'grants.json'),'w')",
+        # `sentrook/sentrook` that is not the source package.
+        "open(resolve('/srv/sentrook/sentrook/grants.json'),'w')",
+        "open(resolve('/home/sentrook/sentrook/grants.json'),'w')",
+        "open(h + '/profiles/sentrook/sentrook/grants.json','w')",
+        "open('sentrook/sentrook/grants.json','w')",
     ],
     ids=[
         "runtime-target-names-state-file",
@@ -1556,6 +1579,26 @@ def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
         "moved-state-folder",
         "relative-readme",
         "legacy-file-name",
+        "percent-format",
+        "percent-format-plugins",
+        "percent-format-trailing-slash",
+        "percent-format-named",
+        "fstring-shell",
+        "shell-variable-braces",
+        "sh-c-quoted-variable",
+        "node-template",
+        "tests-then-parent",
+        "schema-then-parent",
+        "package-then-parent",
+        "variable-then-parent",
+        "join-parent",
+        "node-extension-schema-parent",
+        "deep-tests-then-parents",
+        "join-package-parents",
+        "srv-double",
+        "home-user-double",
+        "profile-double",
+        "relative-double-not-package",
     ],
 )
 def test_c4star_inline_code_naming_a_state_or_install_location_is_asked(code):
@@ -1578,7 +1621,7 @@ def test_c4star_inline_code_naming_a_state_or_install_location_is_asked(code):
         "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
         "import os\nR='Snooze is in ~/projects/sentrook/integrations/hermes/plugin/snooze.py.'\n"
         "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
-        "import os\nR='Tests: sentrook/tests/test_aira_detectors.py, schema in ~/src/sentrook/schema/.'\n"
+        "import os\nR='Tests: sentrook/tests/test_aira_detectors.py, schema in ~/src/sentrook/schema/planir.json.'\n"
         "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
         # The same, with the host's home named for the file written.
         _NOTES
