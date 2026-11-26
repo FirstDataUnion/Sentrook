@@ -1,15 +1,19 @@
 ---
 name: sentrook-setup
-description: Step-by-step help for the owner to set up the Sentrook security plugin, so routine work stops asking for approval. Use when asked to set up Sentrook, right after it is installed, or when the owner says Sentrook asks or blocks too often.
+description: Step-by-step help for the owner to set up the Sentrook security plugin, by setting the grants and channel bindings that stop routine work asking for approval. Use when asked to set up Sentrook, right after it is installed, or when the owner says Sentrook asks or blocks too often.
 user-invocable: false
 ---
 
 # Setting up Sentrook with the owner
 
-Sentrook asks the owner about calls it has not seen before. It asks less once it knows what is routine here: which
-services the agent sends to, which folders it works in, which channels scheduled jobs report to, and which API keys go
-to which service. You help the owner work that out. **The owner decides and sets everything; you never change
-Sentrook yourself.** For how Sentrook works, read the `sentrook:sentrook-guide` skill.
+Sentrook asks the owner about calls it scores as risky, such as a send to a host no grant covers. It asks less about
+routine work only once the owner sets bindings and grants for it: which services the agent sends to, which folders it
+works in, which channels scheduled jobs report to, and which API keys go to which service. The owner sets them with
+`/sentrook setup apply`, `/sentrook grant` and `/sentrook bind`, or by answering **Always** on an approval prompt that names a grant (it sets that grant for 30 days). Sentrook does not adjust itself
+from what it sees or from how often the owner approves something: only what the owner sets (these bindings and grants,
+a snooze, the answers to held calls) changes what it asks about, so never tell the owner it will get used to their
+work. You help the owner work out what to set. **The owner decides and sets
+everything; you never change Sentrook yourself.** For how Sentrook works, read the `sentrook:sentrook-guide` skill.
 
 There are two entry points:
 

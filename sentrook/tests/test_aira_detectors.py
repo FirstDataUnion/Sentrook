@@ -1370,6 +1370,7 @@ def _code(code: str) -> dict:
 _NOTES = "import os\nOUT=os.path.expanduser('~/.hermes/attachments/drafts/')\n"
 _STATE = "import os\nS=os.path.expanduser('~/.hermes/sentrook/grants.json')\n"
 _REVIEW = "guardrail.state_dir_write_review"
+_H = "import os\nh=os.environ['HERMES_HOME']\n"
 
 
 @pytest.mark.parametrize(
@@ -1385,6 +1386,9 @@ _REVIEW = "guardrail.state_dir_write_review"
         _STATE + "from pathlib import Path\nPath(S).chmod(0)",
         _STATE + "import io\nio.FileIO(S,'w').write(b'{}')",
         "const fs=require('fs');fs.promises.writeFile('/home/u/.openclaw/sentrook/grants.json','{}')",
+        "import os\nopen(os.path.expanduser('~/.hermes/plugins/sentrook/__init__.py'),'w').write('')",
+        "import os\nopen(os.path.expanduser('~/.openclaw/extensions/sentrook/index.js'),'w').write('')",
+        "import os\nopen(os.path.expanduser('~/.hermes/profiles/work/sentrook/grants.json'),'w').write('{}')",
     ],
     ids=[
         "literal",
@@ -1396,6 +1400,9 @@ _REVIEW = "guardrail.state_dir_write_review"
         "chmod",
         "fileio",
         "fs-promises",
+        "hermes-plugin-code",
+        "openclaw-extension",
+        "hermes-profile",
     ],
 )
 def test_c4star_inline_code_changing_state_takes_the_block_floor(code):
@@ -1417,15 +1424,10 @@ def test_c4star_inline_code_relative_write_resolves_against_its_folder():
 @pytest.mark.parametrize(
     "code",
     [
-        # Mentions only: the files written are elsewhere.
-        _NOTES
-        + "T='The fallback lives in sentrook/sentrook/jev/client.py and the probe prompts.'\n"
-        "open(OUT+'Ticket drafts.md','w',encoding='utf-8').write(T)",
+        # Mentions only, but of the state folder itself: the files written are elsewhere.
         _NOTES + "p=OUT+'notes.md'\n"
         "t=open(p,encoding='utf-8').read().replace('old','new')\n"
         "open(p,'w',encoding='utf-8').write(t + '\\nGrants live in ~/.hermes/sentrook/grants.json.')",
-        "from pathlib import Path\n"
-        "(Path.home()/'notes'/'sentrook.md').write_text('see sentrook/sentrook/aira/detectors.py')",
         # Reaching the state in ways the scan does not follow: asked, not passed.
         "d=find_home()\nopen(d+'/sentrook/grants.json','w').write('{}')",
         _STATE + "p=S\nopen(p,'w').write('{}')\np='/tmp/done'",
@@ -1444,9 +1446,7 @@ def test_c4star_inline_code_relative_write_resolves_against_its_folder():
         "print('cleaned ~/.hermes/sentrook/ scratch copy')",
     ],
     ids=[
-        "ticket-draft",
         "content-names-state-file",
-        "pathlib-elsewhere",
         "unresolved",
         "reassigned",
         "loop",
@@ -1473,6 +1473,302 @@ def test_c4star_inline_code_naming_a_sentrook_path_is_asked_not_blocked(code):
 def test_c4star_inline_code_naming_a_sentrook_path_without_writing_is_silent():
     _, env = run(_code("print('Grants live in ~/.hermes/sentrook/grants.json')"))
     assert env.floors == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # A path built at runtime, with the state file named in the text.
+        "import os\nNOTE='mirror of ~/.hermes/sentrook/snooze.json'\n"
+        "p=pick_target()\nopen(p,'w').write(NOTE)",
+        # The Hermes plugin's own code folder.
+        "T='~/.hermes/plugins/sentrook/__init__.py'\nopen(resolve(T),'w').write('')",
+        "T='/home/u/.hermes/profiles/work/plugins/sentrook/snooze.py'\nopen(resolve(T),'w').write('')",
+        # Changing folder, then a relative path into the state folder.
+        "import os\nos.chdir(os.path.expanduser('~/.hermes'))\nopen('sentrook/snooze.json','w').write('{}')",
+        "import os\nos.chdir(home())\nopen('./sentrook/x/../snooze.json','w').write('{}')",
+        "import subprocess\nsubprocess.run(['rm','sentrook/snooze.json'], cwd=hermes_dir())",
+        # Relative paths with no folder named: the folder is not known.
+        "open('./sentrook/grants.json','w')",
+        "open('../sentrook/grants.json','w')",
+        "import shutil\nshutil.rmtree('./sentrook')",
+        "import shutil\nshutil.rmtree('../plugins/sentrook')",
+        "import subprocess\nsubprocess.run(['rm','-rf','./sentrook'])",
+        "open(resolve('state/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('profiles/work/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('~/.hermes/sentrook/sentrook/../snooze.json'),'w').write('{}')",
+        # Homes, profiles and spellings of them.
+        "open(resolve('/home/u/.hermes/profiles/work/sentrook/grants.json'),'w').write('{}')",
+        "import os\nopen(os.path.expandvars('$HERMES_HOME/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('/opt/data/sentrook/grants.json'),'w').write('{}')",
+        "import os\nd='/opt/data/profiles/work/sentrook'\nfor n in os.listdir(d):\n"
+        "    open(os.path.join(d,n),'w').write('')",
+        "from pathlib import Path\np=Path('/opt/data/profiles/w/sentrook/grants.json')\nq=p\n"
+        "q.write_text('{}')",
+        "open(resolve('~/.openclaw/sentrook/grants.json'),'w').write('{}')",
+        "open(resolve('~/.openclaw/extensions/sentrook/index.js'),'w').write('')",
+        "import os\nd=os.path.expanduser('~/.openclaw-dev/sentrook')\nfor n in os.listdir(d):\n"
+        "    open(os.path.join(d,n),'w').write('')",
+        "open(resolve('~/.openclaw-dev/extensions/sentrook/index.js'),'w').write('')",
+        "open(resolve('~/.Hermes/Sentrook/grants.json'),'w').write('{}')",
+        "import os\nd=f\"{os.environ['HERMES_HOME']}/sentrook\"\nopen(pick(d),'w').write('{}')",
+        "import os\nfrom pathlib import Path\n"
+        "(Path(os.environ['HERMES_HOME'])/'sentrook'/'grants.json').write_text('{}')",
+        # A home name split across strings, or reached through a link.
+        "import os\nd=os.path.expanduser('~/.her'+'mes/sentrook')\nfor n in os.listdir(d):\n"
+        "    open(os.path.join(d,n),'w').write('')",
+        "import os\nos.symlink(os.path.expanduser('~/.'+'hermes/sentrook'),'/tmp/s')\n"
+        "open('/tmp/s/grants.json','w').write('{}')",
+        # A state folder moved somewhere else.
+        "open(resolve('/srv/hermes/sentrook/grants.json'),'w')",
+        "open('/tmp/n.md','w').write('see sentrook/README.md')",
+        # A 1.x file name, wherever it is.
+        "open(resolve('sentrook-allowlist.json'),'w').write('{}')",
+        # A path ending in the folder, built with formatting, shell words or template strings.
+        "import shutil\nshutil.rmtree('%s/sentrook' % h)",
+        "import shutil\nshutil.rmtree('%s/plugins/sentrook' % h)",
+        "import shutil\nshutil.rmtree('%s/sentrook/' % h)",
+        "import shutil\nshutil.rmtree('%(h)s/sentrook' % {'h': h})",
+        "import subprocess\nsubprocess.run(f'rm -rf {h}/sentrook && echo ok', shell=True)",
+        "import subprocess\nsubprocess.run('rm -rf ${HERMES_HOME}/sentrook; echo', shell=True)",
+        "import subprocess\nsubprocess.run(['sh','-c','rm -rf \"$HERMES_HOME\"/sentrook'])",
+        "const fs=require('fs');fs.rmSync(h+`/sentrook`,{recursive:true})",
+        # A source-tree shape left again with `..` in another string part.
+        "open(h + '/sentrook/tests' + '/../grants.json','w')",
+        "open(h + '/sentrook/schema/' + '../snooze.json','w')",
+        "open(h + '/sentrook/sentrook' + '/../grants.json','w')",
+        "p = h + '/sentrook/tests/'\nopen(p + '../grants.json','w')",
+        "import os\nopen(os.path.join(h + '/sentrook/brand', '..', 'grants.json'),'w')",
+        "const fs=require('fs');fs.writeFileSync(h+'/extensions/sentrook/schema'+'/../index.js','')",
+        "open(h + '/sentrook/tests/a' + '/../../grants.json','w')",
+        "import os\nopen(os.path.join(h + '/sentrook/sentrook/jev', '..', '..', 'grants.json'),'w')",
+        # `sentrook/sentrook` that is not the source package.
+        "open(resolve('/srv/sentrook/sentrook/grants.json'),'w')",
+        "open(resolve('/home/sentrook/sentrook/grants.json'),'w')",
+        "open(h + '/profiles/sentrook/sentrook/grants.json','w')",
+        "open('sentrook/sentrook/grants.json','w')",
+        # A cited folder cut back to the state folder without writing `..`.
+        "import os\nopen(os.path.dirname(os.path.dirname(h + '/sentrook/tests/x')) + '/grants.json','w')",
+        "from pathlib import Path\n(Path(h + '/sentrook/tests/x').parent.parent/'grants.json').write_text('{}')",
+        "from pathlib import Path\n(Path(h + '/sentrook/tests/x').parents[1]/'grants.json').write_text('{}')",
+        "import os\nopen(os.path.join(h + '/sentrook/tests/x', os.pardir, os.pardir, 'grants.json'),'w')",
+        "u='.'+'.'\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "u='.'*2\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "u=chr(46)*2\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "u='\\56\\56'\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "u='\\x2e\\x2e'\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "from urllib.parse import unquote\nu=unquote('%2e%2e')\n"
+        "open(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "open((h + '/sentrook/tests/x').rsplit('/',2)[0] + '/grants.json','w')",
+        "open((h + '/sentrook/tests/x').removesuffix('/tests/x') + '/grants.json','w')",
+        "d=(h + '/sentrook/tests/x').rpartition('/tests')[0]\nopen(d + '/grants.json','w')",
+        "import os\nos.chdir(h + '/sentrook/tests/x')\nos.chdir(os.pardir)\nos.chdir(os.pardir)\n"
+        "open('grants.json','w')",
+        "import os\nopen(os.path.normpath(h + '/sentrook/tests/x/' + u + '/grants.json'),'w')",
+        "from pathlib import Path\n(Path(h + '/sentrook/tests/x', u, u).resolve()/'grants.json').write_text('{}')",
+        "const fs=require('fs'),path=require('path');"
+        "fs.writeFileSync(path.dirname(path.dirname(h+'/sentrook/tests/x'))+'/grants.json','{}')",
+        "const fs=require('fs');const u='.'.repeat(2);"
+        "fs.writeFileSync(h+'/sentrook/tests/x/'+u+'/'+u+'/grants.json','{}')",
+        "import os\nfrom pathlib import Path\nP=Path(os.environ['HERMES_HOME'])/'plugins/sentrook/tests/x'\n"
+        "(P.parent.parent/'__init__.py').write_text('')",
+        "open(h + '/plugins/sentrook/sentrook/jev/x.py','w')",
+        # A shell substitution's closing backtick before the folder.
+        "import subprocess\nsubprocess.run('mv `echo $HERMES_HOME`/sentrook old', shell=True)",
+        "import subprocess\nsubprocess.run('mv `hermes config path | xargs dirname`/sentrook old\\n', shell=True)",
+        "import subprocess\nsubprocess.run('rm -rf `dirname $(hermes config path)`/sentrook\\n', shell=True)",
+        "import subprocess\nsubprocess.run('mv `echo $H`/sentrook old', shell=True)",
+        # A citation and a real state path in the same program.
+        "T='see sentrook/sentrook/jev/client.py'\nopen(resolve('/srv/x/sentrook/grants.json'),'w').write(T)",
+        "T='see sentrook/integrations/hermes/plugin/snooze.py'\n"
+        "open(resolve('~/.hermes/sentrook/snooze.json'),'w').write(T)",
+        # `./sentrook` (normalised to one word) followed by more path.
+        _H + "open(os.path.join(h, f'./sentrook/{n}'),'w')",
+        _H + "open(os.path.join(h, './sentrook/%s' % n),'w')",
+        _H + "open(os.path.join(h, './sentrook/{}'.format(n)),'w')",
+        _H + "os.chdir(h)\nopen(f'./sentrook/{n}','w')",
+        _H + "open(os.path.join(h, f'./sentrook//{1}'),'w')",
+        _H + "open(os.path.join(h, f'././sentrook/{1}'),'w')",
+        _H + "open(os.path.join(h, f'x/../sentrook/{1}'),'w')",
+        _H + "import subprocess\nos.chdir(h)\nsubprocess.run('rm -rf ./sentrook', shell=True)",
+        "import subprocess\nsubprocess.run('cd \"$HERMES_HOME\" && rm -rf ./sentrook', shell=True)",
+        # More ways to cut a cited path back.
+        "import os\nd=os.path.split(os.path.split(h + '/sentrook/tests/x')[0])[0]\n"
+        "open(d + '/grants.json','w')",
+        "d=(h + '/sentrook/tests/x').partition('/tests')[0]\nopen(d + '/grants.json','w')",
+        "import os\nd=os.path.commonpath([h + '/sentrook/tests/x', h + '/sentrook/schema/y'])\n"
+        "open(d + '/grants.json','w')",
+        "import os\nd=os.path.commonprefix([h + '/sentrook/tests/x', h + '/sentrook/tests/y'])\n"
+        "open(d + 'grants.json','w')",
+        "const fs=require('fs'),path=require('path');"
+        "const p=path.parse(path.parse(h+'/sentrook/tests/x').dir);"
+        "fs.writeFileSync(p.dir+'/grants.json','{}')",
+        "const fs=require('fs');const u=''.padEnd(2,'.');"
+        "fs.writeFileSync(h+'/sentrook/tests/x/'+u+'/'+u+'/grants.json','{}')",
+        "import os\nu=os.curdir*2\nopen(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+        "u='\\N{FULL STOP}\\N{full stop}'\n"
+        "open(h + '/sentrook/tests/x/' + u + '/' + u + '/grants.json','w')",
+    ],
+    ids=[
+        "runtime-target-names-state-file",
+        "hermes-plugin-code",
+        "hermes-profile-plugin-code",
+        "chdir-home-then-relative",
+        "chdir-unknown-then-relative",
+        "subprocess-cwd-relative",
+        "dot-relative",
+        "parent-relative",
+        "rmtree-dot-relative",
+        "rmtree-parent-plugins",
+        "subprocess-rm-relative",
+        "state-subfolder",
+        "profile-relative",
+        "inner-sentrook-normalised",
+        "hermes-profile-state",
+        "hermes-home-variable",
+        "hermes-docker-home",
+        "hermes-docker-profile-loop",
+        "hermes-docker-profile-alias",
+        "openclaw-state",
+        "openclaw-extension",
+        "openclaw-dev-profile-loop",
+        "openclaw-dev-extension",
+        "home-other-case",
+        "fragment-after-interpolation",
+        "join-component",
+        "split-home-name",
+        "symlink-to-split-home",
+        "moved-state-folder",
+        "relative-readme",
+        "legacy-file-name",
+        "percent-format",
+        "percent-format-plugins",
+        "percent-format-trailing-slash",
+        "percent-format-named",
+        "fstring-shell",
+        "shell-variable-braces",
+        "sh-c-quoted-variable",
+        "node-template",
+        "tests-then-parent",
+        "schema-then-parent",
+        "package-then-parent",
+        "variable-then-parent",
+        "join-parent",
+        "node-extension-schema-parent",
+        "deep-tests-then-parents",
+        "join-package-parents",
+        "srv-double",
+        "home-user-double",
+        "profile-double",
+        "relative-double-not-package",
+        "dirname-twice",
+        "pathlib-parent",
+        "pathlib-parents",
+        "join-pardir",
+        "dot-plus-dot",
+        "dot-times-two",
+        "chr-46",
+        "octal-escape",
+        "hex-escape",
+        "unquote",
+        "rsplit",
+        "removesuffix",
+        "rpartition",
+        "chdir-pardir",
+        "normpath",
+        "resolve",
+        "node-dirname",
+        "node-repeat",
+        "plugin-folder-parent",
+        "plugin-folder-source-shape",
+        "backtick-echo",
+        "backtick-xargs-dirname",
+        "backtick-dirname-substitution",
+        "backtick-short",
+        "citation-and-moved-state",
+        "citation-and-home-state",
+        "join-dot-fstring",
+        "join-dot-percent",
+        "join-dot-format",
+        "chdir-dot-fstring",
+        "join-dot-double-slash",
+        "join-dot-dot-dot",
+        "join-x-parent",
+        "chdir-shell-rm",
+        "shell-cd-rm",
+        "climb-os-path-split",
+        "climb-partition",
+        "climb-commonpath",
+        "climb-commonprefix",
+        "climb-node-parse",
+        "climb-padend",
+        "climb-curdir",
+        "climb-named-escape",
+    ],
+)
+def test_c4star_inline_code_naming_a_state_or_install_location_is_asked(code):
+    _, env = run(_code(code))
+    reasons = floor_reasons(env)
+    assert "guardrail.state_dir_write" not in reasons, env.evidence["findings"]
+    (floor,) = [f for f in env.floors if f.reason == _REVIEW]
+    assert floor.enforce is Enforce.REVIEW
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # Notes, reports and tables that cite Sentrook's source files, written elsewhere.
+        "import os\nT='The fallback lives in sentrook/sentrook/jev/client.py.'\n"
+        "open(os.path.expanduser('~/docs/notes.md'),'w').write(T)",
+        "rows=['| deploy/sentrook-scan/nginx.conf | proxy |','| deploy/sentrook-scan/compose.yaml | stack |']\n"
+        "open('/tmp/x.md','w').write('\\n'.join(rows))",
+        "import os\nR='Snooze is in ~/projects/Sentrook/integrations/hermes/plugin/snooze.py.'\n"
+        "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
+        "import os\nR='Snooze is in ~/projects/sentrook/integrations/hermes/plugin/snooze.py.'\n"
+        "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
+        "import os\nR='Tests: sentrook/tests/test_aira_detectors.py, schema in ~/src/sentrook/schema/planir.json.'\n"
+        "open(os.path.expanduser('~/reports/r.md'),'w').write(R)",
+        # The same, with the host's home named for the file written.
+        _NOTES
+        + "T='The fallback lives in sentrook/sentrook/jev/client.py and the probe prompts.'\n"
+        "open(OUT+'Ticket drafts.md','w',encoding='utf-8').write(T)",
+        _NOTES + "T='Use `/sentrook status` to check, and Sentrook/Hermes notes for the rest.'\n"
+        "open(OUT+'a.md','w').write(T)",
+        "from pathlib import Path\n"
+        "(Path.home()/'notes'/'sentrook.md').write_text('see sentrook/sentrook/aira/detectors.py')",
+    ],
+    ids=[
+        "source-file-cited",
+        "deploy-table",
+        "repo-checkout-path",
+        "repo-checkout-path-lower",
+        "tests-and-schema",
+        "source-file-cited-home-named",
+        "slash-command-and-prose",
+        "pathlib-elsewhere",
+    ],
+)
+def test_c4star_inline_code_citing_sentrook_source_files_is_silent(code):
+    _, env = run(_code(code))
+    reasons = floor_reasons(env)
+    assert _REVIEW not in reasons and "guardrail.state_dir_write" not in reasons, env.evidence[
+        "findings"
+    ]
+
+
+def test_c4star_source_packages_list_the_scanner_package():
+    """`code_text_paths.source_packages` names exactly the scanner package's subpackages (folders
+    with an `__init__.py`) and top-level modules, so a new one cannot be missed."""
+    from pathlib import Path
+
+    import sentrook
+    from sentrook.aira.lists import load_lists
+
+    root = Path(sentrook.__file__).parent
+    actual = {p.name for p in root.iterdir() if p.is_dir() and (p / "__init__.py").is_file()}
+    actual |= {p.name for p in root.iterdir() if p.is_file() and p.suffix == ".py"}
+    listed = set(load_lists().strings("guardrail", "code_text_paths", "source_packages"))
+    assert listed == actual
 
 
 @pytest.mark.parametrize(

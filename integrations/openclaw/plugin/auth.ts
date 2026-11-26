@@ -34,6 +34,31 @@ export interface OidcCredentials {
   scope: string;
 }
 
+/**
+ * The identity service refused the scan credentials because the owner withdrew consent on the FIDU portal
+ * (`error_reason: consent_withdrawn`). Like any refused credential, scans stop until the owner signs in again.
+ */
+export class ConsentWithdrawnError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`client_credentials token mint failed: HTTP ${status}: consent withdrawn`);
+    this.status = status;
+  }
+}
+
+export const CONSENT_WITHDRAWN = "consent_withdrawn";
+
+/** A token answer that says consent was withdrawn: a 4xx whose JSON `error_reason` is `consent_withdrawn`. */
+export function consentWithdrawn(status: number, text: string): boolean {
+  if (status < 400 || status >= 500) return false;
+  try {
+    const body = JSON.parse(text);
+    return !!body && typeof body === "object" && body.error_reason === CONSENT_WITHDRAWN;
+  } catch {
+    return false;
+  }
+}
+
 type TokenCache = { accessToken: string; expiresAtMs: number; cacheKey: string };
 let tokenCache: TokenCache | null = null;
 
@@ -182,6 +207,7 @@ export async function getScanAccessToken(
     }),
   });
   const text = await response.text();
+  if (consentWithdrawn(response.status, text)) throw new ConsentWithdrawnError(response.status);
   if (!response.ok) {
     const hint = text.trim().slice(0, 200);
     throw new Error(`client_credentials token mint failed: HTTP ${response.status}${hint ? `: ${hint}` : ""}`);

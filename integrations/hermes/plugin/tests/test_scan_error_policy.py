@@ -139,3 +139,28 @@ def test_usable_answers_are_unaffected(h, platform):
         assert review["message"] != SCAN_ERROR_TEXT
     decisions = [e["decision"] for e in h.traffic()]
     assert not any(d.endswith("_on_error") for d in decisions), decisions
+
+
+@pytest.mark.parametrize(
+    ("mode", "on_scan_error", "text"),
+    [
+        (
+            "enforce",
+            "review",
+            "every tool call will be held for review, or blocked on unattended runs, until this is fixed",
+        ),
+        ("enforce", "deny", "every tool call will be blocked until this is fixed"),
+        # A configuration error is never let through, even with on_scan_error=allow.
+        ("enforce", "allow", "every tool call will be blocked until this is fixed"),
+        (
+            "observe",
+            "review",
+            "no tool call is scanned until this is fixed (observe mode: nothing is blocked)",
+        ),
+    ],
+)
+def test_invalid_endpoint_log_says_what_happens_to_tool_calls(mode, on_scan_error, text):
+    """The owner's log line for an invalid endpoint, in the same words as the OpenClaw plugin."""
+    from plugin.scan_error_policy import invalid_endpoint_effect
+
+    assert invalid_endpoint_effect(mode, on_scan_error) == text

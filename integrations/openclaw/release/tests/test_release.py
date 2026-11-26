@@ -44,6 +44,9 @@ def plugin(tmp_path: Path, *, version="2.1.0-beta.1", constant=None, changelog=N
         f'// header\nexport const PLUGIN_VERSION = "{constant or version}";\n'
     )
     (d / "index.js").write_text("export default {};\n")
+    (d / "README.md").write_text(
+        f"# Sentrook for OpenClaw\n\n{release.docs.markdown('Details.')}\n"
+    )
     if changelog is None:
         changelog = f"# {release.PACKAGE_NAME}\n\n## {version}\n\n### Patch Changes\n\n- A fix.\n"
     (d / "CHANGELOG.md").write_text(changelog)
@@ -261,3 +264,23 @@ def test_npm_pack_output_is_what_the_record_names(tmp_path):
     ).stdout.split()
     assert "package/package.json" in listed
     assert sorted(p.name for p in (tmp_path / "out/package").iterdir()) == [info["file"]]
+
+
+@pytest.mark.parametrize("phrase", ["other personal data", "OpenRouter", "TypeSafe", "beta"])
+def test_a_listing_without_the_disclosure_fails(tmp_path, phrase):
+    d = plugin(tmp_path)
+    readme = d / "README.md"
+    readme.write_text(re.sub(re.escape(phrase), "x", readme.read_text(), flags=re.I))
+    with pytest.raises(release.ReleaseError, match=re.escape(repr(phrase))):
+        release.check(d, "next")
+
+
+def test_a_package_without_a_readme_fails(tmp_path):
+    d = plugin(tmp_path)
+    (d / "README.md").unlink()
+    with pytest.raises(release.ReleaseError, match="listing"):
+        release.check(d, "next")
+
+
+def test_the_shipped_listing_carries_the_disclosure():
+    release.check_listing(release.PLUGIN_DIR)

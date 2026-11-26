@@ -8,7 +8,8 @@ Used by .github/workflows/release-hermes-plugin.yml; each step also runs locally
         clones the mirror, replaces its content with the plugin as published (no tests), the monorepo's
         README and CHANGELOG, keeping the mirror-authored LICENSE, SECURITY.md, CONTRIBUTING.md and .github,
         and commits it locally. Writes DIR/release.json (version, tag, parent, sha, ...) and DIR/tree (the
-        commit's files, what the compatibility check validates). Pushes nothing.
+        commit's files, what the compatibility check validates). Pushes nothing. Refuses first unless the
+        catalog description and the README carry the disclosure (`check_listing`).
     release.py push --mirror URL --release release.json --out DIR
         rebuilds the same commit, checks it is the one built (same parent, same sha), pushes it to the
         mirror's main and tags it hermes-plugin-v<version>. Refuses if the mirror moved or the tag exists.
@@ -35,6 +36,9 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
+sys.path.insert(0, str(REPO_ROOT / "integrations/docs"))
+import docs  # noqa: E402  (the disclosure paragraph every listing carries)
+
 PLUGIN_DIR = REPO_ROOT / "integrations/hermes/plugin"
 README = REPO_ROOT / "integrations/hermes/README.md"
 VERSIONS = REPO_ROOT / "integrations/hermes/compat/versions.txt"
@@ -163,6 +167,7 @@ def build(
     if not changelog.exists():
         raise ReleaseError(f"{changelog} is missing")
     changelog_entry(changelog.read_text(), version)  # refuses before anything is built
+    check_listing(readme)
 
     out.mkdir(parents=True, exist_ok=True)
     work = out / "mirror"
@@ -295,6 +300,30 @@ def render_entry(entry: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def listing_description(template: dict) -> str:
+    """The catalog description with the disclosure paragraph filled in. Refused unless it says everything
+    the disclosure must (`docs.REQUIRED_PHRASES`)."""
+    description = " ".join(str(template.get("description", "")).split())
+    details = str(template.get("disclosure_details", ""))
+    description = description.replace("{{disclosure}}", docs.plain(details))
+    missing = docs.missing_phrases(description)
+    if missing:
+        raise ReleaseError(
+            "the catalog description must disclose " + ", ".join(repr(p) for p in missing)
+        )
+    return description
+
+
+def check_listing(readme: Path = README, entry_template: Path = ENTRY_TEMPLATE) -> None:
+    """Refuses a release whose catalog description or README (which the catalog shows) lacks the disclosure."""
+    listing_description(yaml.safe_load(Path(entry_template).read_text()))
+    missing = docs.missing_phrases(Path(readme).read_text())
+    if missing:
+        raise ReleaseError(
+            f"{Path(readme).name} must disclose " + ", ".join(repr(p) for p in missing)
+        )
+
+
 def catalog_entry(info: dict, plugin_dir: Path = PLUGIN_DIR) -> dict:
     m = manifest(plugin_dir)
     if not SHA.fullmatch(info["sha"]):
@@ -308,6 +337,8 @@ def catalog_entry(info: dict, plugin_dir: Path = PLUGIN_DIR) -> dict:
     template = yaml.safe_load(ENTRY_TEMPLATE.read_text())
     if template["name"] != m["name"]:
         raise ReleaseError(f"catalog name {template['name']} is not plugin.yaml's {m['name']}")
+    template["description"] = listing_description(template)
+    template.pop("disclosure_details", None)
     entry: dict = {}
     for key, value in template.items():
         entry[key] = value

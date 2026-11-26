@@ -2,7 +2,7 @@
 # Everything runs through uv; `make install` creates .venv with the dev extras.
 .PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check \
 	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat openclaw-compat \
-	hermes-release-test openclaw-release-test
+	hermes-release-test openclaw-release-test docs-check
 
 help:
 	@echo "install       uv sync with dev extras"
@@ -24,6 +24,8 @@ help:
 	@echo "              pinned floor and latest, or OPENCLAW_IMAGE=<image>"
 	@echo "hermes-release-test  the Hermes plugin release steps (integrations/hermes/release)"
 	@echo "openclaw-release-test  the OpenClaw plugin release steps (integrations/openclaw/release; needs npm)"
+	@echo "docs-check    the listing disclosure is current; guides, skills and listings never say Sentrook"
+	@echo "              learns or changes by itself (integrations/docs)"
 
 # The gitleaks release the vendor key shapes of the second redaction pass are generated from.
 # Also the gitleaks image security.yml scans with. CI checks the file against it;
@@ -98,6 +100,11 @@ hermes-release-test:
 # The OpenClaw plugin release steps (release-plugin.yml): version, CHANGELOG, channel, the packed artifact.
 openclaw-release-test:
 	uv run python -m pytest integrations/openclaw/release/tests -q
+
+# The disclosure paragraph every listing carries, and wording that describes behaviour Sentrook does not have.
+docs-check:
+	uv run python integrations/docs/docs.py check
+	uv run python -m pytest integrations/docs/tests -q
 
 # The blocking set by default; HERMES_IMAGE=nousresearch/hermes-agent:main for any other image.
 HERMES_IMAGE ?= $(shell python3 integrations/compat/compat.py images --host hermes)

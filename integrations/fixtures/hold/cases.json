@@ -1022,6 +1022,14 @@
         "status": 403
       },
       "reason": "Sentrook's endpoint or credentials are not configured correctly"
+    },
+    {
+      "failure": {
+        "kind": "http",
+        "status": 401,
+        "setup": "consent_withdrawn"
+      },
+      "reason": "consent for Sentrook was withdrawn on the FIDU portal"
     }
   ],
   "scan_failure_notices": [

@@ -11,7 +11,7 @@ const FIXTURE = JSON.parse(
 ) as {
   budgets: { openclaw_title: number; openclaw_description: number };
   cases: { name: string; response: any; tool: string; relaxed: boolean; hint: any; remember: boolean; why_id: string | null; openclaw: { title: string; description: string } }[];
-  errors: { name: string; cause: "rate_limited" | "config" | "auth" | "unreachable" | "not_signed_in" | "sign_in_rejected"; openclaw: { title: string; description: string } }[];
+  errors: { name: string; cause: "rate_limited" | "config" | "auth" | "unreachable" | "not_signed_in" | "sign_in_rejected" | "consent_withdrawn"; openclaw: { title: string; description: string } }[];
 };
 
 // What OpenClaw replaces with a visible code before it checks the limits (its exec-approval text sanitizer).
