@@ -859,7 +859,8 @@ store scan content; its metadata logs are kept for up to 60 days. On your machin
 records for 30 days (see below) and the conversation copies above are kept for 7 days. Sentrook is a beta and does not guarantee protection.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.hermes/sentrook/traffic.jsonl`,
-readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with
+readable only by your user and rotated at 50 MB. Records are kept for 30 days: the plugin deletes older ones from it
+and its rotated copy as it writes. The plugin never uploads it. Turn it off with
 `hermes config set plugins.entries.sentrook.settings.traffic_log.enabled false`; the history and why commands then
 have nothing to show.
 
