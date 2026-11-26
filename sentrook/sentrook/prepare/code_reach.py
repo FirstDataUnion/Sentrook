@@ -8,8 +8,8 @@ dunders or stack frames, a name the code never binds). Code with no such sink on
 writes. Writing a file counts as a sink unless the file is plainly data (`.json`, `.txt`, …): a quoted
 command written into `~/.bashrc` or a `.pth` file runs later. A data file's name may come from a loop over
 a literal collection of constants or from what each call passes to a helper the program defines (a program
-with a class is not followed: its methods run without being named); a `shutil` file copy or move is followed
-only with both paths written out in full, and folder copies and removals are not followed.
+with a class is not followed: its methods run without being named); a `shutil` file copy is followed only
+with both paths written out in full, and moves, folder copies and removals are not followed.
 
 When the code's only sinks are HTTP calls this module follows (`requests`, `httpx`, `urllib.request`) and
 every request call is aimed at a URL written in the code (directly, through a name set only to such URLs,
@@ -225,10 +225,10 @@ _RESTRICTED: dict[str, frozenset[str]] = {
     # The Hermes code tool's own module: its file tools stay local; `terminal`, `web_search` and
     # `web_extract` reach a shell or the network.
     "hermes_tools": frozenset({"read_file", "write_file", "search_files", "patch"}),
-    # File copies and moves, followed only as direct calls whose paths are written out in full and pass the
-    # write rules (`_Reader._check_shutil`); `copytree`, `rmtree`, `which`, `chown`, `unpack_archive` and the
-    # rest are not followed.
-    "shutil": frozenset({"copy", "copy2", "copyfile", "move"}),
+    # File copies, followed only as direct calls whose paths are written out in full and pass the write
+    # rules (`_Reader._check_shutil`); `move` (it renames whole folders), `copytree`, `rmtree`, `which`,
+    # `chown`, `unpack_archive` and the rest are not followed.
+    "shutil": frozenset({"copy", "copy2", "copyfile"}),
 }
 
 #: The `shutil` calls `_Reader._check_shutil` follows, with the parameters each takes by position.
@@ -236,11 +236,10 @@ _SHUTIL_OPS: dict[str, tuple[str, ...]] = {
     "copy": ("src", "dst"),
     "copy2": ("src", "dst"),
     "copyfile": ("src", "dst"),
-    "move": ("src", "dst"),
 }
-#: The keywords those calls may take besides their parameters. Not `copy_function`, which hands the paths to
-#: code this reading does not see.
-_SHUTIL_KEYWORDS = frozenset({"follow_symlinks"})
+#: The keywords those calls may take besides their parameters, each only as written here: `follow_symlinks=False`
+#: would place a link (to anything) at a data file's name.
+_SHUTIL_KEYWORDS = {"follow_symlinks": True}
 #: Modules followed only where the program imports them itself: reached through another module
 #: (`zipfile.shutil`), their calls are not seen as the calls they are.
 _DIRECT_ONLY = frozenset({"shutil"})
@@ -434,6 +433,9 @@ _PATH_MODULES = frozenset({"posixpath", "ntpath", "genericpath"})
 _CHAIN_DEPTH = 6
 #: How many values one expression may resolve to before its target counts as not followed.
 _MAX_VALUES = 64
+#: The longest path the path reading works out: past it the program is not followed (`a = b + b` written a few
+#: dozen times would otherwise build text that doubles each time).
+_MAX_PATH_CHARS = 4096
 
 #: Call names (attribute or plain) that make an HTTP request with the followed clients.
 _REQUEST_CALLS = frozenset(
@@ -538,6 +540,13 @@ def _squash(text: str) -> str:
     return out
 
 
+def _short(values: list[str]) -> list[str]:
+    """`values`, none longer than `_MAX_PATH_CHARS`; past it the program is not followed."""
+    if any(len(v) > _MAX_PATH_CHARS for v in values):
+        raise _Unfollowed
+    return values
+
+
 def _as_pathlib(text: str) -> str:
     """A path as `pathlib` holds it: no trailing `/`, no empty or `.` parts (`Path("a//./b/")` is `a/b`)."""
     lead = (
@@ -591,7 +600,7 @@ def _plain_data_file(path: str) -> bool:
     return _fold(path).endswith(_DATA_EXTENSIONS) and ".." not in path.split("/")
 
 
-#: Where a `shutil` copy or move may put a file: the user's home or `/tmp`.
+#: Where a `shutil` copy may put a file: the user's home or `/tmp`.
 _COPY_ROOTS = re.compile(r"(?:~|/home/[^/]+|/Users/[^/]+|/root)/|/tmp/")
 #: Folders a copied file may not land in anywhere: programs are run or imported from them.
 _COPY_REFUSED_FOLDERS = frozenset({"bin", "sbin", "site-packages", "dist-packages", "node_modules"})
@@ -1275,13 +1284,13 @@ class _Reader:
         return None
 
     def _check_shutil(self, node: ast.Call, op: str) -> None:
-        """A `shutil` file copy or move (`copy`, `copy2`, `copyfile`, `move`) is followed when both paths are
+        """A `shutil` file copy (`copy`, `copy2`, `copyfile`) is followed when both paths are
         written out in full (`_exact_paths`: no part computed) and every value they can take passes: the source
         is a data file (`_DATA_EXTENSIONS`) and the destination is one too, or (but for `copyfile`) a folder written
         as a string with a trailing `/`, where the file keeps its name; each passes `_allowed_path` and has no `..`,
         and the destination is in the user's home or `/tmp` and nowhere programs are run or imported from
-        (`_copy_destination`). Folder copies and removals (`copytree`, `rmtree`) are not followed: what a folder
-        holds is not known."""
+        (`_copy_destination`). Moves, folder copies and removals (`move`, `copytree`, `rmtree`) are not followed:
+        what a folder holds is not known, and a move renames one whole."""
         if any(isinstance(a, ast.Starred) for a in node.args) or any(
             k.arg is None for k in node.keywords
         ):
@@ -1294,6 +1303,10 @@ class _Reader:
             assert k.arg is not None
             if k.arg in given or (k.arg not in params and k.arg not in _SHUTIL_KEYWORDS):
                 raise _Unfollowed  # `copy_function=`
+            if k.arg in _SHUTIL_KEYWORDS and not (
+                isinstance(k.value, ast.Constant) and k.value.value is _SHUTIL_KEYWORDS[k.arg]
+            ):
+                raise _Unfollowed  # `follow_symlinks=False`
             given[k.arg] = k.value
         src, dst = given.get("src"), given.get("dst")
         if src is None or dst is None:
@@ -1373,13 +1386,12 @@ class _Reader:
         able to end as a denied one, and no string anywhere in the path (a middle `join` argument, a `/` operand)
         may name a dot-directory. A path into a folder data files may go in (`_DATA_DOT_DIRS`) must be written out
         in full: a computed part could climb back out of it."""
-        bad, into_data_dir = self._path_strings(path)
-        if bad:
-            return False
         exact = self._exact_paths(path)
         if exact is not None:
+            # judged as resolved: `join("~/.hermes/attachments", "x.md")` is `~/.hermes/attachments/x.md`
             return all(".." not in t.split("/") and _allowed_path(t, t) for t in exact)
-        if into_data_dir or self._misplaced(path, True):
+        bad, into_data_dir = self._path_strings(path)
+        if bad or into_data_dir or self._misplaced(path, True):
             return False
         prefixes = self._path_prefixes(path)
         suffixes = self._path_suffixes(path)
@@ -1495,10 +1507,10 @@ class _Reader:
         nothing computed, and `os.path.join`, `os.path.expanduser` and `Path` of such paths. None when any part
         is computed (`os.pardir`, `.parent`, `dirname`, `chr(46) * 2`, `input()`), or past `_MAX_VALUES`."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-            return [expr.value]
+            return _short([expr.value])
         if isinstance(expr, ast.JoinedStr):
             if all(isinstance(v, ast.Constant) and isinstance(v.value, str) for v in expr.values):
-                return ["".join(v.value for v in expr.values)]  # type: ignore[attr-defined]
+                return _short(["".join(v.value for v in expr.values)])  # type: ignore[attr-defined]
             return None
         if isinstance(expr, ast.Name):
             return self._per_name("exact", expr.id, lambda: self._name_exact(expr.id), None)
@@ -1507,6 +1519,8 @@ class _Reader:
             right = None if left is None else self._exact_paths(expr.right)
             if left is None or right is None or len(left) * len(right) > _MAX_VALUES:
                 return None
+            if any(len(a) + len(b) > _MAX_PATH_CHARS for a in left for b in right):
+                raise _Unfollowed  # `a = b + b` written many times: the text doubles each time
             if isinstance(expr.op, ast.Add):
                 return [a + b for a in left for b in right]
             return [_as_pathlib(posixpath.join(a, b)) for a in left for b in right]
@@ -1526,6 +1540,8 @@ class _Reader:
                 got = self._exact_paths(arg)
                 if got is None or len(out) * len(got) > _MAX_VALUES:
                     return None
+                if any(len(a) + len(b) > _MAX_PATH_CHARS for a in out for b in got):
+                    raise _Unfollowed
                 out = [posixpath.join(a, b) if a else b for a in out for b in got]
             if fn is not posixpath.join and fn is not posixpath.expanduser:
                 out = [_as_pathlib(t) for t in out]  # `Path("x.pth/")` is the file `x.pth`

@@ -39,7 +39,7 @@ def _shutil(root: str) -> str:
         "shutil.copy(src + 'intro.md', dst + 'intro-old.md')\n"
         "shutil.copy2(src + 'faq.md', dst)\n"
         "shutil.copyfile(os.path.join(src, 'setup.md'), os.path.join(dst, 'setup.md'))\n"
-        "shutil.move(dst + 'intro-old.md', B + 'archive/intro-v3.md')\n"
+        "shutil.copy(dst + 'intro-old.md', B + 'archive/intro-v3.md', follow_symlinks=True)\n"
         "t = open(dst + 'intro.md', encoding='utf-8').read()\n"
         f"t = re.sub('Contact.*', '{TEXT}', t)\n"
         "open(dst + 'intro.md', 'w', encoding='utf-8').write(t)\n"
@@ -444,6 +444,20 @@ FIRES = {
             "a computed cache name": "'/home/me/.hermes/cache/' + input() + '.md'",
         }.items()
     },
+    # a move renames whole folders; a copy that keeps links places a link at a data file's name
+    "move of a folder named like a data file into a project": (
+        "import shutil\nshutil.move('/tmp/dl/tests.json', '/home/me/proj/')"
+    ),
+    "move of a folder named like a data file to a file name": (
+        "import shutil\nshutil.move('/tmp/dl/tests.json', '/home/me/proj/tests.json')"
+    ),
+    "from shutil import move": "from shutil import move\nmove('/tmp/a.md', '/home/me/docs/a.md')",
+    "copy keeping links": (
+        "import shutil\nshutil.copy('/tmp/a.md', '/home/me/docs/a.md', follow_symlinks=False)"
+    ),
+    "copy with computed link handling": (
+        "import shutil, sys\nshutil.copy2('/tmp/a.md', '/home/me/docs/', follow_symlinks=bool(sys.argv))"
+    ),
     # a Path drops a trailing `/`: the destination is a file of that name, not a folder
     **{
         f"copy to {dst}": f"import shutil\nfrom pathlib import Path, PurePath\nshutil.{op}({_D}, {dst})"
@@ -555,6 +569,39 @@ def test_hermes_attachments_hold_data_files():
     for home in ("~", "/home/me", "/root", "/Users/me"):
         code = f"open('{home}/.hermes/attachments/x/notes.md', 'w').write('{TEXT}')"
         assert python_reach(code) == LOCAL, home
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "os.path.join('/Users/me/.hermes/attachments', 'x.md')",
+        "os.path.join(os.path.expanduser('~/.hermes/attachments'), 'x', 'notes.md')",
+        "Path('/home/me/.hermes/cache') / 'runs' / 'rows.json'",
+    ],
+)
+def test_a_joined_path_into_attachments_is_judged_as_resolved(path):
+    """The folder written without a trailing `/`: the joined path, resolved in full, is a data file in it."""
+    code = f"import os\nfrom pathlib import Path\nopen({path}, 'w').write('{TEXT}')"
+    assert python_reach(code) == LOCAL
+
+
+def test_doubling_text_in_a_path_is_not_followed_and_stays_fast():
+    """`a1 = a0 + a0` written a few dozen times: the text doubles each time; past 4,096 characters the reading
+    stops instead of building it."""
+
+    def program(d: int) -> str:
+        chains = []
+        for c in range(200 // d):
+            lines = [f"c{c}_0 = 'x'"] + [
+                f"c{c}_{i} = c{c}_{i - 1} + c{c}_{i - 1}" for i in range(1, 29)
+            ]
+            chains.append("\n".join(lines) + f"\nopen('/home/me/docs/' + c{c}_28 + '.json', 'w')\n")
+        return "".join(chains)
+
+    texts = {d: program(d) for d in (1, FACTOR)}
+    assert python_reach(texts[FACTOR]) == CodeReach(network=True)
+    _, large = assert_linear(lambda d: python_reach.__wrapped__(texts[d]), "doubling chains")
+    assert large < 2.0
 
 
 # ------------------------------------------------------------------ an address also sent to stays a recipient
