@@ -46,7 +46,9 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   service problem, not a security block.
 
 Grants and channel bindings tell Sentrook what is routine (a host the agent always sends to, a folder it works in, the
-channel a daily report goes to). They never lower Sentrook's floors: reading secrets and sending them somewhere is
+channel a daily report goes to). The owner sets them, with `{{cmd setup}} apply`, `{{cmd grant}}` and `{{cmd bind}}`,
+or by {{always_answer}}; Sentrook does not add or widen them by itself, and approving the same kind of call again and
+again changes nothing unless the owner sets a grant for it. They never lower Sentrook's floors: reading secrets and sending them somewhere is
 still blocked whatever is granted.
 
 ## The owner's commands

@@ -30,7 +30,8 @@ us reasonable time to investigate and ship a fix before any public disclosure.
 
 In scope (examples):
 
-- Auth bypass or privilege issues on `sentrook serve` (`/scan`, `/feedback`, …)
+- Auth bypass or privilege issues on the routes of `sentrook serve`: `POST /scan`,
+  `GET /healthz` (also `GET /health`) and `GET /metrics`
 - Secrets leakage in logs, sanitize failures, or packaged artifacts
 - Remote code execution or unintended filesystem access via PlanIR / rule
   loading

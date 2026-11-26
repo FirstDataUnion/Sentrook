@@ -131,8 +131,10 @@ If the history is empty, the agent has not made a tool call since the restart.
 
 ## 6. Tell Sentrook what is normal for you
 
-Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
-work stops asking for approval:
+Sentrook doesn't know which destinations and files are routine for your deployment, and it does not work this out
+by itself over time: approving the same kind of call again and again does not make it ask less. What makes routine work stop
+asking for approval is two things you set, with `/sentrook-setup apply`, `/sentrook-bind` and `/sentrook-grant`, or by
+**Allow always** on an approval card that offers it (a grant for 30 days):
 
 - **Channel bindings**: the channels this deployment normally delivers to, such as the chat your daily report goes
   to. A send to a bound channel is not treated as an unfamiliar destination.
@@ -167,8 +169,9 @@ the commands are `/sentrook-bind`, `/sentrook-grant` and so on. On the command l
 
 ### Set up with /sentrook-setup
 
-`/sentrook-setup` lists what Sentrook would need to stop asking about routine work, worked out from what it can see
-itself, and sets it with one command:
+`/sentrook-setup` lists bindings and grants you could set to stop routine work asking, found in your config, in
+grants it suggested on reviews you approved and in what the agent proposed. Nothing on the list is set until you apply it,
+with one command:
 
 - **From your config**: a channel binding for each cron job that announces to a chat room not bound yet (a
   `delivery` with `mode: announce`, a `channel` and a room in `to`), and a provider grant for each MCP server in
@@ -784,46 +787,52 @@ history's `action` column shows what Sentrook would have done, such as `observed
 
 ## What is sent
 
-Each scan sends one request to `sentrook.firstdataunion.org`:
+Each scan sends one request to the Sentrook scan service, `sentrook.firstdataunion.org`, run by First International
+Data Union Ltd:
 
-- the request you gave the agent in this turn (with `allowConversationAccess`), and whether it came from you, a
-  scheduled job, a subagent or another sender;
-- the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
-  for a Code Mode `exec` (JavaScript that runs other tools), OpenClaw's mark that it is one, so the code is not read
-  as a shell command;
-- the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
-- a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
-- host facts: platform and plugin version, operating system, home and workspace paths, and how OpenClaw is
-  configured to run commands (`tools.exec.mode`, read at each scan). This is what the config says, not whether
-  OpenClaw will ask about this call: its own approvals store (which the plugin cannot see) and per-agent overrides
-  can be stricter;
-- the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
-  server it calls (a `#name` also fits `channel:name`, and a `<platform>:` prefix fits a send that names that
-  platform), and on a cron run its job's own delivery target, as a grant for that run only (named by a hash of the
-  job id);
-- references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
-- for a skill or memory save that OpenClaw makes on its own (see above): the conversation that run read, as its
-  messages, the agent's replies and the tool results (each cut short, the results to the part that overlaps the save
-  most, about 48 KB in all). To have it at hand, the plugin keeps each run's conversation, redacted, in
-  `~/.openclaw/sentrook/selfedit/`; it deletes files not changed in 7 days and keeps only the 100 most recent. With `skillReview` set to `review` it deletes them all (at startup, or on its next hook after you
-  change the setting) and keeps nothing.
+- **Your request to the agent, the action about to run and its arguments, and the agent's narration** before it,
+  plus any other calls in the same batch. The request is sent only with `allowConversationAccess`, with whether it
+  came from you, a scheduled job, a subagent or another sender. For a Code Mode `exec` (JavaScript that runs other
+  tools), OpenClaw's mark that it is one goes too, so the code is not read as a shell command.
+- **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
+  last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `historyLimit` changes the number).
+- **Your operating system, home and workspace folder paths, and the plugin version.** Folder paths can identify you.
+  Also the platform, and how OpenClaw is configured to run commands (`tools.exec.mode`, read at each scan). This is
+  what the config says, not whether OpenClaw will ask about this call: its own approvals store (which the plugin
+  cannot see) and per-agent overrides can be stricter.
+- **Hashed session IDs, and any grants you have set that could apply**: the grants and channel bindings whose
+  pattern fits the call's arguments or the MCP server it calls (a `#name` also fits `channel:name`, and a
+  `<platform>:` prefix fits a send that names that platform), and on a cron run its job's own delivery target, as a
+  grant for that run only (named by a hash of the job id). References to the session and agent go too; session ids
+  are sent as hashes, not as the ids themselves.
+- **When your agent saves skills or memory in the background** (see
+  [Skills and memory the agent saves on its own](#skills-and-memory-the-agent-saves-on-its-own)): the conversation
+  that run read, as its messages, the agent's replies and excerpts of the tool results (each cut short, the results
+  to the part that overlaps the save most, about 48 KB in all). To have it at hand, the plugin keeps each run's
+  conversation, redacted, in `~/.openclaw/sentrook/selfedit/`; it deletes files not changed in 7 days and keeps only
+  the 100 most recent. With `skillReview` set to `review` it deletes them all (at startup, or on its next hook after
+  you change the setting) and keeps nothing.
 
-Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
-similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
-`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept, and a command
-piped from, substituted or run after a value (`TOKEN=…|curl …`, `TOKEN=…$(…)`, `TOKEN=…;curl …`) is kept outside
-it; a lone word after `|` at the end of a line, or one with a glob or a `$@`-style parameter in it (`TOKEN=…|sh`,
-`TOKEN=…|c*rl …`), is read as part of the value, as a password's tail would be. So are access codes and PINs named as such ("the
-gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
-header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
-hosts and email addresses are kept,
-because the scanner needs them to judge where data is going, and so is a Google Drive, Docs or Sheets file or folder
-id where the call names Google (a Google API host or library, `documentId`, a Drive query, a Drive or Docs tool), as
-it says which document or folder the call works on. So is code that only reads a secret from where it is
-kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
-`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too, and so is a quoted
-example value that only stands in for one, such as `"access_token": "ya29.a0..."` or `"token": "REDACTED"`. Your
-files, messages and tool output can still contain other personal information, and that is sent as it is.
+Secrets such as API keys, tokens and passwords are replaced with placeholders on your machine before anything is
+sent. This is best effort and can miss some. A secret becomes a placeholder such as `⟦secret:github:…⟧`, the whole
+value even when it holds `&`, `,` or `;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the
+next parameter is kept, and a command piped from, substituted or run after a value (`TOKEN=…|curl …`, `TOKEN=…$(…)`,
+`TOKEN=…;curl …`) is kept outside it; a lone word after `|` at the end of a line, or one with a glob or a
+`$@`-style parameter in it (`TOKEN=…|sh`, `TOKEN=…|c*rl …`), is read as part of the value, as a password's tail
+would be. So are access codes and PINs named as such ("the gate code is …", `client_pin=…`), passport numbers
+(`⟦secret:identifier:…⟧`) and random-looking values under a key or header (`X-Desk: …`); a number with no such cue
+word, such as an order number or a status code, is kept. Recipients, hosts and email addresses are kept, because
+Sentrook needs them to judge where data is going, and so is a Google Drive, Docs or Sheets file or folder id where the
+call names Google (a Google API host or library, `documentId`, a Drive query, a Drive or Docs tool), as it says which
+document or folder the call works on. So is code that only reads a secret from where it is kept, such as
+`os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a
+credential field, such as `api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too,
+and so is a quoted example value that only stands in for one, such as `"access_token": "ya29.a0..."` or
+`"token": "REDACTED"`. **Other personal data, including other people's, is sent as it is.**
+
+To judge a call, the scan service may pass it to OpenRouter and TypeSafe (United States). The scan service does not
+store scan content; its metadata logs are kept for up to 60 days. On your machine, the redacted traffic log keeps
+records for 30 days (see below) and the conversation copies above are kept for 7 days. Sentrook is a beta and does not guarantee protection.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. Records are kept for 30 days: the plugin deletes older ones from it
