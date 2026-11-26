@@ -2155,6 +2155,280 @@ def _cli_segments(a: CallAnalysis, lists: Lists) -> list[tuple[list[str], str]]:
     return out
 
 
+#: Pieces of shell text the parser did not take, in a command: blanks, a newline, a redirection
+#: that holds `&`, arithmetic (`$((`, `$[`, `((`), a parameter (`${`), a command substitution
+#: (`$(`), a control operator or backtick, a here-string or heredoc operator, a single-quoted or
+#: ANSI-C string (an unclosed one runs to the end), a double quote, an escape, or plain text.
+_SH_PIECE = re.compile(
+    r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<redir>[<>]&|&>>?)"
+    r"|(?P<arith>\$\(\(|\$\[)|(?P<param>\$\{)|(?P<sub>\$\()"
+    r"|(?P<op>&&|\|\||[;&|()`])|(?P<hs><<<)|(?P<hd><<-?)"
+    r"""|(?P<sq>'[^']*'?)|(?P<ansi>\$'[^'\\]*(?:\\.[^'\\]*)*'?)|(?P<dq>")"""
+    r"""|(?P<esc>\\.?)|(?P<plain>[^\s;&|()`'"\\<>$]+|[<>$])""",
+    re.S,
+)
+#: Pieces inside double quotes: text, an escape, arithmetic, a parameter, a command substitution
+#: (`$(` or a backtick), the closing quote, or a lone `$`.
+_SH_DQ_PIECE = re.compile(
+    r"""(?P<text>[^"\\$`]+)|(?P<esc>\\.?)|(?P<arith>\$\(\(|\$\[)|(?P<param>\$\{)"""
+    r"""|(?P<sub>\$\()|(?P<bq>`)|(?P<end>")|(?P<text2>\$)""",
+    re.S,
+)
+#: Pieces inside arithmetic or a parameter: what nests (brackets, quotes), and the rest.
+_SH_SKIP_PIECE = re.compile(r"""[^()\[\]{}'"\\]+|\\.?|'[^']*'?|"[^"\\]*(?:\\.[^"\\]*)*"?|.""", re.S)
+_SH_HEREDOC_TAG = re.compile(r"""[ \t]*(?P<q>['"]?)(?P<tag>[\w.-]+)(?P=q)(?=[\s;&|<>]|\Z)""")
+_DQ_ESCAPED = frozenset('\\"$`\n')
+#: Brackets that close arithmetic or a parameter: the opener's text, its closer and what nests.
+_SH_SKIPS = {
+    "$((": ("))", "(", ")"),
+    "((": ("))", "(", ")"),
+    "$[": ("]", "[", "]"),
+    "${": ("}", "{", "}"),
+}
+
+
+class _ShFrame:
+    """One nesting level of `_shell_commands`: a command list (the top, a `$(…)` or a backtick
+    substitution), a double-quoted string, or arithmetic or a parameter being skipped."""
+
+    __slots__ = ("close", "depth", "kind", "owner", "started", "word", "words")
+
+    def __init__(self, kind: str, close: str | None = None, owner: _ShFrame | None = None) -> None:
+        self.kind = kind
+        self.close = close
+        self.owner = owner  # the command frame whose word a quote or skip adds to
+        self.depth = 0
+        self.words: list[str] = []
+        self.word: list[str] = []
+        self.started = False  # an empty quoted string is still a word
+
+    def end_word(self) -> None:
+        if self.started:
+            self.words.append("".join(self.word))
+        self.word, self.started = [], False
+
+    def end_command(self, commands: list[list[str]]) -> None:
+        self.end_word()
+        if self.words:
+            commands.append(self.words)
+        self.words = []
+
+
+def _shell_commands(text: str) -> list[list[str]]:
+    """The simple commands of shell text the parser did not take, as words after quote removal
+    (a quoted string stays in its word): split at control operators and newlines, with the
+    commands of `$(…)` and backtick substitutions (also inside double quotes) read as commands of
+    their own, comments and heredoc bodies left out, and arithmetic and parameters (`$((…))`,
+    `$[…]`, `${…}`) kept whole, so a `<<` inside them is no heredoc. One pass over the text.
+
+    A heredoc body ends at a line holding only its tag. One with no such line is read as commands,
+    and no later heredoc is looked for: that keeps the pass linear, and reading too much only adds
+    findings. Unclosed quotes and substitutions run to the end."""
+    commands: list[list[str]] = []
+    stack = [_ShFrame("cmd")]
+    pending: list[str] = []  # heredoc tags whose bodies start at the next newline
+    heredocs = True
+    pos, n = 0, len(text)
+
+    def open_skip(opener: str, owner: _ShFrame) -> None:
+        owner.started = True
+        owner.word.append(opener)
+        stack.append(_ShFrame("skip", opener, owner))
+
+    while pos < n:
+        f = stack[-1]
+        if f.kind == "skip":
+            closer, opens, closes = _SH_SKIPS[str(f.close)]
+            assert f.owner is not None
+            if f.depth == 0 and text.startswith(closer, pos):
+                f.owner.word.append(closer)
+                pos += len(closer)
+                stack.pop()
+                continue
+            m = _SH_SKIP_PIECE.match(text, pos)
+            assert m is not None
+            piece = m.group()
+            pos = m.end()
+            if piece == opens:
+                f.depth += 1
+            elif piece == closes and f.depth:
+                f.depth -= 1
+            f.owner.word.append(piece)
+            continue
+        if f.kind == "dq":
+            assert f.owner is not None
+            m = _SH_DQ_PIECE.match(text, pos)
+            assert m is not None
+            kind, piece = m.lastgroup, m.group()
+            pos = m.end()
+            if kind == "end":
+                stack.pop()
+            elif kind == "esc":
+                f.owner.word.append(piece[1:] if piece[1:2] in _DQ_ESCAPED else piece)
+            elif kind == "sub":
+                stack.append(_ShFrame("cmd", ")"))
+            elif kind == "bq":
+                stack.append(_ShFrame("cmd", "`"))
+            elif kind in ("arith", "param"):
+                open_skip(piece, f.owner)
+            else:
+                f.owner.word.append(piece)
+            continue
+        m = _SH_PIECE.match(text, pos)
+        assert m is not None  # every character is some piece
+        kind, piece = m.lastgroup, m.group()
+        if kind == "plain" and not f.started and piece.startswith("#"):
+            nl = text.find("\n", pos)
+            pos = n if nl < 0 else nl
+            continue
+        pos = m.end()
+        if kind == "ws":
+            f.end_word()
+        elif kind == "nl":
+            f.end_command(commands)
+            if pending:
+                tags, pending = pending, []
+                for tag in tags:
+                    # The body: the lines up to one holding only the tag.
+                    line_at = pos
+                    while line_at < n:
+                        nl = text.find("\n", line_at)
+                        line_end = n if nl < 0 else nl
+                        if text[line_at:line_end].strip() == tag:
+                            pos = min(n, line_end + 1)
+                            break
+                        line_at = line_end + 1
+                    else:
+                        heredocs = False
+                        break
+        elif kind == "op":
+            if piece == f.close:  # the end of a `$(…)` or backtick substitution
+                f.end_command(commands)
+                stack.pop()
+            elif piece == "`":
+                f.started = True
+                stack.append(_ShFrame("cmd", "`"))
+            elif piece == "(" and not f.started and text.startswith("(", pos):
+                pos += 1
+                open_skip("((", f)
+            else:
+                f.end_command(commands)
+        elif kind == "sub":
+            f.started = True
+            stack.append(_ShFrame("cmd", ")"))
+        elif kind in ("arith", "param"):
+            open_skip(piece, f)
+        elif kind == "dq":
+            f.started = True
+            stack.append(_ShFrame("dq", owner=f))
+        elif kind == "hd":
+            f.end_word()
+            t = _SH_HEREDOC_TAG.match(text, pos)
+            if t is not None and heredocs:
+                pending.append(t.group("tag"))
+                pos = t.end()
+        elif kind == "hs":
+            f.end_word()
+        else:
+            f.started = True
+            if kind == "sq":
+                f.word.append(piece[1:-1] if len(piece) > 1 and piece.endswith("'") else piece[1:])
+            elif kind == "ansi":
+                inner = piece[2:-1] if len(piece) > 2 and piece.endswith("'") else piece[2:]
+                f.word.append(_unescape(inner))
+            elif kind == "esc":
+                if piece == "\\\n":
+                    f.started = bool(f.word)  # a line continuation joins, it adds nothing
+                else:
+                    f.word.append(piece[1:])
+            else:
+                f.word.append(piece)
+    for f in reversed(stack):
+        if f.kind == "cmd":
+            f.end_command(commands)
+    return commands
+
+
+#: Words that may come before a command's program: wrappers, keywords, `{`, `!` (with their
+#: options and an option's value, a function's name, and variable assignments).
+_COMMAND_PREFIXES = frozenset(
+    {
+        *("nice", "time", "timeout", "xargs", "eval", "exec", "command", "builtin", "env"),
+        *("sudo", "doas", "nohup", "stdbuf", "coproc", "{", "!"),
+        *("then", "do", "else", "elif", "if", "while", "until", "function"),
+    }
+)
+_ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+
+
+def _program_at(words: list[str], heads: set[str]) -> int:
+    """The position of a command's program after its prefixes (`nice`, `time -p`, `timeout 5`,
+    `sudo -u me`, `env X=1`, `{`, `!`, `then`); a host CLI word ends the prefixes."""
+    after_option = False
+    for i, w in enumerate(words):
+        low = w.lower()
+        if _program_name(w) in heads:
+            return i
+        if low in _COMMAND_PREFIXES or _ASSIGNMENT_WORD.match(w):
+            after_option = low in ("timeout", "function")  # `timeout 5`, `function f {`
+        elif w.startswith("-") and len(w) > 1:
+            after_option = "=" not in w
+        elif after_option:
+            after_option = False
+        else:
+            return i
+    return len(words)
+
+
+def _unparsed_cli_readings(
+    command: str, heads: set[str], lists: Lists, depth: int = 0
+) -> list[list[str]]:
+    """The host CLI commands a shell command runs, read without the parser (a command over the
+    parse limit, or one whose parse is not trusted): each simple command of `_shell_commands`,
+    read from its first word (launchers peeled off) and from its program after any prefixes, and
+    the commands of a shell `-c` script (nested up to three deep). A host CLI named later in a
+    command (`echo run openclaw …`), or inside quotes, heredocs or comments, is not read here
+    (`_quoted_cli_readings` reads it)."""
+    shells = set(lists.strings("installers", "shell_heads"))
+    out: list[list[str]] = []
+    for words in _shell_commands(command):
+        script = _shell_script(words, shells)
+        if script is not None and depth < 3:
+            out.extend(_unparsed_cli_readings(script, heads, lists, depth + 1))
+        for at in sorted({0, _program_at(words, heads)}):
+            tokens = _cli_tokens(words[at:], heads, lists) if at < len(words) else []
+            if tokens and tokens[0] in heads:
+                out.append(tokens)
+    return out
+
+
+#: What separates the words of the backstop reading: blanks and the shell's operator characters.
+_LOOSE_SPLIT = re.compile(r"[\s;&|()<>`]+")
+
+
+def _quoted_cli_readings(command: str, heads: set[str], lists: Lists) -> list[list[str]]:
+    """The host CLI commands named anywhere in the text: its words split at blanks and operator
+    characters, read from every word that names a host CLI up to the next one (so every word is
+    read once). Also those inside quotes, heredocs, comments or the middle of a command (a prompt,
+    a commit message, a document, `echo run openclaw …`), which the shell may not run."""
+    words: list[str] = []
+    for w in _LOOSE_SPLIT.split(command):
+        w = _shell_word(w).lstrip("${!")
+        if w.count("'") % 2 or w.count('"') % 2:
+            w = w.strip("'\"")  # a quote opened or closed in another word
+        if w:
+            words.append(w)
+    starts = [i for i, w in enumerate(words) if _program_name(w) in heads]
+    out: list[list[str]] = []
+    if not starts:
+        return out
+    for lo, hi in zip(starts, [*starts[1:], len(words)], strict=True):
+        tokens = _cli_tokens(words[lo:hi], heads, lists)
+        if tokens and tokens[0] in heads:
+            out.append(tokens)
+    return out
+
+
 # Runtime options after which the rest is inline code, not a script path (`node -e '…'`); a
 # short-option cluster holding `e` or `p` (`-pe`) counts too.
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print"})
@@ -3559,7 +3833,13 @@ def _approval_loosening(
     def cli_where(head: str, *extra: str) -> _Where:
         return _Where(frozenset({"tree", "env", "main", *extra}), head, "auto")
 
+    # Set while reading host CLI commands named only inside quotes: what they find is asked.
+    quoted_only = [False]
+
     def cli_hit(line: str, mechanism: str, hits: set[Hit]) -> None:
+        if quoted_only[0]:
+            hits = {(k, v, REVIEW) for k, v, _ in hits}
+            mechanism += " (quoted)"
         report(hits, None, {"match": line[:120], "mechanism": mechanism})
 
     def state_db(value: str) -> bool:
@@ -4051,6 +4331,18 @@ def _approval_loosening(
                 produced.append(rendered)
             printed[index] = rendered
             previous = line
+        if not shape.parse_ok:
+            # A command the scan does not parse (one over the parse limit, padded with options to
+            # get there, or one whose parse it does not trust): the host CLIs it runs are read
+            # without the parser. What it names only as an argument (`echo run openclaw …`) or
+            # inside quotes, heredocs or comments (a prompt, a commit message, a document) is
+            # asked, not blocked.
+            for tokens in _unparsed_cli_readings(command, cli_heads, lists):
+                cli(tokens, " ".join(tokens[:40]), command)
+            quoted_only[0] = True
+            for tokens in _quoted_cli_readings(command, cli_heads, lists):
+                cli(tokens, " ".join(tokens[:40]), command)
+            quoted_only[0] = False
         # Inline code anywhere in the command (`python3 -c`, `node -e`, a heredoc script).
         code(command, cwd, depth)
         env = _match_any(rules.env, command)
@@ -4670,6 +4962,70 @@ def _privileged_group_switches(a: CallAnalysis, lists: Lists) -> list[str]:
     return out
 
 
+#: `NAME=value` with the value as one shell word: double-quoted, single-quoted or bare.
+_ASSIGNMENT_VALUE_RE = re.compile(
+    r"(?<![\w$-])([A-Za-z_][A-Za-z0-9_]*)=(\"(?:[^\"\\]|\\.)*\"|'[^']*'|[^\s;&|()<>]*)"
+)
+_KEEPS_PATH = frozenset({"$PATH", "${PATH}"})
+#: The variables the allowed folders are read relative to (`~` is `$HOME`).
+_PATH_BASE_VARS = frozenset({"HOME", "VIRTUAL_ENV"})
+#: A read of `PATH` (`$PATH`, `${PATH}`, `${PATH:+...}`), which leaves it unchanged.
+_PATH_REFERENCE_RE = re.compile(r"\$PATH\b|\$\{PATH[^}]*\}")
+#: `path` as a word, allowing quotes or backslashes between its letters.
+_PATH_SPELLED_RE = re.compile(r"(?i)(?<![\w./-])p[\\'\"]*a[\\'\"]*t[\\'\"]*h(?![\w./-])")
+
+
+def _benign_path_entry(entry: str, lists: Lists) -> bool:
+    """A virtualenv's `bin` or a standard per-user bin folder (`privilege.yaml`, `user_bin_dirs`)."""
+    if "$(" in entry or "`" in entry:
+        return False
+    for home in ("${HOME}", "$HOME"):
+        if entry.startswith(home + "/"):
+            entry = "~" + entry[len(home) :]
+    entry = entry.replace("${VIRTUAL_ENV}", "$VIRTUAL_ENV").rstrip("/")
+    if entry in set(lists.strings("privilege", "user_bin_dirs")):
+        return True
+    parent, _, last = entry.rpartition("/")
+    if last != "bin" or not parent:
+        return False
+    name = parent.rpartition("/")[2]
+    return name in set(lists.strings("privilege", "venv_dir_names")) or name.endswith(
+        tuple(lists.strings("privilege", "venv_dir_suffixes"))
+    )
+
+
+def _path_prepends_are_benign(text: str, shadow: set[str], lists: Lists) -> bool:
+    """Every assignment to a shadowing variable keeps `$PATH` and adds only venv or user bin folders.
+
+    `PATH=~/.venv/bin:$PATH` is how a virtualenv is activated; `PATH=/tmp/x:$PATH` and a `PATH`
+    replaced outright are not this. A single-quoted value keeps `$PATH` literal, so it does not count.
+    """
+    matches = list(_ASSIGNMENT_VALUE_RE.finditer(text))
+    if any(m.group(1) in _PATH_BASE_VARS for m in matches):
+        return False  # the folder `~/.local/bin` or `$VIRTUAL_ENV/bin` names is moved first
+    shadow_matches = [m for m in matches if m.group(1) in shadow]
+    if not shadow_matches:
+        return False
+    # Anything else that still spells the variable (`P\ATH=`, `'PATH'=`, `read PATH`, zsh `path=(`)
+    # is a change this reading cannot check, so the command keeps firing.
+    rest = text
+    for m in reversed(shadow_matches):
+        rest = rest[: m.start()] + " " + rest[m.end() :]
+    if _PATH_SPELLED_RE.search(_PATH_REFERENCE_RE.sub(" ", rest)):
+        return False
+    for value in (m.group(2) for m in shadow_matches):
+        if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+            value = value[1:-1]
+        elif value.startswith("'"):
+            return False
+        entries = value.split(":")
+        if not _KEEPS_PATH & set(entries):
+            return False
+        if not all(e in _KEEPS_PATH or _benign_path_entry(e, lists) for e in entries):
+            return False
+    return True
+
+
 def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C8: sudo/doas/su (pack `host_gated`), a switch into a root-equivalent group, setuid/setcap,
     loader preload and PATH shadowing."""
@@ -4722,7 +5078,9 @@ def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
         )
         f.add(REACH, reach).add(CONCEALMENT, conceal)
         out.append(f)
-    shadowing = bool(vars_seen & shadow)
+    shadowing = bool(vars_seen & shadow) and not _path_prepends_are_benign(
+        a.scan_text, shadow, lists
+    )
     utilities = set(lists.strings("privilege", "system_utilities"))
     system_dirs = tuple(lists.strings("privilege", "system_dirs"))
     odd_heads = [

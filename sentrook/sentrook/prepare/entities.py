@@ -16,7 +16,7 @@ from __future__ import annotations
 import bisect
 import itertools
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
@@ -370,9 +370,96 @@ _INSTALLERS = re.compile(
     r"(?:^|[\s;&|(])"
     r"(?P<eco>pip3?|pipx|uv(?:\s+pip)?|poetry|npm|npx|pnpm|yarn|bun|cargo|gem|go|brew|apt(?:-get)?|dnf|yum|apk|conda|"
     r"openclaw\s+(?:plugins|skills)|hermes\s+(?:plugins|skills))"
-    r"\s+(?:install|add|i|run|get|exec|-S)\b(?P<rest>[^;&|\n]*)",
+    r"\s+(?P<verb>install|add|i|run|get|exec|-S)\b",
     re.IGNORECASE,
 )
+#: The end of an installer's simple command (its operands are the words before it).
+_COMMAND_END = re.compile(r"[;&|\n]|$")
+#: Installer words that run rather than install: a project runner (`uv run`, `npm run`, `poetry run`,
+#: `pnpm exec`, …) runs a command in the project's own environment, and a fetcher (`npx`, `pipx run`)
+#: fetches one package and runs it. `_RUNNERS` reads both; the installer loop skips them.
+_RUN_VERBS = frozenset(
+    {
+        ("uv", "run"),
+        ("poetry", "run"),
+        ("npm", "run"),
+        ("npm", "exec"),
+        ("pnpm", "run"),
+        ("pnpm", "exec"),
+        ("yarn", "run"),
+        ("yarn", "exec"),
+        ("bun", "run"),
+        ("bun", "exec"),
+        ("pipx", "run"),
+    }
+)
+_RUNNERS = re.compile(
+    r"(?:^|[\s;&|(])"
+    r"(?P<tool>npx|uvx|bunx|pnpm\s+dlx|pipx\s+run|uv\s+run|poetry\s+run|npm\s+(?:run|exec)|"
+    r"pnpm\s+(?:run|exec)|yarn\s+(?:run|exec)|bun\s+(?:run|exec))"
+    r"(?=\s|$)",
+    re.IGNORECASE,
+)
+_UV_VALUED = frozenset(
+    """-p --python --project --directory --package --with -w --with-requirements --with-editable --env-file
+    --index --default-index --index-url -i --extra-index-url -f --find-links --group --only-group --no-group
+    --extra --config-file --cache-dir -C --config-setting --python-platform --exclude-newer --refresh-package
+    --reinstall-package --upgrade-package -P --no-binary-package --no-build-package --index-strategy
+    --keyring-provider --resolution --prerelease --link-mode --color --allow-insecure-host --from""".split()
+)
+#: How each runner reads its words: its ecosystem, whether its first operand is a package it fetches,
+#: the options whose value is a package (each such option replaces the fetched first operand, which
+#: is then a command the packages provide), the options whose value adds a package beside it, the
+#: options whose value is an index or registry, and the other options that take a value.
+_RunnerSpec = tuple[str, bool, frozenset[str], frozenset[str], frozenset[str], frozenset[str]]
+_NPM_REGISTRY = frozenset({"--registry"})
+_UV_INDEX = frozenset(
+    {"--index", "--default-index", "--index-url", "-i", "--extra-index-url", "-f", "--find-links"}
+)
+_RUNNER_SPECS: dict[str, _RunnerSpec] = {
+    "npx": (
+        "npm",
+        True,
+        frozenset({"-p", "--package"}),
+        frozenset(),
+        _NPM_REGISTRY,
+        frozenset({"-c", "--call", "-w", "--workspace", "--cache", "--userconfig"}),
+    ),
+    "npm exec": (
+        "npm",
+        False,
+        frozenset({"-p", "--package"}),
+        frozenset(),
+        _NPM_REGISTRY,
+        frozenset({"-c", "--call", "-w", "--workspace", "--cache", "--userconfig"}),
+    ),
+    "bunx": ("npm", True, frozenset({"-p", "--package"}), frozenset(), _NPM_REGISTRY, frozenset()),
+    "pnpm dlx": ("npm", True, frozenset({"--package"}), frozenset(), _NPM_REGISTRY, frozenset()),
+    "uvx": (
+        "pypi",
+        True,
+        frozenset({"--from"}),
+        frozenset({"--with", "-w", "--with-editable"}),
+        _UV_INDEX,
+        _UV_VALUED,
+    ),
+    "uv run": (
+        "pypi",
+        False,
+        frozenset(),
+        frozenset({"--with", "-w", "--with-editable"}),
+        frozenset(),
+        _UV_VALUED,
+    ),
+    "pipx run": (
+        "pypi",
+        True,
+        frozenset({"--spec"}),
+        frozenset(),
+        frozenset({"--index-url", "-i"}),
+        frozenset({"--python", "--pip-args"}),
+    ),
+}
 _ECOSYSTEM = {
     "pip": "pypi",
     "pip3": "pypi",
@@ -1083,6 +1170,105 @@ def _local_install_operand(token: str, eco: str = "") -> str | None:
     return None
 
 
+def _add_install_operand(eco: str, tok: str, pkgs: list[str], local: list[str]) -> None:
+    """Record one installer operand: a computed one, a local path or a registry package."""
+    if _COMPUTED in tok:
+        pkgs.append(f"{eco}:{COMPUTED_PACKAGE}")
+        return
+    path = _local_install_operand(tok, eco)
+    if path is not None:
+        local.append(path)
+        return
+    p = normalise_package(eco, tok)
+    if p:
+        pkgs.append(p)
+
+
+def _words_from(text: str, start: int, span_ends: dict[int, int]) -> Iterator[str]:
+    """The words of the simple command from `start`, read lazily so a caller that stops early reads no
+    further. A command substitution among them is the computed marker and a separator inside it does
+    not end the command, as in `_install_operands`."""
+    buf: list[str] = []
+    i, n = start, len(text)
+    while i < n:
+        if i in span_ends:
+            buf.append(_COMPUTED)
+            i = span_ends[i]
+            continue
+        c = text[i]
+        if c in ";&|\n":
+            break
+        if c.isspace():
+            if buf:
+                yield "".join(buf)
+                buf = []
+        else:
+            buf.append(c)
+        i += 1
+    if buf:
+        yield "".join(buf)
+
+
+def _runner_packages(
+    spec: _RunnerSpec, tokens: Iterable[str], pkgs: list[str], local: list[str], indexes: list[str]
+) -> None:
+    """The packages a fetcher or `uv run` names: the first operand of a fetcher (`npx cowsay hi` fetches
+    cowsay), unless an option names the package (`npx -p cowsay cowsay hi`, `uvx --from black black`),
+    and the packages options add (`uv run --with requests python x.py`). The operands after the first
+    are the command's own arguments. Only the options before the first operand are the runner's."""
+    eco, fetches, package_opts, with_opts, index_opts, valued = spec
+    named: list[str] = []
+    added: list[str] = []
+    first: str | None = None
+    pending: str | None = None
+    options_done = False
+
+    def value(kind: str, val: str) -> None:
+        if kind == "package":
+            named.append(val)
+        elif kind == "with":
+            added.extend(v for v in val.split(",") if v)
+        elif kind == "index":
+            indexes.append(val.strip("'\""))
+
+    for tok in tokens:
+        if pending is not None:
+            value(pending, tok)
+            pending = None
+            continue
+        redirect = _REDIRECTION.fullmatch(tok)
+        if redirect:
+            pending = "" if not redirect.group(1) else None
+            continue
+        if tok == "--" and not options_done:
+            options_done = True
+            continue
+        if tok.startswith("-") and not options_done:
+            flag, eq, val = tok.partition("=")
+            if flag in package_opts:
+                kind = "package"
+            elif flag in with_opts:
+                kind = "with"
+            elif flag in index_opts:
+                kind = "index"
+            elif flag in valued:
+                kind = ""
+            else:
+                continue
+            if eq:
+                value(kind, val)
+            else:
+                pending = kind
+            continue
+        first = tok
+        break
+    fetched = named or ([first] if fetches and first is not None else [])
+    for tok in fetched + added:
+        if eco == "pypi" and "://" not in tok and not tok.startswith("git+"):
+            tok = tok.split("@", 1)[0]  # `uvx ruff@0.5.0`
+        _add_install_operand(eco, tok, pkgs, local)
+
+
 def _packages_in(text: str) -> list[str]:
     return _installs_in(text)[0]
 
@@ -1096,13 +1282,19 @@ def _installs_in(text: str) -> tuple[list[str], list[str], list[str]]:
     local: list[str] = []
     indexes: list[str] = []
     spans = substitution_spans(text) if ("$(" in text or "`" in text) else []
-    for m in _INSTALLERS.finditer(text):
+    pos = 0
+    while (m := _INSTALLERS.search(text, pos)) is not None:
         eco_key = re.sub(r"\s+", " ", m.group("eco").lower())
+        if eco_key == "npx" or (eco_key, m.group("verb").lower()) in _RUN_VERBS:
+            # a runner, read below; the command it runs may itself install (`uv run pip install x`)
+            pos = m.end("verb")
+            continue
+        pos = _COMMAND_END.search(text, m.end()).start()  # type: ignore[union-attr]
         if eco_key.startswith(("openclaw", "hermes")):
             eco = "plugin"
         else:
             eco = _ECOSYSTEM.get(eco_key, eco_key)
-        rest = _install_operands(text, m.start("rest"), spans) if spans else m.group("rest")
+        rest = _install_operands(text, m.end(), spans) if spans else text[m.end() : pos]
         tokens = rest.split()
         index_flags = _INDEX_FLAGS.get(eco_key, frozenset())
         skip_next = index_next = False
@@ -1150,13 +1342,16 @@ def _installs_in(text: str) -> tuple[list[str], list[str], list[str]]:
             if eco == "plugin":
                 pkgs.append(tok.strip("'\""))
                 continue
-            path = _local_install_operand(tok, eco)
-            if path is not None:
-                local.append(path)
-                continue
-            p = normalise_package(eco, tok)
-            if p:
-                pkgs.append(p)
+            _add_install_operand(eco, tok, pkgs, local)
+    span_ends = dict(spans)
+    pos = 0
+    while (m := _RUNNERS.search(text, pos)) is not None:
+        # the command a runner runs may be another runner (`uv run npx cowsay`)
+        pos = m.end("tool")
+        spec = _RUNNER_SPECS.get(re.sub(r"\s+", " ", m.group("tool").lower()))
+        if spec is None:
+            continue  # a project runner installs nothing
+        _runner_packages(spec, _words_from(text, pos, span_ends), pkgs, local, indexes)
     for image in _docker_images(text):
         pkgs.append("docker:" + image)
     for m in _GIT_RE.finditer(text):
