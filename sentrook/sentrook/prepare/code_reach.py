@@ -7,8 +7,9 @@ HTTP library, a socket, a subprocess or shell, a host web tool, or anything this
 dunders or stack frames, a name the code never binds). Code with no such sink only mentions the hosts it
 writes. Writing a file counts as a sink unless the file is plainly data (`.json`, `.txt`, …): a quoted
 command written into `~/.bashrc` or a `.pth` file runs later. A data file's name may come from a loop over
-a literal collection or from what each call passes to a helper the program defines, and a `shutil` copy, move
-or removal is judged by the same rules as a write.
+a literal collection of constants or from what each call passes to a helper the program defines (a program
+with a class is not followed: its methods run without being named); a `shutil` file copy or move is followed
+only with both paths written out in full, and folder copies and removals are not followed.
 
 When the code's only sinks are HTTP calls this module follows (`requests`, `httpx`, `urllib.request`) and
 every request call is aimed at a URL written in the code (directly, through a name set only to such URLs,
@@ -23,10 +24,14 @@ import ast
 import builtins
 import importlib
 import inspect
+import pathlib
+import posixpath
 import re
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TypeVar
 from urllib.parse import urlsplit
 
 __all__ = ["CodeReach", "KernelEffects", "kernel_effects", "kernel_reads", "python_reach"]
@@ -40,6 +45,8 @@ class CodeReach:
     #: when the code reaches no network or a target is not followed.
     targets: frozenset[str] | None = None
 
+
+_T = TypeVar("_T")
 
 _LOCAL = CodeReach(network=False)
 _UNFOLLOWED = CodeReach(network=True)
@@ -217,11 +224,10 @@ _RESTRICTED: dict[str, frozenset[str]] = {
     # The Hermes code tool's own module: its file tools stay local; `terminal`, `web_search` and
     # `web_extract` reach a shell or the network.
     "hermes_tools": frozenset({"read_file", "write_file", "search_files", "patch"}),
-    # Copies, moves and removals, followed only as direct calls whose paths pass the write rules
-    # (`_Reader._check_shutil`); `shutil.which`, `chown`, `unpack_archive` and the rest are not followed.
-    "shutil": frozenset(
-        {"copy", "copy2", "copyfile", "copytree", "move", "rmtree", "ignore_patterns"}
-    ),
+    # File copies and moves, followed only as direct calls whose paths are written out in full and pass the
+    # write rules (`_Reader._check_shutil`); `copytree`, `rmtree`, `which`, `chown`, `unpack_archive` and the
+    # rest are not followed.
+    "shutil": frozenset({"copy", "copy2", "copyfile", "move"}),
 }
 
 #: The `shutil` calls `_Reader._check_shutil` follows, with the parameters each takes by position.
@@ -230,15 +236,10 @@ _SHUTIL_OPS: dict[str, tuple[str, ...]] = {
     "copy2": ("src", "dst"),
     "copyfile": ("src", "dst"),
     "move": ("src", "dst"),
-    "copytree": ("src", "dst", "symlinks", "ignore"),
-    "rmtree": ("path", "ignore_errors", "onerror"),
 }
-#: The keywords those calls may take besides their parameters. Not `copy_function` or `dir_fd`, which hand the
-#: paths to code or a folder this reading does not see; `dirs_exist_ok` (merging into a folder that may hold
-#: anything) and `symlinks` (links copied as links) are followed only when written as False.
-_SHUTIL_KEYWORDS = frozenset(
-    {"follow_symlinks", "ignore_dangling_symlinks", "onexc", "dirs_exist_ok"}
-)
+#: The keywords those calls may take besides their parameters. Not `copy_function`, which hands the paths to
+#: code this reading does not see.
+_SHUTIL_KEYWORDS = frozenset({"follow_symlinks"})
 #: Modules followed only where the program imports them itself: reached through another module
 #: (`zipfile.shutil`), their calls are not seen as the calls they are.
 _DIRECT_ONLY = frozenset({"shutil"})
@@ -292,7 +293,9 @@ _FILE_FACTORIES = frozenset(
     {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile", "mkstemp", "FileType"}
 )
 #: The dot-directories a program may write data files in: the code tool's own scratch space, and the folder
-#: Hermes keeps files shared in chat in. Not the rest of `~/.hermes` (skills, memories, plugins, config, env).
+#: Hermes keeps files shared in chat in. Not the rest of `~/.hermes` (skills, memories, plugins, config, env). A
+#: write in one of them is followed only when its whole path is written out in full (`_Reader._exact_paths`), with
+#: no `..`: a computed part (`os.pardir`, `.parent`, `dirname`, `chr(46) * 2`) could climb back out.
 _DATA_DOT_DIRS = re.compile(r"/\.hermes/(?:cache|attachments)/")
 
 
@@ -302,6 +305,19 @@ def _mask_data_dirs(text: str) -> str:
     if ".." in text.split("/"):
         return text
     return _DATA_DOT_DIRS.sub("/scratch/", text)
+
+
+#: The calls `_Reader._exact_paths` follows: they join or expand paths written out in full.
+_EXACT_PATH_CALLS = (
+    posixpath.join,
+    posixpath.expanduser,
+    pathlib.Path,
+    pathlib.PurePath,
+    pathlib.PurePosixPath,
+)
+#: Names that build a class or an object with attributes set by name: a class's methods run without their
+#: names being read (`K(p)` runs `__init__`, `k == x` runs `__eq__`), so what their parameters take is not seen.
+_CLASS_MAKERS = frozenset({"SimpleNamespace", "new_class", "make_dataclass"})
 
 
 #: Builtins that read a collection without changing it: a literal collection passed to them keeps its values.
@@ -534,6 +550,11 @@ def _allowed_path(start: str | None, end: str | None) -> bool:
     return True
 
 
+def _plain_data_file(path: str) -> bool:
+    """A path written out in full that names a data file (`_DATA_EXTENSIONS`) and climbs nowhere (`..`)."""
+    return path.lower().endswith(_DATA_EXTENSIONS) and ".." not in path.split("/")
+
+
 def _hosts_of(values: list[tuple[str, bool]] | None) -> set[str] | None:
     """The hosts of request URLs with these values, or None when one of them is not known."""
     if not values:
@@ -649,6 +670,20 @@ def _loop_of(
     return None
 
 
+def _items_of(coll: ast.Dict | ast.List | ast.Tuple | ast.Set) -> list[ast.expr | None]:
+    """A literal collection's items: a dict's keys and values."""
+    if isinstance(coll, ast.Dict):
+        return [*coll.keys, *coll.values]
+    return list(coll.elts)
+
+
+def _frozen(item: ast.expr | None) -> bool:
+    """An item no later statement can change: a constant, or a tuple of constants."""
+    if isinstance(item, ast.Constant):
+        return True
+    return isinstance(item, ast.Tuple) and all(isinstance(e, ast.Constant) for e in item.elts)
+
+
 def _allowed_attrs(obj: object) -> frozenset[str] | None:
     """The attributes allowed through `obj` when it is a restricted module (however it was reached), else
     None."""
@@ -678,6 +713,10 @@ class _Reader:
         #: Names bound to the `shutil` module, and to a `shutil` function `_check_shutil` follows (alias → name).
         self.shutil_modules: set[str] = set()
         self.shutil_funcs: dict[str, str] = {}
+        #: What the path reading worked out for each name (`_per_name`), and the names it is working on.
+        self._path_memo: dict[tuple[str, str], object] = {}
+        self._path_busy: set[tuple[str, str]] = set()
+        self._collections: dict[str, ast.Dict | ast.List | ast.Tuple | ast.Set | None] = {}
         #: Names bound to a restricted module, with the attributes allowed through them.
         self.restricted: dict[str, set[str]] = {}
         #: Names bound to a followed client module, and functions imported from one (alias → name).
@@ -736,7 +775,12 @@ class _Reader:
         names = [a.name for a in node.names]
         for a in node.names:
             self._bind(a.asname or a.name)
-            if a.name in _ATTR_CALLERS or a.name in _ATTR_BY_NAME or a.name in _OPAQUE_BUILTINS:
+            if (
+                a.name in _ATTR_CALLERS
+                or a.name in _ATTR_BY_NAME
+                or a.name in _OPAQUE_BUILTINS
+                or a.name in _CLASS_MAKERS
+            ):
                 raise _Unfollowed  # `from operator import attrgetter as ag`
             if a.name in _WRITERS and a.asname and a.asname != a.name:
                 raise _Unfollowed  # `from hermes_tools import write_file as w`: the call is not seen as a write
@@ -830,6 +874,11 @@ class _Reader:
                 else:
                     out.extend(values)
             self.path_bindings[name] = out
+        for name, binds in self.path_bindings.items():
+            if len(binds) > _MAX_VALUES:
+                self.path_bindings[name] = [
+                    None
+                ]  # too many to follow (`for v in L` written many times)
 
     def _loop_values(self, target: ast.Name) -> list[ast.expr] | None:
         """The values a loop target takes when the loop runs over a literal collection (written in place, or a
@@ -852,6 +901,8 @@ class _Reader:
         coll = self._literal_collection(it)
         if coll is None:
             return None
+        if not all(_frozen(e) for e in _items_of(coll)):
+            return None  # an item that is itself a list, dict or set can change after it is written
         items: list[ast.expr]
         if isinstance(coll, ast.Dict):
             if any(k is None for k in coll.keys):
@@ -884,7 +935,12 @@ class _Reader:
             return expr
         if not isinstance(expr, ast.Name):
             return None
-        binds = self.bindings.get(expr.id) or []
+        if expr.id not in self._collections:
+            self._collections[expr.id] = self._named_collection(expr.id)
+        return self._collections[expr.id]
+
+    def _named_collection(self, name: str) -> ast.Dict | ast.List | ast.Tuple | ast.Set | None:
+        binds = self.bindings.get(name) or []
         if len(binds) != 1 or not isinstance(binds[0], (ast.Dict, ast.List, ast.Tuple, ast.Set)):
             return None
         holder = self.parents.get(binds[0])
@@ -893,7 +949,7 @@ class _Reader:
             or isinstance(holder, ast.AnnAssign)
         ):
             return None  # `a = b = […]`: changed through the other name
-        if not all(self._reads_only(n) for n in self.loads.get(expr.id) or []):
+        if not all(self._reads_only(n) for n in self.loads.get(name) or []):
             return None
         return binds[0]
 
@@ -951,6 +1007,8 @@ class _Reader:
         out: dict[str, list[ast.expr]] = {p: [] for p in params}
         passed = dict.fromkeys(params, 0)  # how many calls pass each parameter
         calls = self.loads.get(fn.name) or []
+        if not calls:
+            return None  # never called here: what a later program may pass is not seen
         for ref in calls:
             call = self.parents.get(ref)
             if not (isinstance(call, ast.Call) and call.func is ref):
@@ -1002,6 +1060,8 @@ class _Reader:
                 self.xml = self.xml or (node.module or "").split(".")[0] == "xml"
                 self._import_from(node)
             elif isinstance(node, ast.Name):
+                if node.id in _CLASS_MAKERS:
+                    raise _Unfollowed
                 harmless = _harmless_opaque(node, self.parents)
                 if node.id == "globals" and (key := self._globals_key(node)) is not None:
                     globals_keys.add(key)
@@ -1025,13 +1085,26 @@ class _Reader:
                     raise _Unfollowed
                 if node.attr.startswith(_FRAME_PREFIXES) or node.attr in _FRAME_ATTRS:
                     raise _Unfollowed
-                if node.attr in _ATTR_CALLERS:
+                if node.attr in _ATTR_CALLERS or node.attr in _CLASS_MAKERS:
                     raise _Unfollowed
             elif isinstance(node, ast.arg):
                 # A parameter of a function this reading may follow into: bound to what each call passes.
                 self._bind(node.arg, None, _Pending(node))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if isinstance(node, ast.ClassDef) or (
+                    node.name.startswith("__") and node.name.endswith("__")
+                ):
+                    # A class's methods run without their names being read (`K(p)` runs `__init__`): what
+                    # their parameters take is not seen.
+                    raise _Unfollowed
                 self._bind(node.name)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "type"
+                and len(node.args) == 3
+            ):
+                raise _Unfollowed  # `type(name, bases, attrs)` builds a class
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
                 for n in node.names:
                     self._bind(n)
@@ -1130,14 +1203,11 @@ class _Reader:
         return None
 
     def _check_shutil(self, node: ast.Call, op: str) -> None:
-        """A `shutil` copy, move or removal is followed when every path it touches passes the write rules:
-        - a file copy or move (`copy`, `copy2`, `copyfile`, `move`): its source is a data file (`_data_path`)
-          outside dot-directories and off the deny list (`_write_allowed`); so is its destination, or (but for
-          `copyfile`) the destination is a folder written with a trailing `/`, where the file keeps its name;
-        - a folder copy or removal (`copytree`, `rmtree`): the folders pass `_write_allowed`, and no part of the
-          one created or removed names a denied file or word (`skills/…`): what is in it is not known;
-        - `copytree` makes a new folder: merging into one that exists (`dirs_exist_ok`) is not followed.
-        A path the program computes is judged as a write's is; anything else is not followed."""
+        """A `shutil` file copy or move (`copy`, `copy2`, `copyfile`, `move`) is followed when both paths are
+        written out in full (`_exact_paths`: no part computed) and every value they can take passes: the source
+        is a data file (`_DATA_EXTENSIONS`) and the destination is one too, or (but for `copyfile`) a folder written
+        with a trailing `/`, where the file keeps its name; each passes `_allowed_path` and has no `..`. Folder
+        copies and removals (`copytree`, `rmtree`) are not followed: what a folder holds is not known."""
         if any(isinstance(a, ast.Starred) for a in node.args) or any(
             k.arg is None for k in node.keywords
         ):
@@ -1149,39 +1219,23 @@ class _Reader:
         for k in node.keywords:
             assert k.arg is not None
             if k.arg in given or (k.arg not in params and k.arg not in _SHUTIL_KEYWORDS):
-                raise _Unfollowed  # `copy_function=`, `dir_fd=`
+                raise _Unfollowed  # `copy_function=`
             given[k.arg] = k.value
-        for flag in ("dirs_exist_ok", "symlinks"):
-            value = given.get(flag)
-            if value is not None and not (isinstance(value, ast.Constant) and value.value is False):
-                raise _Unfollowed  # merging into a folder, or links copied as links: where data lands is not seen
-        if op == "rmtree":
-            path = given.get("path")
-            if path is None or not self._tree_allowed(path):
-                raise _Unfollowed
-            return
         src, dst = given.get("src"), given.get("dst")
         if src is None or dst is None:
             raise _Unfollowed
-        if op == "copytree":
-            if not (self._write_allowed(src) and self._tree_allowed(dst)):
+        sources, targets = self._exact_paths(src), self._exact_paths(dst)
+        if not sources or not targets:
+            raise _Unfollowed
+        for path in sources:
+            if not (_plain_data_file(path) and _allowed_path(path, path)):
                 raise _Unfollowed
-            return
-        if not (self._data_path(src, frozenset()) and self._write_allowed(src)):
-            raise _Unfollowed
-        into_folder = op != "copyfile" and self._folder_path(dst)
-        if not (into_folder or self._data_path(dst, frozenset())) or not self._write_allowed(dst):
-            raise _Unfollowed
-
-    def _tree_allowed(self, path: ast.expr) -> bool:
-        """A folder a program copies into place or removes: it passes the write rules, and no string in its
-        path names a denied file or word in any part."""
-        return self._write_allowed(path) and self._no_dot_parts(path, frozenset(), words=True)
-
-    def _folder_path(self, path: ast.expr) -> bool:
-        """Every known end of `path` is a folder (ends with `/`)."""
-        ends = self._path_suffixes(path, frozenset())
-        return bool(ends) and all(e.endswith("/") for e in ends)
+        for path in targets:
+            into_folder = op != "copyfile" and path.endswith("/")
+            if not (into_folder or _plain_data_file(path)) or not _allowed_path(path, path):
+                raise _Unfollowed
+            if ".." in path.split("/"):
+                raise _Unfollowed
 
     def _check_write(self, node: ast.Call, name: str | None) -> None:
         """A call that writes a file is followed only when the file is plainly data (`_DATA_EXTENSIONS`)."""
@@ -1230,7 +1284,7 @@ class _Reader:
             return
         if self.tolerant and path is not None and self._outside_import_path(path):
             return  # nothing written under /tmp or the tool's scratch space is imported later
-        if path is None or not self._data_path(path, frozenset()):
+        if path is None or not self._data_path(path):
             raise _Unfollowed
         if self.tolerant:
             return  # a data file changes nothing later programs reach in the interpreter
@@ -1238,69 +1292,156 @@ class _Reader:
             raise _Unfollowed  # a dot-directory, or a data file a tool reads settings or commands from
 
     def _write_allowed(self, path: ast.expr) -> bool:
-        """A data file outside dot-directories whose name is not on the deny list (`_DENIED_NAMES`). Parts of
-        the path the program computes are unknown: the known start and end must pass, a name the program
-        completes must not be able to end as a denied one, and no string anywhere in the path (a middle
-        `join` argument, a `/` operand) may name a dot-directory."""
-        if not self._no_dot_parts(path, frozenset()):
+        """A data file outside dot-directories whose name is not on the deny list (`_DENIED_NAMES`). A path
+        written out in full (`_exact_paths`) is judged whole, and may not climb with `..`. Parts of a path the
+        program computes are unknown: the known start and end must pass, a name the program completes must not be
+        able to end as a denied one, and no string anywhere in the path (a middle `join` argument, a `/` operand)
+        may name a dot-directory. A path into a folder data files may go in (`_DATA_DOT_DIRS`) must be written out
+        in full: a computed part could climb back out of it."""
+        bad, into_data_dir = self._path_strings(path)
+        if bad:
             return False
-        exact = self._values(path, frozenset())
-        if exact is not None and all(e for _, e in exact):
-            return all(_allowed_path(t, t) for t, _ in exact)
-        prefixes = self._path_prefixes(path, frozenset())
-        suffixes = self._path_suffixes(path, frozenset())
+        exact = self._exact_paths(path)
+        if exact is not None:
+            return all(".." not in t.split("/") and _allowed_path(t, t) for t in exact)
+        if into_data_dir:
+            return False
+        prefixes = self._path_prefixes(path)
+        suffixes = self._path_suffixes(path)
         if not suffixes:
             return False
         return all(_allowed_path(p, None) for p in prefixes or [""]) and all(
             _allowed_path(None, t) for t in suffixes
         )
 
-    def _no_dot_parts(self, expr: ast.expr, seen: frozenset[str], *, words: bool = False) -> bool:
-        """No string in `expr` (or in what the names in it are set to) has a part starting with a dot, other
-        than `.`, `..` and the folders data files may go in (`_DATA_DOT_DIRS`), and no string climbs out of one
-        of those with `..`. `words`: no part names a denied file or holds a denied word either."""
-        masked = climbs = False
-        visited = set(
-            seen
-        )  # a name's strings are checked once, however many times the path reaches it
-        stack: list[ast.expr] = [expr]
-        while stack:
-            top = stack.pop()
-            parents = {
-                child: node for node in ast.walk(top) for child in ast.iter_child_nodes(node)
-            }
-            for node in ast.walk(top):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    text = _DATA_DOT_DIRS.sub("/scratch/", node.value)
-                    masked = masked or text != node.value
-                    parts = text.split("/")
-                    climbs = climbs or ".." in parts
-                    last = parts[-1]
-                    parent = parents.get(node)
-                    appended = (
-                        isinstance(parent, ast.BinOp)
-                        and isinstance(parent.op, ast.Add)
-                        and parent.right is node
-                    ) or isinstance(parent, ast.JoinedStr)
-                    if appended and len(parts) == 1 and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", last):
-                        continue  # an extension added to a computed name (`k + ".json"`): the name rules judge it
-                    if any(p.startswith(".") and p not in (".", "..") for p in parts):
-                        return False
-                    if words and any(
-                        p.lower() in _DENIED_NAMES or any(w in p.lower() for w in _DENIED_WORDS)
-                        for p in parts
-                    ):
-                        return False
-                elif isinstance(node, ast.Name) and node.id not in visited:
-                    visited.add(node.id)
-                    stack.extend(
-                        b for b in self.path_bindings.get(node.id) or [] if isinstance(b, ast.expr)
-                    )
-            if masked and climbs:
-                return False  # `.hermes/attachments/` then `..`: out of the data folder
-        return True
+    def _per_name(self, kind: str, name: str, compute: Callable[[], _T], cycle: _T) -> _T:
+        """What `compute` works out for the name `name`, once per program: many writes through one name stay
+        linear. A name that depends on itself takes `cycle`, which never lets more through."""
+        key = (kind, name)
+        if key in self._path_memo:
+            return self._path_memo[key]  # type: ignore[no-any-return]
+        if key in self._path_busy:
+            return cycle
+        self._path_busy.add(key)
+        try:
+            result = compute()
+        finally:
+            self._path_busy.discard(key)
+        self._path_memo[key] = result
+        return result
 
-    def _path_suffixes(self, expr: ast.expr, seen: frozenset[str]) -> list[str] | None:
+    def _binds_of(self, name: str) -> list[ast.expr] | None:
+        """The path bindings of `name`, or None when one of them is not followed (or there are none)."""
+        binds = self.path_bindings.get(name) or []
+        if not binds or not all(isinstance(b, ast.expr) for b in binds):
+            return None
+        return binds  # type: ignore[return-value]
+
+    def _path_strings(self, expr: ast.expr) -> tuple[bool, bool]:
+        """Over every string in `expr` and in what the names in it are set to: (some part starts with a dot,
+        other than `.`, `..` and the folders data files may go in; some string names one of those folders)."""
+        parents = {child: node for node in ast.walk(expr) for child in ast.iter_child_nodes(node)}
+        bad = into = False
+        for node in ast.walk(expr):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                text = _DATA_DOT_DIRS.sub("/scratch/", node.value)
+                into = into or text != node.value
+                parts = text.split("/")
+                parent = parents.get(node)
+                appended = (
+                    isinstance(parent, ast.BinOp)
+                    and isinstance(parent.op, ast.Add)
+                    and parent.right is node
+                ) or isinstance(parent, ast.JoinedStr)
+                if appended and len(parts) == 1 and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", parts[0]):
+                    continue  # an extension added to a computed name (`k + ".json"`): the name rules judge it
+                bad = bad or any(p.startswith(".") and p not in (".", "..") for p in parts)
+            elif isinstance(node, ast.Name):
+                got = self._per_name(
+                    "strings", node.id, lambda n=node.id: self._name_strings(n), (True, True)
+                )
+                bad, into = bad or got[0], into or got[1]
+            if bad:
+                return True, into
+        return bad, into
+
+    def _name_strings(self, name: str) -> tuple[bool, bool]:
+        bad = into = False
+        for b in self.path_bindings.get(name) or []:
+            if isinstance(b, ast.expr):
+                got = self._path_strings(b)
+                bad, into = bad or got[0], into or got[1]
+        return bad, into
+
+    def _exact_paths(self, expr: ast.expr) -> list[str] | None:
+        """Every value the path `expr` can take, when all of it is written out: strings, names bound only to such
+        paths (a loop over a literal collection and a helper's parameter included), `+`, `/`, f-strings with
+        nothing computed, and `os.path.join`, `os.path.expanduser` and `Path` of such paths. None when any part
+        is computed (`os.pardir`, `.parent`, `dirname`, `chr(46) * 2`, `input()`), or past `_MAX_VALUES`."""
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return [expr.value]
+        if isinstance(expr, ast.JoinedStr):
+            if all(isinstance(v, ast.Constant) and isinstance(v.value, str) for v in expr.values):
+                return ["".join(v.value for v in expr.values)]  # type: ignore[attr-defined]
+            return None
+        if isinstance(expr, ast.Name):
+            return self._per_name("exact", expr.id, lambda: self._name_exact(expr.id), None)
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
+            left = self._exact_paths(expr.left)
+            right = None if left is None else self._exact_paths(expr.right)
+            if left is None or right is None or len(left) * len(right) > _MAX_VALUES:
+                return None
+            if isinstance(expr.op, ast.Add):
+                return [a + b for a in left for b in right]
+            return [posixpath.join(a, b) for a in left for b in right]
+        if (
+            isinstance(expr, ast.Call)
+            and expr.args
+            and not expr.keywords
+            and not any(isinstance(a, ast.Starred) for a in expr.args)
+        ):
+            fn = self._resolve(expr.func)
+            if fn is None or not any(fn is f for f in _EXACT_PATH_CALLS):
+                return None
+            if fn is posixpath.expanduser and len(expr.args) != 1:
+                return None
+            out: list[str] = [""]
+            for arg in expr.args:
+                got = self._exact_paths(arg)
+                if got is None or len(out) * len(got) > _MAX_VALUES:
+                    return None
+                out = [posixpath.join(a, b) if a else b for a in out for b in got]
+            return out
+        return None
+
+    def _name_exact(self, name: str) -> list[str] | None:
+        binds = self._binds_of(name)
+        if binds is None:
+            return None
+        out: list[str] = []
+        for b in binds:
+            got = self._exact_paths(b)
+            if got is None:
+                return None
+            out.extend(t for t in got if t not in out)
+            if len(out) > _MAX_VALUES:
+                return None
+        return out
+
+    def _resolve(self, func: ast.expr) -> object | None:
+        """The object a call's `func` names through the program's imports (`os.path.join`, `Path`), or None."""
+        if isinstance(func, ast.Name):
+            if len(self.bindings.get(func.id) or []) != 1:
+                return None
+            return self.objects.get(func.id)
+        if isinstance(func, ast.Attribute):
+            base = self._resolve(func.value)
+            if base is None or not inspect.ismodule(base):
+                return None
+            return getattr(base, func.attr, None)
+        return None
+
+    def _path_suffixes(self, expr: ast.expr) -> list[str] | None:
         """The known end of each value the path `expr` can take."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             return [expr.value]
@@ -1310,7 +1451,7 @@ class _Reader:
                 return [last.value]
             return None
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
-            right = self._path_suffixes(expr.right, seen)
+            right = self._path_suffixes(expr.right)
             if right is None:
                 return None
             return ["/" + r for r in right] if isinstance(expr.op, ast.Div) else right
@@ -1320,27 +1461,18 @@ class _Reader:
                 fn in ("Path", "PurePath", "join", "expanduser", "abspath", "normpath")
                 and expr.args
             ):
-                last = self._path_suffixes(expr.args[-1], seen)
+                last = self._path_suffixes(expr.args[-1])
                 if last is None or fn != "join" or len(expr.args) < 2:
                     return last
                 return ["/" + t for t in last]
             return None
-        if isinstance(expr, ast.Name) and expr.id not in seen:
-            binds = self.path_bindings.get(expr.id) or []
-            out: list[str] = []
-            for b in binds:
-                got = (
-                    None
-                    if not isinstance(b, ast.expr)
-                    else self._path_suffixes(b, seen | {expr.id})
-                )
-                if got is None:
-                    return None
-                out.extend(got)
-            return out or None
+        if isinstance(expr, ast.Name):
+            return self._per_name(
+                "suffixes", expr.id, lambda: self._name_ends(expr.id, self._path_suffixes), None
+            )
         return None
 
-    def _path_prefixes(self, expr: ast.expr, seen: frozenset[str]) -> list[str] | None:
+    def _path_prefixes(self, expr: ast.expr) -> list[str] | None:
         """The known start of each value the path `expr` can take."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             return [expr.value]
@@ -1350,7 +1482,7 @@ class _Reader:
                 return [first.value]
             return None
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
-            left = self._path_prefixes(expr.left, seen)
+            left = self._path_prefixes(expr.left)
             if left is None:
                 return None
             sep = "/" if isinstance(expr.op, ast.Div) else ""
@@ -1361,30 +1493,35 @@ class _Reader:
                 fn in ("Path", "PurePath", "join", "expanduser", "abspath", "normpath")
                 and expr.args
             ):
-                first = self._path_prefixes(expr.args[0], seen)
+                first = self._path_prefixes(expr.args[0])
                 if first is None or fn != "join" or len(expr.args) < 2:
                     return first
                 return [p.rstrip("/") + "/" for p in first]
             return None
-        if isinstance(expr, ast.Name) and expr.id not in seen:
-            binds = self.path_bindings.get(expr.id) or []
-            out: list[str] = []
-            for b in binds:
-                got = (
-                    None
-                    if not isinstance(b, ast.expr)
-                    else self._path_prefixes(b, seen | {expr.id})
-                )
-                if got is None:
-                    return None
-                out.extend(got)
-            return out or None
+        if isinstance(expr, ast.Name):
+            return self._per_name(
+                "prefixes", expr.id, lambda: self._name_ends(expr.id, self._path_prefixes), None
+            )
         return None
+
+    def _name_ends(
+        self, name: str, ends: Callable[[ast.expr], list[str] | None]
+    ) -> list[str] | None:
+        binds = self._binds_of(name)
+        if binds is None:
+            return None
+        out: list[str] = []
+        for b in binds:
+            got = ends(b)
+            if got is None:
+                return None
+            out.extend(got)
+        return out or None
 
     def _outside_import_path(self, path: ast.expr) -> bool:
         """The path's known start is under /tmp or the code tool's scratch space, with no `..` and no `%`
         or `{` before the first computed part."""
-        prefixes = self._path_prefixes(path, frozenset())
+        prefixes = self._path_prefixes(path)
         if not prefixes:
             return False
         return all(
@@ -1397,15 +1534,15 @@ class _Reader:
             for p in prefixes
         )
 
-    def _data_path(self, expr: ast.expr, seen: frozenset[str]) -> bool:
+    def _data_path(self, expr: ast.expr) -> bool:
         """`expr` is a path that ends in a data extension, however the rest of it is computed."""
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             return expr.value.lower().endswith(_DATA_EXTENSIONS)
         if isinstance(expr, ast.JoinedStr):
             last = expr.values[-1] if expr.values else None
-            return last is not None and self._data_path(last, seen)
+            return last is not None and self._data_path(last)
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Div)):
-            return self._data_path(expr.right, seen)
+            return self._data_path(expr.right)
         if (
             isinstance(expr, ast.BinOp)
             and isinstance(expr.op, ast.Mod)
@@ -1421,14 +1558,15 @@ class _Reader:
                 fn in ("Path", "PurePath", "join", "expanduser", "abspath", "normpath")
                 and expr.args
             ):
-                return self._data_path(expr.args[-1], seen)
+                return self._data_path(expr.args[-1])
             return False
-        if isinstance(expr, ast.Name) and expr.id not in seen:
-            binds = self.path_bindings.get(expr.id) or []
-            return bool(binds) and all(
-                isinstance(b, ast.expr) and self._data_path(b, seen | {expr.id}) for b in binds
-            )
+        if isinstance(expr, ast.Name):
+            return self._per_name("data", expr.id, lambda: self._name_data(expr.id), False)
         return False
+
+    def _name_data(self, name: str) -> bool:
+        binds = self._binds_of(name)
+        return binds is not None and all(self._data_path(b) for b in binds)
 
     def _check_name(self, node: ast.Name) -> None:
         parent = self.parents.get(node)

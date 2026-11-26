@@ -35,10 +35,10 @@ def _shutil(root: str) -> str:
         f"B = os.path.expanduser('{root}')\n"
         "src = B + 'v3/'\n"
         "dst = B + 'v4/'\n"
-        "shutil.rmtree(dst, ignore_errors=True)\n"
-        "shutil.copytree(src, dst)\n"
+        "os.makedirs(dst, exist_ok=True)\n"
         "shutil.copy(src + 'intro.md', dst + 'intro-old.md')\n"
         "shutil.copy2(src + 'faq.md', dst)\n"
+        "shutil.copyfile(os.path.join(src, 'setup.md'), os.path.join(dst, 'setup.md'))\n"
         "shutil.move(dst + 'intro-old.md', B + 'archive/intro-v3.md')\n"
         "t = open(dst + 'intro.md', encoding='utf-8').read()\n"
         f"t = re.sub('Contact.*', '{TEXT}', t)\n"
@@ -346,6 +346,104 @@ FIRES = {
         "import sys\nV = '/home/me/docs/'\ndef wr(n):\n    open(V + n, 'w').write('x')\n"
         "def g(m):\n    wr(m)\ng(sys.argv[1])"
     ),
+    # folder copies and removals are not followed at all
+    "copytree into a computed dot-directory": (
+        "import os, shutil\nshutil.copytree('/home/me/docs/x', os.path.join(os.path.expanduser('~'), "
+        "chr(46) + 'herm' + 'es', 'plugins', 'evil'))"
+    ),
+    "copytree to a computed start": "import shutil\nshutil.copytree('/home/me/docs/x', input() + '/x')",
+    "copytree into site-packages": (
+        "import shutil\n"
+        "shutil.copytree('/home/me/docs/x', '/usr/lib/python3/dist-packages/sitecustomize')"
+    ),
+    "copytree between data folders": "import shutil\nshutil.copytree('/home/me/docs/a', '/home/me/docs/b')",
+    "rmtree of a computed start": "import shutil\nshutil.rmtree(input() + '/sentrook')",
+    "rmtree of a data folder": "import shutil\nshutil.rmtree('/home/me/docs/old', ignore_errors=True)",
+    **{
+        f"rmtree of {p}": f"import shutil\nshutil.rmtree('{p}')"
+        for p in ("/home/me", "~", "/", ".", "..", "/home/me/docs/..", "/etc", "/var/spool/cron")
+    },
+    "from shutil import rmtree": "from shutil import rmtree\nrmtree('/home/me/docs/old')",
+    "ignore_patterns": "import shutil\nprint(shutil.ignore_patterns('*.md'))",
+    # file copies whose paths are not written out in full, or climb
+    "copy to a computed folder": "import shutil\nshutil.copy('/home/me/docs/a.md', input() + '/x.md')",
+    "copy from a computed name": (
+        "import shutil, sys\nshutil.copy('/home/me/docs/' + sys.argv[1], '/home/me/out/a.md')"
+    ),
+    "copy climbing with ..": (
+        "import shutil\nshutil.copy('/home/me/docs/a.md', '/home/me/docs/../../../etc/x.md')"
+    ),
+    "copy to a folder not written as one": "import shutil\nshutil.copy('/home/me/docs/a.md', '/home/me/out')",
+    "copyfile into a folder": "import shutil\nshutil.copyfile('/home/me/docs/a.md', '/home/me/out/')",
+    "copy with its own copy function": (
+        "import shutil\nshutil.move('/home/me/docs/a.md', '/home/me/out/a.md', copy_function=print)"
+    ),
+    # classes: methods run without their names being read
+    "a class whose __init__ writes": (
+        "V = '/home/me/'\np = 'notes.md'\nclass K:\n    def __init__(self, p):\n"
+        f"        open(V + p, 'a').write({_CURL})\nK('.bashrc')"
+    ),
+    "a method under if in a class": (
+        "V = '/home/me/'\np = 'notes.md'\nclass K:\n    if True:\n        def wr(self, p):\n"
+        f"            open(V + p, 'a').write({_CURL})\nK().wr('.bashrc')"
+    ),
+    "a class compared": (
+        "V = '/home/me/'\no = 'notes.md'\nclass K:\n    def __eq__(self, o):\n"
+        f"        open(V + o, 'a').write({_CURL})\nK() == '.bashrc'"
+    ),
+    "a dunder function": f"def __getattr__(n):\n    open('/home/me/' + n, 'a').write({_CURL})",
+    "type with three arguments": "K = type('K', (), {})",
+    "make_dataclass": "import dataclasses\nK = dataclasses.make_dataclass('K', ['a'])",
+    "make_dataclass imported": "from dataclasses import make_dataclass as m\nK = m('K', ['a'])",
+    "a helper never called": (
+        f"p = 'notes.md'\ndef wr(p):\n    open('/home/me/' + p, 'a').write({_CURL})"
+    ),
+    # items of a looped collection changed after they are written
+    "a list item changed": (
+        "L = [['x', '/home/me/docs/a.md']]\nL[0][1] = '/home/me/.bashrc'\n"
+        f"for a, b in L:\n    open(b, 'a').write({_CURL})"
+    ),
+    "a list item changed in a loop": (
+        "L = [['x', '/home/me/docs/a.md']]\nfor row in L:\n    row[1] = '/home/me/.bashrc'\n"
+        f"for a, b in L:\n    open(b, 'a').write({_CURL})"
+    ),
+    "a list item changed through a copy": (
+        "L = [['x', '/home/me/docs/a.md']]\nM = list(L)\nM[0][1] = '/home/me/.bashrc'\n"
+        f"for a, b in L:\n    open(b, 'a').write({_CURL})"
+    ),
+    "a dict value changed": (
+        "D = {'k': ['x', '/home/me/docs/a.md']}\nD['k'][1] = '/home/me/.bashrc'\n"
+        f"for a, b in D.values():\n    open(b, 'a').write({_CURL})"
+    ),
+    "a dict value changed in a loop": (
+        "D = {'k': ['x', '/home/me/docs/a.md']}\nfor k, v in D.items():\n    v[1] = '/home/me/.bashrc'\n"
+        f"for a, b in D.values():\n    open(b, 'a').write({_CURL})"
+    ),
+    "a collection grown in place": (
+        "L = ['/home/me/docs/a.md']\nL += ['/home/me/.bashrc']\n"
+        f"for b in L:\n    open(b, 'a').write({_CURL})"
+    ),
+    # out of a data dot-folder without a written `..`
+    **{
+        f"out of attachments by {how}": (
+            f"import os\nfrom pathlib import Path\nA = '/home/me/.hermes/attachments/'\n"
+            f"open({path}, 'w').write('x')"
+        )
+        for how, path in {
+            "os.pardir": "os.path.join(A, os.pardir, 'skills', 'x', 'notes.md')",
+            "'.' + '.'": "A + '.' + '.' + '/skills/x/notes.md'",
+            "'.' * 2": "A + '.' * 2 + '/skills/x/notes.md'",
+            "chr(46) * 2": "A + chr(46) * 2 + '/skills/x/notes.md'",
+            ".parent": "Path(A + 'x/a.md').parent.parent / 'skills' / 'notes.md'",
+            ".parents": "Path(A + 'x/a.md').parents[1] / 'skills' / 'notes.md'",
+            "dirname": (
+                "os.path.join(os.path.dirname(os.path.dirname(A + 'x/')), 'skills', 'notes.md')"
+            ),
+            "an f-string": "f'{A}{chr(46) * 2}/skills/notes.md'",
+            "input()": "A + input() + '/notes.md'",
+            "a computed cache name": "'/home/me/.hermes/cache/' + input() + '.md'",
+        }.items()
+    },
     # Hermes's own folders and files
     "skills": "open('/home/me/.hermes/skills/x/notes.md', 'w').write('x')",
     "skills under ~": "open('~/.hermes/skills/x/notes.md', 'w').write('x')",
@@ -430,26 +528,29 @@ def test_an_address_in_a_request_is_a_recipient():
 # ------------------------------------------------------------------ linear time
 
 
-@pytest.mark.parametrize(
-    "unit",
-    [
-        # many loops over one large literal collection
-        "for v{i} in names:\n    open(V + v{i}, 'w').write('x')\n",
-        # many calls of one helper, with a few dozen names
-        "wr('n{j}.md', 'x')\n",
-    ],
-)
+LOOP_HEAD = "V = '/home/me/docs/'\nnames = [" + ", ".join(f"'n{i}.md'" for i in range(50)) + "]\n"
+GROWTH = {
+    # one target looped over the same list many times: past the cap, not followed, and fast
+    "same target": "for v in names:\n    open(V + v, 'w').write('x')\n",
+    # a new target each time
+    "distinct targets": "for v{i} in names:\n    open(V + v{i}, 'w').write('x')\n",
+    # the list read many times besides
+    "reads of the list": "print(len(names), names[0], 'n1.md' in names)\n",
+    # one helper called many times with a few dozen names
+    "helper calls": "wr('n{j}.md', 'x')\n",
+}
+
+
+@pytest.mark.parametrize("unit", GROWTH.values(), ids=GROWTH.keys())
 def test_reading_grows_linearly(unit):
+    """Programs up to about 200,000 characters: four times the program takes about four times as long."""
+    head = LOOP_HEAD + "def wr(n, t):\n    open(V + n, 'w').write(t)\nwr('n0.md', 'x')\n"
+
     def program(d: int) -> str:
-        n = 1200 // d
-        names = ", ".join(f"'n{i}.md'" for i in range(50))
-        head = (
-            f"V = '/home/me/docs/'\nnames = [{names}]\n"
-            "def wr(n, t):\n    open(V + n, 'w').write(t)\nwr('n0.md', 'x')\n"
-        )
+        n = 200_000 // len(unit) // d
         return head + "".join(unit.format(i=i, j=i % 50) for i in range(n))
 
     texts = {d: program(d) for d in (1, FACTOR)}
-    assert python_reach(texts[1]) == LOCAL
+    assert len(texts[1]) > 150_000
     _, large = assert_linear(lambda d: python_reach.__wrapped__(texts[d]), unit)
-    assert large < 2.0
+    assert large < 4.0
