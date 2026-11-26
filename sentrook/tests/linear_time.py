@@ -45,6 +45,8 @@ TEXT_CACHES = (
     "sentrook.prepare.code_reach.kernel_effects",
     "sentrook.prepare.code_reach.kernel_reads",
     "sentrook.prepare.code_reach.python_reach",
+    "sentrook.prepare.credential_home._plain_link_hosts",
+    "sentrook.prepare.credential_home._string_values",
     "sentrook.prepare.entities._segments_of",
     "sentrook.prepare.views._protected_spans",
     "sentrook.prepare.views._secret_spans",

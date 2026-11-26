@@ -16,13 +16,13 @@ holds, and the call's credential does not count as sensitive data sent, only whe
   steered to). A host the pending program only mentions (the code reading knows the target of every request the
   program makes and this host is none of them, a link inside the body it posts, and no other call in the batch
   names it) is no party when it is on the registrable domain of a host the library lists the credential for
-  (`same_service`; never a host only an owner's grant names) and every link to it is written whole in a string,
-  naming no second address (`_plain_links`: no redirect or proxy target, no userinfo): whatever the code does
-  with the key, such a link reaches only the service that already receives it. A link to any other domain is a
-  party like any other host. A host that only the agent's own
+  (`same_service`; never a host only an owner's grant names) and every link to it is a plain link written in
+  a string (`_plain_link_hosts`: a scheme, the host, a path of letters, digits, `_`, `-` and `/`, and the link's
+  end, nothing else): whatever the code does with the key, such a link reaches only the service that already
+  receives it. A link to any other domain is a party like any other host. A host that only the agent's own
   installed skills named (a read of an installed skill, on this step or an earlier one, and no other content)
-  does not count as content here: the skill is the agent's standing
-  instructions for the service, and the library already ties the key to that host. Memory reads do count, and
+  does not count as content here: the skill is the agent's standing instructions for the service, and the
+  library already ties the key to that host. Memory reads do count, and
   everything else still scores such a host as untrusted;
 - the call sends by no route whose destination need not be written as a host (`scp`, `nc`, `git push`, ...), in a
   shell command or named in code (`subprocess.run(['nc', ...])`, a raw socket), and builds no address at run time
@@ -55,6 +55,7 @@ from __future__ import annotations
 import posixpath
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from ..enums import SessionFlag
@@ -474,13 +475,16 @@ def same_service(mention: str, home: str) -> bool:
     return m == domain or m.endswith("." + domain)
 
 
-#: Where a link written in text ends: whitespace, a quote or a bracket.
-_LINK_END = frozenset("'\"`()[]<>")
-#: How many times one host may be named in the program's strings for its links to be read one by one.
-_MAX_LINKS = 200
+#: What may follow a mentioned host in a link that is skipped: a path of letters, digits, `_`, `-` and `/` only (no
+#: `.`, `%`, `?`, `#`, `@`, `\\`, `:` or quote: nothing that can name a second address, encode one, start a query or
+#: hide userinfo), then the link's end inside the same string: ASCII whitespace, or the `)` closing a markdown link
+#: target. Matched against lower-cased text.
+_LINK_TAIL = re.compile(r"(?:/[a-z0-9_\-/]*)?([ \t\r\n)])")
+_SCHEMES = ("https://", "http://")
 
 
-def _string_values(code: str) -> list[str]:
+@lru_cache(maxsize=64)
+def _string_values(code: str) -> tuple[str, ...]:
     """The program's string values, as Python reads them (escapes decoded), lower-cased; empty when it does not
     parse."""
     import ast
@@ -491,48 +495,68 @@ def _string_values(code: str) -> list[str]:
             warnings.simplefilter("ignore")
             tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return []
+        return ()
     out: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             v = node.value
             out.append((v.decode("latin-1") if isinstance(v, bytes) else v).lower())
-    return out
+    return tuple(out)
 
 
-def _plain_links(texts: list[str], host: str) -> bool:
-    """Every link to `host` in the program's strings goes to that host and nowhere else: nothing before the host but
-    a scheme or subdomain labels (no `@` or `\\`, which some parsers read as userinfo), nothing after it that names a
-    second address (`://`, an encoded `%3a%2f%2f` or `%2f%2f`, `@`, `\\`: a redirect or proxy such as
-    `/login?redirect_uri=https%3A%2F%2F…`), and the link ends inside the string, so no computed value is put after
-    it. A host named in no string (built at run time) fails."""
-    host = host.lower().rstrip(".")
-    found = 0
-    for text in texts:
-        start = text.find(host)
-        while start >= 0:
-            end = start + len(host)
-            before_ok = start == 0 or not (text[start - 1].isalnum() or text[start - 1] == "-")
-            after_ok = end == len(text) or not (text[end].isalnum() or text[end] in "-.")
-            if before_ok and after_ok:
-                found += 1
-                if found > _MAX_LINKS:
-                    return False
-                i = start
-                while i > 0 and not (text[i - 1].isspace() or text[i - 1] in _LINK_END):
-                    i -= 1
-                j = end
-                while j < len(text) and not (text[j].isspace() or text[j] in _LINK_END):
-                    j += 1
-                if j == len(text):
-                    return False  # the link runs to the end of the string: a value put after it extends it
-                lead, tail = text[i:start], text[end:j]
-                if "@" in lead or "\\" in lead or "@" in tail or "\\" in tail:
-                    return False
-                if "://" in tail or "%3a%2f%2f" in tail or "%2f%2f" in tail:
-                    return False
-            start = text.find(host, end)
-    return found > 0
+def _link_shape(text: str, start: int, end: int) -> bool:
+    """The host at `text[start:end]` sits in a plain link: `http://` or `https://` right before it, the scheme at
+    the start of the string or after ASCII whitespace or `(`, then `_LINK_TAIL`. A `)` ends it only as the close of a
+    markdown link target (`[x](https://h/p)`), where a renderer ends the link whatever follows."""
+    for scheme in _SCHEMES:
+        s = start - len(scheme)
+        if s >= 0 and text.startswith(scheme, s):
+            break
+    else:
+        return False
+    lead = text[s - 1] if s > 0 else ""
+    if lead not in ("", " ", "\t", "\r", "\n", "("):
+        return False
+    tail = _LINK_TAIL.match(text, end)
+    if tail is None:
+        return False
+    if tail.group(1) == ")":
+        return lead == "(" and s >= 2 and text[s - 2] == "]"
+    return True
+
+
+@lru_cache(maxsize=64)
+def _plain_link_hosts(code: str, hosts: frozenset[str]) -> frozenset[str]:
+    """Those of `hosts` that the program names only in plain links (`_link_shape`): every case-insensitive
+    occurrence of the host in its string values has that shape, and there is at least one. A host built at run time,
+    named in a longer name, or written any other way is not among them.
+
+    The rule leaves one thing open on purpose: a value put after a link that already ended (`'see
+    https://h/docs/x '.strip() + key`) can make a plain-text linkifier read a longer path on the same host, a path
+    of letters, digits, `_`, `-` and `/`. That reaches only the service the key is for, which receives it anyway.
+
+    Linear: one regex pass per host over the strings, and a constant check per occurrence; once per program and
+    set of hosts."""
+    texts = _string_values(code)
+    out: set[str] = set()
+    for host in hosts:
+        h = host.lower().rstrip(".")
+        if not h:
+            continue
+        pattern = re.compile(re.escape(h))
+        found = False
+        plain = True
+        for text in texts:
+            for m in pattern.finditer(text):
+                found = True
+                if not _link_shape(text, m.start(), m.end()):
+                    plain = False
+                    break
+            if not plain:
+                break
+        if found and plain:
+            out.add(host)
+    return frozenset(out)
 
 
 def check(
@@ -617,13 +641,13 @@ def _check(
         why = take(ent)
         if why is not None:
             return None, why
-    texts: list[str] | None = None
+    same = frozenset(
+        ent.value for ent in mentions if any(same_service(ent.value, h) for h in home_names)
+    )
+    plain = _plain_link_hosts(pending.command or "", same) if same else frozenset()
     for ent in mentions:
-        if any(same_service(ent.value, home) for home in home_names):
-            if texts is None:
-                texts = _string_values(pending.command or "")
-            if _plain_links(texts, ent.value):
-                continue  # a link on the service's own domain, which receives the key anyway
+        if ent.value in plain:
+            continue  # a plain link on the service's own domain, which receives the key anyway
         why = take(ent)
         if why is not None:
             return None, why
