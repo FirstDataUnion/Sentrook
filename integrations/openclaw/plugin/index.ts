@@ -982,6 +982,8 @@ const plugin = {
       /** What the scan record says about a notice other than a hold's (a scan failure, a background save). */
       let notice: Json | null = null;
       let relaxed = false;
+      /** A relaxed block with a strong signal (snooze.asks): a stronger warning on the card. */
+      let strong = false;
       let lenient = false;
       /** What a reviewed background save becomes in the drafts; `params` null: the model's own draft, run as it is. */
       let drafting: { params: Record<string, unknown> | null } | null = null;
@@ -1017,18 +1019,20 @@ const plugin = {
         // that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
         // (`unattendedView`).
         verdict = decide(unattended ? unattendedView(resp) : resp, cfg);
+        const asked = snooze.asks(resp, verdict, built.planir);
         if (
           // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
           cfg.mode !== "observe" &&
           triggerKind === "message" &&
           !unattended &&
-          snooze.relaxes(resp, verdict) &&
+          asked !== null &&
           snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
         ) {
-          // The owner snoozed this attended session and nothing independent points to an attack: the block asks
-          // instead, at critical severity. It is never allowed silently.
+          // The owner snoozed this attended session: the block asks instead (`snooze.asks`), at critical severity,
+          // offering Allow once and Deny only. It is never allowed silently.
           verdict = "review";
           relaxed = true;
+          strong = asked === "strong";
         }
         sess.token = resp.state ?? null;
         sess.buffer = [];
@@ -1159,6 +1163,7 @@ const plugin = {
           remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
           const copy = reviewCard(resp, event.toolName, {
             relaxed,
+            strong,
             hint,
             remember: remember !== null,
             whyId: cfg.trafficLog.enabled ? built.planir.request_id : null,
@@ -1214,6 +1219,7 @@ const plugin = {
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
         ...(relaxed ? { relaxed: true } : {}),
+        ...(strong ? { relaxed_strong: true } : {}),
         ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
         ...(byPass ? { pass: byPass } : {}),
@@ -1231,7 +1237,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : byPass ? ` (${byPass.kind === "deny" ? "refused by" : "let through by"} ${byPass.id})` : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : strong ? " (block with a strong signal asked by snooze)" : relaxed ? " (block relaxed to review by snooze)" : byPass ? ` (${byPass.kind === "deny" ? "refused by" : "let through by"} ${byPass.id})` : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );

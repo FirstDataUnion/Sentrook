@@ -80,7 +80,7 @@
 
   var FLAG_HINTS = {
     snoozed: ["snoozed", "A snooze was on, so this review was allowed without asking."],
-    relaxed: ["snooze asked instead", "A snooze turned a block with no clear attack signal into a question."],
+    relaxed: ["snooze asked instead", "A snooze turned a block into a question."],
     skill_review: ["background save", "A save to skills or memory made by the host's own background review."],
     self_edit: ["self-edit", "The agent changed its own skills, memory or config."],
   };
@@ -942,7 +942,7 @@
     var state = model.state || {};
     return howto("Snooze", firstLine(state.snooze), [
       el("p", { text: "A snooze lets review prompts through without asking, for a while, in the chat where you set it (or everywhere with --all). Use it while you do setup work that Sentrook keeps asking about." }),
-      el("p", { text: "It never allows a block, a review the scanner enforces, or anything on an unattended run. A block with no clear attack signal asks you instead of stopping." }),
+      el("p", { text: "It never allows a block without asking, a review the scanner enforces, or anything on an unattended run. In beta, a block in a chat you attend asks you instead of stopping, with a warning; a change to Sentrook itself stays blocked." }),
       el("pre", { class: "srk-pre", text: state.snooze || "–" }),
       el("div", { class: "srk-cmds" }, [
         command(cmd("snooze"), "This session, for 1 hour."),

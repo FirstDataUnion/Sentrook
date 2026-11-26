@@ -23,6 +23,7 @@ def _hermes(c):
         c["response"],
         c["tool"],
         relaxed=c["relaxed"],
+        strong=c.get("strong", False),
         hint=c["hint"],
         remember=c["remember"],
         why_id=c["why_id"],
@@ -39,6 +40,7 @@ def test_the_card_is_the_agreed_text(case):
             case["response"],
             case["tool"],
             relaxed=case["relaxed"],
+            strong=case.get("strong", False),
             hint=case["hint"],
             remember=case["remember"],
             why_id=case["why_id"],
@@ -113,6 +115,7 @@ def test_the_card_never_runs_over_the_hosts_budgets():
         )
         kw = {
             "relaxed": rng.random() < 0.3,
+            "strong": rng.random() < 0.5,
             "hint": hint,
             "remember": rng.random() < 0.5,
             "why_id": rng.choice([None, "3f9c2a1b-77aa"]),
@@ -127,6 +130,20 @@ def test_the_card_never_runs_over_the_hosts_budgets():
         assert len(oc["description"]) <= FIXTURE["budgets"]["openclaw_description"]
         for t in (text, oc["title"], oc["description"]):
             assert not any(card._odd(c) for c in t if c != "\n"), t
+        # a snooze's note is never cut, and the strong one comes only with a relaxed block (a relaxed block never
+        # sets a grant: `remember` is never asked for one)
+        note = (
+            None
+            if not kw["relaxed"] or (kw["remember"] and not kw["strong"])
+            else card.STRONG_NOTE
+            if kw["strong"]
+            else card.RELAXED_NOTE
+        )
+        for lines in (text.splitlines(), oc["description"].split("\n")):
+            assert any(x.startswith(note) for x in lines) if note else True, lines
+            assert (
+                not any(x.startswith(card.STRONG_NOTE) for x in lines) or note == card.STRONG_NOTE
+            )
 
 
 def test_the_card_carries_no_redacted_data():

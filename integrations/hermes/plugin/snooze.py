@@ -18,7 +18,17 @@ after an unattended run. The owner gets a notice that it was let through.
 In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner attends,
 nothing independent points to an attack and nothing is enforced: the score alone blocks) into a review. It is
 allowed without asking only where the owner answered Session or Always for the same action while the same
-snoozes covered the session. A block without the mark, from an older scanner too, stays a block.
+snoozes covered the session.
+
+Beta (`BLOCKS_ASK`): in a chat the owner attends, a snooze turns every other block into a review too: a block with a
+floor, a strong signal or `enforced: block`, from an older scanner too. Its card warns, naming the reason it would be
+blocked, and says to allow it only for exactly the call the owner asked for. It is never allowed silently: its rule
+key is the call's own, so Hermes's Session and Always answers allow that call only. Attended here is what the
+scanner's attended-owner check reads from the request (`owner_attends`): the owner's own message on the main agent,
+outside a group chat or a host open to anyone, on a chat the plugin could tell apart. A change to Sentrook itself (a
+`guardrail_tampering` floor that blocks: a write into its state folder, turning the plugin off, a Sentrook command
+only the owner runs) stays a block: a snooze is never a way for the agent to switch Sentrook off. With `BLOCKS_ASK`
+off, only a block marked `relaxable` asks.
 
 A session is named by its `session_ref`, the same hash a scan sends. A command with no current
 session (the command line) can only snooze every session.
@@ -49,15 +59,36 @@ DEFAULT = timedelta(hours=1)
 MAX = timedelta(hours=24)
 MAX_ENTRIES = 200
 _DURATION = re.compile(r"([0-9]{1,5})([mh])")
+#: Beta: during a snooze, every block in a chat the owner attends asks, with a warning, except a change to Sentrook
+#: itself. False: only a block the scanner marks `relaxable` asks; every other block stays a block.
+BLOCKS_ASK = True
 RULE = (
-    "A snoozed review is allowed and logged. A block with no clear attack signal asks you instead; "
-    "other blocks, enforced reviews and unattended runs are never snoozed."
+    (
+        "A snoozed review is allowed and logged. In beta, a block in a chat you attend asks you instead, "
+        "with a warning; a change to Sentrook itself stays blocked, and enforced reviews and unattended "
+        "runs are never snoozed."
+    )
+    if BLOCKS_ASK
+    else (
+        "A snoozed review is allowed and logged. A block with no clear attack signal asks you instead; "
+        "other blocks, enforced reviews and unattended runs are never snoozed."
+    )
 )
 #: The tail of the reply to a snooze that was set.
 SET_RULE = (
-    "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and "
-    "unattended runs are not snoozed."
+    (
+        "In beta, blocks in a chat you attend ask you instead, with a warning; changes to Sentrook "
+        "itself stay blocked, and enforced reviews and unattended runs are not snoozed."
+    )
+    if BLOCKS_ASK
+    else (
+        "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and "
+        "unattended runs are not snoozed."
+    )
 )
+#: Sender bases of a room others can write to, and bases that say nothing about how the sender was known.
+_SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
+_NO_BASIS = frozenset({"none", "unknown"})
 #: Serialises read-modify-write of the file within this process; `file_lock` does across processes.
 _LOCK = threading.Lock()
 
@@ -141,6 +172,63 @@ def relaxes(resp: dict[str, Any], verdict: str) -> bool:
         and resp.get("relaxable") is True
         and resp.get("enforced") not in ("review", "block")
     )
+
+
+def owner_attends(planir: dict[str, Any]) -> bool:
+    """The owner is in the conversation, as the scanner's attended-owner check reads the request: a message turn from
+    the owner on the main agent, outside a group chat or a host open to anyone, on a basis that says how the plugin
+    knows (not `none` alone), and no host background process behind the call (`self_edit`)."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    session = planir.get("session") if isinstance(planir.get("session"), dict) else {}
+    basis = {b for b in sender.get("basis") or [] if isinstance(b, str)}
+    return (
+        trig.get("kind") == "message"
+        and sender.get("relation") == "owner"
+        and session.get("agent_role") == "main"
+        and not basis & _SHARED_BASIS
+        and bool(basis - _NO_BASIS)
+        and planir.get("self_edit") is None
+    )
+
+
+def tampering(resp: dict[str, Any]) -> bool:
+    """The call changes Sentrook itself at the blocking tier: a `guardrail_tampering` floor that does not only ask
+    (`enforce` review), or a reason that says so. The guardrail's review tier is not this: it asks already."""
+    for f in resp.get("floors_applied") or []:
+        if (
+            isinstance(f, dict)
+            and f.get("floor") == "guardrail_tampering"
+            and f.get("enforce") != "review"
+        ):
+            return True
+    for r in resp.get("reasons") or []:
+        code = r.get("code") if isinstance(r, dict) else None
+        if not isinstance(code, str):
+            continue
+        if code == "floor.guardrail_tampering":
+            detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
+            behind = detail.get("reason")
+            if not (isinstance(behind, str) and behind.endswith("_review")):
+                return True
+        elif code.startswith("guardrail.") and not code.endswith("_review"):
+            return True
+    return False
+
+
+def asks(resp: dict[str, Any], verdict: str, planir: dict[str, Any]) -> str | None:
+    """What a snooze in a session on a run the owner attends does with this verdict: `relaxed` for a block the
+    scanner marks `relaxable` (today's question), `strong` for any other block in the owner's own chat (`BLOCKS_ASK`;
+    the card warns and nothing allows it silently), None where it stays as it is (not a block, a change to Sentrook
+    itself, another sender or a shared room, or `BLOCKS_ASK` off). The caller checks the snooze, the run and the
+    mode."""
+    if verdict != "block":
+        return None
+    if relaxes(resp, verdict):
+        return "relaxed"
+    if BLOCKS_ASK and not tampering(resp) and owner_attends(planir):
+        return "strong"
+    return None
 
 
 # ---- status -----------------------------------------------------------------------------------------

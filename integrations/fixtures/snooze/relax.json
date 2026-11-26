@@ -1,5 +1,5 @@
 {
-  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that asks and is never snoozed through (on Hermes, a Session or Always answer to it covers the same action while the same snoozes last); a review prompt's `severity`, where the host has one, is given. Any other `relaxable` value, or none (an older scanner), relaxes nothing. Unattended runs are never relaxed. A review prompt for a relaxed block carries `relaxed_note` (Hermes: the approval message; OpenClaw: the approval description), which is never cut; no other prompt carries it.",
+  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), from `sender` (`owner`: the owner's own direct chat; `other`: someone else's direct message; `owner_in_group`: the owner in a group room), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that asks and is never snoozed through (on Hermes, a Session or Always answer to it covers the same action while the same snoozes last): `warning` is `relaxed`. Beta: any other block, a floor, a strong signal or `enforced: block` included, also becomes a review in the owner's own chat (`warning` is `strong`), asked every time with Allow once and Deny only (on Hermes, Session and Always allow that call only); a change to Sentrook itself (a `guardrail_tampering` floor that blocks) stays a block, and so does any block from another sender or in a group room. Unattended runs are never relaxed. A review prompt's `severity`, where the host has one, is given. A review prompt for a relaxed block carries `relaxed_note`, one for a strong block `strong_note` (Hermes: in the approval message; OpenClaw: in the approval description), never cut; no other prompt carries either. A strong block's reasons line starts with `strong_because`.",
   "relaxed_note": "Would be blocked, but a snooze is on.",
   "cases": [
     {
@@ -12,7 +12,9 @@
       "attended": true,
       "snoozed": true,
       "outcome": "review",
-      "severity": "critical"
+      "severity": "critical",
+      "sender": "owner",
+      "warning": "relaxed"
     },
     {
       "name": "snoozed: a relaxable score at the block line asks, at critical severity",
@@ -24,7 +26,9 @@
       "attended": true,
       "snoozed": true,
       "outcome": "review",
-      "severity": "critical"
+      "severity": "critical",
+      "sender": "owner",
+      "warning": "relaxed"
     },
     {
       "name": "snoozed: a review passes silently, as before",
@@ -34,7 +38,8 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "snoozed"
+      "outcome": "snoozed",
+      "sender": "owner"
     },
     {
       "name": "snoozed: a relaxable review passes silently, as before",
@@ -45,7 +50,8 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "snoozed"
+      "outcome": "snoozed",
+      "sender": "owner"
     },
     {
       "name": "snoozed: an allowed call stays allowed",
@@ -56,20 +62,24 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "allow"
+      "outcome": "allow",
+      "sender": "owner"
     },
     {
-      "name": "snoozed: a block the scanner did not mark relaxable still blocks",
+      "name": "beta, snoozed: a block the scanner did not mark relaxable asks with the strong warning",
       "response": {
         "risk": 92,
         "enforced": null
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
-      "name": "snoozed: a block marked not relaxable still blocks",
+      "name": "beta, snoozed: a block marked not relaxable asks with the strong warning",
       "response": {
         "risk": 92,
         "enforced": null,
@@ -77,10 +87,13 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
-      "name": "snoozed: only a JSON true relaxes a block",
+      "name": "beta, snoozed: a block marked relaxable other than by a JSON true asks with the strong warning",
       "response": {
         "risk": 92,
         "enforced": null,
@@ -88,10 +101,13 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
-      "name": "snoozed: an enforced block still blocks, whatever the mark",
+      "name": "beta, snoozed: an enforced block asks with the strong warning, whatever the mark",
       "response": {
         "risk": 100,
         "enforced": "block",
@@ -99,10 +115,13 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
-      "name": "snoozed: a block over an enforced review still blocks, whatever the mark",
+      "name": "beta, snoozed: a block over an enforced review asks with the strong warning, whatever the mark",
       "response": {
         "risk": 92,
         "enforced": "review",
@@ -110,7 +129,10 @@
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
       "name": "snoozed: a block the ceiling lowered still asks, at critical severity",
@@ -123,7 +145,8 @@
       "attended": true,
       "snoozed": true,
       "outcome": "review",
-      "severity": "critical"
+      "severity": "critical",
+      "sender": "owner"
     },
     {
       "name": "not snoozed: a relaxable block still blocks",
@@ -134,7 +157,8 @@
       },
       "attended": true,
       "snoozed": false,
-      "outcome": "block"
+      "outcome": "block",
+      "sender": "owner"
     },
     {
       "name": "not snoozed: a review asks, as before",
@@ -146,7 +170,8 @@
       "attended": true,
       "snoozed": false,
       "outcome": "review",
-      "severity": "warning"
+      "severity": "warning",
+      "sender": "owner"
     },
     {
       "name": "unattended and snoozed: a relaxable block stays a block",
@@ -157,7 +182,8 @@
       },
       "attended": false,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "block",
+      "sender": "owner"
     },
     {
       "name": "unattended and snoozed: a review is held",
@@ -168,7 +194,464 @@
       },
       "attended": false,
       "snoozed": true,
-      "outcome": "held"
+      "outcome": "held",
+      "sender": "owner"
+    },
+    {
+      "name": "beta, snoozed: a sensitive-data floor block asks with the strong warning",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: a block on a destination only untrusted content named asks with the strong warning",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: an enforced floor block asks with the strong warning",
+      "response": {
+        "risk": 95,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "reputation.known_bad_host"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "bad.example.net"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: a relaxable block at 88 keeps the relaxed wording",
+      "response": {
+        "risk": 88,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed"
+    },
+    {
+      "name": "snoozed: a write into Sentrook's own files stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "guardrail.state_dir_write"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "subject": "E1",
+            "detail": {
+              "reason": "guardrail.state_dir_write"
+            },
+            "text": "it writes into Sentrook's own files"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.example/sentrook/snooze.json"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: turning Sentrook off stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.plugin_disable"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.plugin_disable"
+            },
+            "text": "it turns off or removes Sentrook"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: turning Sentrook off stays a block, read from its reasons alone",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering"
+          },
+          {
+            "code": "guardrail.plugin_disable"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: the guardrail's review tier asks as before, without a snooze note",
+      "response": {
+        "risk": 50,
+        "enforced": "review",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 0.5,
+            "enforce": "review",
+            "subject": "E1",
+            "reason": "guardrail.state_dir_write_review"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "subject": "E1",
+            "detail": {
+              "reason": "guardrail.state_dir_write_review"
+            },
+            "text": "it may change Sentrook's own files"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.example/sentrook/"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical"
+    },
+    {
+      "name": "not snoozed: a sensitive-data floor block still blocks",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": false,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "not snoozed: an enforced floor block still blocks",
+      "response": {
+        "risk": 95,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "reputation.known_bad_host"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "bad.example.net"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": false,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "unattended and snoozed: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        }
+      },
+      "attended": false,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "unattended and snoozed: an enforced floor block stays a block",
+      "response": {
+        "risk": 95,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "reputation.known_bad_host"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "bad.example.net"
+          }
+        }
+      },
+      "attended": false,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, another sender: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "other",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, the owner in a group room: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner_in_group",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, another sender: a block with no strong signal stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "other",
+      "outcome": "block"
     }
-  ]
+  ],
+  "strong_note": "A snooze is on: allow only if you asked for exactly this call.",
+  "strong_because": "Would be blocked because "
 }

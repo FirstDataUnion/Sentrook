@@ -6,7 +6,8 @@
  * - what the call does, from the scan's tool description (`Sends ~/notes/q3-plan.md to paste.example.net.`);
  * - why, in plain words: the first two reasons whose `text` the scanner filled, or the block category when none has;
  * - what an answer does, only where the buttons would not say it: a suggested grant, a block a snooze turned into
- *   a question, a call that would run without a scan;
+ *   a question (one with a strong signal says why with "Would be blocked because", and warns to allow it only for
+ *   exactly the call the owner asked for), a call that would run without a scan;
  * - where to read more (`Details: /sentrook-why 3f9c2a1b`), when the traffic log is on.
  *
  * Every line is a sentence, so the terminal UI, which joins lines, still reads. The text is plain: no markdown,
@@ -125,7 +126,15 @@ function reasonTexts(resp: ScanResponse): string[] {
   return seen;
 }
 
-const because = (texts: string[]) => `Because ${texts.join(", and ")}.`;
+/**
+ * The answer line of a block a snooze turned into a question: one the scanner marks relaxable, and (beta) one with a
+ * strong signal, whose reasons the line before names ("Would be blocked because ...").
+ */
+export const RELAXED_NOTE = "Would be blocked, but a snooze is on.";
+export const STRONG_NOTE = "A snooze is on: allow only if you asked for exactly this call.";
+const STRONG_BECAUSE = "Would be blocked because ";
+
+const because = (texts: string[], strong = false) => `${strong ? STRONG_BECAUSE : "Because "}${texts.join(", and ")}.`;
 
 /** What a suggested grant allows, as `trust x` (or `trusts x` with `third`), its pattern at most `cap` long. */
 function grantPhrase(grant: Entry, third: boolean, cap: number): string {
@@ -153,7 +162,7 @@ export function commandShown(grant: Entry): boolean {
   return !(new RegExp(ODD.source, "u").test(pattern) || /[\[\]<>|`]/.test(pattern) || BROADCAST.test(pattern));
 }
 
-function answer(relaxed: boolean, hint: Entry | null, remember: boolean, whyId: string | null, short: boolean, cap: number): string[] {
+function answer(relaxed: boolean, hint: Entry | null, remember: boolean, whyId: string | null, short: boolean, cap: number, strong = false): string[] {
   const lines: string[] = [];
   if (hint) {
     if (remember) lines.push(`${ALWAYS} also ${grantPhrase(hint, true, cap)} for ${GRANT_DAYS} days.`);
@@ -163,7 +172,7 @@ function answer(relaxed: boolean, hint: Entry | null, remember: boolean, whyId: 
       if (whyId) lines.push(`To ${grantPhrase(hint, false, cap)} for ${GRANT_DAYS} days, see Details.`);
     } else lines.push(`To allow this for ${GRANT_DAYS} days: ${grantCommand(hint, CMD)}`);
   }
-  if (relaxed) lines.push("Would be blocked, but a snooze is on.");
+  if (relaxed) lines.push(strong ? STRONG_NOTE : RELAXED_NOTE);
   return lines;
 }
 
@@ -174,6 +183,11 @@ export function header(resp: ScanResponse): string {
 
 export interface CardOptions {
   relaxed?: boolean;
+  /**
+   * With `relaxed`: the block carries a strong signal, so the reasons say it would be blocked and the answer warns; no
+   * grant is suggested.
+   */
+  strong?: boolean;
   /** The suggested grant (`grants.responseHints`), shown on the owner's own turn. */
   hint?: Entry | null;
   /** Approving always sets `hint`. */
@@ -184,7 +198,10 @@ export interface CardOptions {
 
 /** The description's lines, fitted to the budget. */
 export function reviewLines(resp: ScanResponse, tool: string, opts: CardOptions = {}): string[] {
-  const { relaxed = false, hint = null, remember = false } = opts;
+  const { relaxed = false, remember = false } = opts;
+  const strong = relaxed && opts.strong === true;
+  // A strong block suggests no grant: the owner allows only this call.
+  const hint = strong ? null : (opts.hint ?? null);
   const sid = opts.whyId ? opts.whyId.slice(0, 8) : null;
   const ents = entitiesOf(resp);
   const found = reasonTexts(resp);
@@ -194,9 +211,12 @@ export function reviewLines(resp: ScanResponse, tool: string, opts: CardOptions 
   const build = (cap: number, whatRoom: number | null, n: number, short: boolean, whyRoom: number | null) => {
     let w = what(resp, tool, ents, cap);
     if (whatRoom !== null) w = whatRoom >= WHAT_MIN ? clip(w, whatRoom) : "";
-    let b = because(texts.slice(0, n).map((t) => fill(t, ents, Math.max(cap, 24))));
+    let b = because(
+      texts.slice(0, n).map((t) => fill(t, ents, Math.max(cap, 24))),
+      strong,
+    );
     if (whyRoom !== null) b = clip(b, whyRoom);
-    return [w, b, ...answer(relaxed, hint, remember, sid, short, Math.max(cap, 24)), ...details].filter(Boolean);
+    return [w, b, ...answer(relaxed, hint, remember, sid, short, Math.max(cap, 24), strong), ...details].filter(Boolean);
   };
   const size = (lines: string[]) => measure(lines.join("\n"));
   const roomFor = (lines: string[], index: number) => {
@@ -217,7 +237,7 @@ export function reviewLines(resp: ScanResponse, tool: string, opts: CardOptions 
     if (size(lines) <= DESCRIPTION_BUDGET) return lines;
   }
   let lines = build(cap, 0, 1, true, null);
-  const i = lines.findIndex((l) => l.startsWith("Because "));
+  const i = lines.findIndex((l) => l.startsWith("Because ") || l.startsWith(STRONG_BECAUSE));
   lines = build(cap, 0, 1, true, roomFor(lines, i));
   if (size(lines) <= DESCRIPTION_BUDGET) return lines;
   // Only an answer line too long to fit is left: cut the text as a whole.

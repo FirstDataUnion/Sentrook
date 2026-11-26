@@ -5,7 +5,9 @@ One fact per line, in this order:
 - what the call does, from the scan's tool description (`Sends ~/notes/q3-plan.md to paste.example.net.`);
 - why, in plain words: the first two reasons whose `text` the scanner filled, or the block category when none has;
 - what an answer does, only where the host's buttons would not say it: a suggested grant, what Hermes's Session
-  answer covers, a block a snooze turned into a question, a call that would run without a scan;
+  answer covers, a block a snooze turned into a question (one with a strong signal says why with "Would be blocked
+  because", and warns to allow it only for exactly the call the owner asked for), a call that would run without a
+  scan;
 - where to read more (`Details: /sentrook why 3f9c2a1b`), when the traffic log is on.
 
 Every line is a sentence, so a surface that joins lines (the OpenClaw terminal UI) still reads. The text is plain:
@@ -163,8 +165,15 @@ def _reason_texts(resp: dict[str, Any]) -> list[str]:
     return seen
 
 
-def _because(texts: list[str]) -> str:
-    return "Because " + ", and ".join(texts) + "."
+#: The answer line of a block a snooze turned into a question: one the scanner marks relaxable, and (beta) one with a
+#: strong signal, whose reasons the line before names ("Would be blocked because ...").
+RELAXED_NOTE = "Would be blocked, but a snooze is on."
+STRONG_NOTE = "A snooze is on: allow only if you asked for exactly this call."
+STRONG_BECAUSE = "Would be blocked because "
+
+
+def _because(texts: list[str], strong: bool = False) -> str:
+    return (STRONG_BECAUSE if strong else "Because ") + ", and ".join(texts) + "."
 
 
 def _grant_phrase(grant: dict[str, Any], third: bool, cap: int) -> str:
@@ -200,6 +209,7 @@ def _answer(
     short: bool,
     cap: int,
     session: str | None = None,
+    strong: bool = False,
 ) -> list[str]:
     h = HOSTS[host]
     lines: list[str] = []
@@ -228,8 +238,13 @@ def _answer(
             )
     if session in SESSION_LINES and not relaxed:
         lines.append(SESSION_LINES[session])
-    if relaxed:
-        line = "Would be blocked, but a snooze is on."
+    if relaxed and strong:
+        line = STRONG_NOTE
+        if host == "hermes":
+            line += " Session and Always allow this call only."
+        lines.append(line)
+    elif relaxed:
+        line = RELAXED_NOTE
         if host == "hermes":
             line += " Session and Always cover this action until it ends."
         lines.append(line)
@@ -252,10 +267,16 @@ def review_lines(
     why_id: str | None = None,
     fixed: str = "",
     session: str | None = None,
+    strong: bool = False,
 ) -> list[str]:
     """The card's body lines, fitted with `fixed` (text the host shows with them in the same budget, the header
     on Hermes) to the host's budget. `session` ("parties" or "exact", Hermes only) says what a Session answer
-    covers."""
+    covers. `strong` (with `relaxed`): the block a snooze turned into a question carries a strong signal, so the
+    reasons say it would be blocked and the answer line warns; it suggests no grant, since the owner allows only this
+    call."""
+    strong = strong and relaxed
+    if strong:
+        hint = None
     budget = HOSTS[host]["budget"]
     sid = why_id[:8] if why_id else None
     ents = _entities(resp)
@@ -268,10 +289,10 @@ def review_lines(
         what = _what(resp, tool, ents, cap)
         if what_room is not None:
             what = clip(what, what_room) if what_room >= WHAT_MIN else ""
-        because = _because([_fill(t, ents, max(cap, 24)) for t in texts[:n]])
+        because = _because([_fill(t, ents, max(cap, 24)) for t in texts[:n]], strong)
         if why_room is not None:
             because = clip(because, why_room)
-        answer = _answer(host, relaxed, hint, remember, sid, short, max(cap, 24), session)
+        answer = _answer(host, relaxed, hint, remember, sid, short, max(cap, 24), session, strong)
         lines = [what, because, *answer, *details]
         return [line for line in lines if line]
 
@@ -299,7 +320,7 @@ def review_lines(
         if size(lines) <= budget:
             return lines
     lines = build(cap, 0, 1, True, None)
-    i = next(i for i, line in enumerate(lines) if line.startswith("Because "))
+    i = next(i for i, line in enumerate(lines) if line.startswith(("Because ", STRONG_BECAUSE)))
     lines = build(cap, 0, 1, True, room_for(lines, i))
     if size(lines) <= budget:
         return lines
@@ -319,6 +340,7 @@ def hermes_message(
     remember: bool = False,
     why_id: str | None = None,
     session: str | None = None,
+    strong: bool = False,
 ) -> str:
     """The approval prompt's text on Hermes (its only field: the host adds its own header and buttons). `session`
     says what a Session answer covers (`SESSION_LINES`); None leaves it unsaid."""
@@ -333,6 +355,7 @@ def hermes_message(
         why_id=why_id,
         fixed=head,
         session=session,
+        strong=strong,
     )
     return "\n".join([head, *body])
 
@@ -345,10 +368,18 @@ def openclaw_card(
     hint: dict[str, Any] | None = None,
     remember: bool = False,
     why_id: str | None = None,
+    strong: bool = False,
 ) -> dict[str, str]:
     """The approval's title and description on OpenClaw (`card.ts` builds it; this one is for the shared tests)."""
     body = review_lines(
-        resp, tool, "openclaw", relaxed=relaxed, hint=hint, remember=remember, why_id=why_id
+        resp,
+        tool,
+        "openclaw",
+        relaxed=relaxed,
+        hint=hint,
+        remember=remember,
+        why_id=why_id,
+        strong=strong,
     )
     return {
         "title": clip(header(resp), HOSTS["openclaw"]["title_max"]),

@@ -164,8 +164,8 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     args: "[duration|off|status] [--all]",
     description:
       "Allow review prompts in this session (--all: every session) for a duration, default 1h, at most 24h; " +
-      "blocks with no clear attack signal ask instead; never other blocks, enforced reviews or unattended runs; " +
-      "off; status",
+      "in beta, blocks in a chat you attend ask instead, with a warning, except changes to Sentrook itself; " +
+      "never enforced reviews or unattended runs; off; status",
     cliRest: true,
     run: (ctx, rest) =>
       changed(

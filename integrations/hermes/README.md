@@ -303,7 +303,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
 | `bind add\|remove\|list [channel]` | Manage channel bindings |
-| `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
+| `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; in beta, a block in a chat you attend asks you instead, with a warning, except a change to Sentrook itself |
 | `allow <id> [now\|later\|always]` | Answer a held call by the id in its notice, within 7 days: run the cron job again now and let the call through once in that run (`later`: on the job's next scheduled run instead), or with `always` for 30 days on that job (see [Held calls](#held-calls-on-unattended-runs)) |
 | `deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
 | `approve <id>` | The same as `allow <id>`, kept for one release |
@@ -319,17 +319,29 @@ or the local terminal (`hermes chat` or `hermes sentrook …`). Group and channe
 direct message admitted only because the gateway allows all users. Every attempt, allowed or refused, is recorded in
 the traffic log (unless you turned it off). Hermes's own `allow_admin_from` is not used.
 
-If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
-instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
-marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
-or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
-granted, no floor, and the scan was complete) becomes an approval prompt that says "Would be blocked, but a snooze
-is on." The snooze does not skip that prompt. If you answer **Session** or **Always**, the same action (same tool,
-source and destination) goes through without asking until that snooze ends; a new snooze asks again. The score is the
-same either way.
+If Sentrook blocks your own setup work, snooze for the duration: while a snooze is on, a block in a chat you attend
+asks you instead of stopping. This is beta behaviour, and there are two kinds of prompt:
 
-A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
-webhooks, the API server): blocks still stop, and a review on an unattended run is held for you instead.
+- A block the scanner marks as having no clear attack signal (you asked in the chat, nothing came from content the
+  agent read, no known-bad or look-alike entity, no retry of a call you denied, no credential leaving for a
+  destination you have not named or granted, no floor, and the scan was complete) becomes an approval prompt that
+  says "Would be blocked, but a snooze is on." If you answer **Session** or **Always**, the same action (same tool,
+  source and destination) goes through without asking until that snooze ends; a new snooze asks again.
+- Any other block, one with a floor or a strong signal included, becomes an approval prompt with a stronger
+  warning: it names why it would be blocked ("Would be blocked because ...") and says "A snooze is on: allow only if
+  you asked for exactly this call." Hermes cannot leave buttons out, so **Session** and **Always** allow that one
+  call only, like **Once**: the next call asks again, and no answer sets a grant. Allow it only if you asked for
+  exactly what the card describes.
+
+A change to Sentrook itself (a write into its state folder, turning the plugin off, a Sentrook command only you should
+run) stays a block during a snooze: a snooze is never a way for the agent to switch Sentrook off. The snooze does not
+skip any of these prompts, and the score is the same either way.
+
+A chat you attend here is your own message on the main agent: a direct message from a sender listed in
+`<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, or the local terminal. A group or channel, a sender you did not
+list, a sub-agent and the background review are not. A snooze never allows a block without asking, a review the
+scanner marks as enforced, or anything on an unattended run (cron jobs, webhooks, the API server): blocks still stop
+there, and a review on an unattended run is held for you instead.
 
 Where slash commands don't reach the plugin, use `hermes sentrook <command>` on the machine instead:
 
@@ -514,8 +526,8 @@ call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in i
 snooze never turns a block into a question. YOLO you switch on for one session (`/yolo` in a chat, or `hermes --yolo` /
 `hermes chat --yolo`, which Hermes applies to that session) is not visible to Sentrook, so in that session Hermes
 approves Sentrook's reviews the way it approves everything else there. Blocks still apply, with one exception: if a
-snooze is on in that session, a block Sentrook marks as having no clear attack signal becomes a review (see
-[Commands](#commands)), which YOLO then approves, so the call runs. Do not snooze a session you have switched to YOLO.
+snooze is on in that session, a block in your own chat becomes a review (see [Commands](#commands)), which YOLO then
+approves, so the call runs. Do not snooze a session you have switched to YOLO.
 
 ### Held calls on unattended runs
 

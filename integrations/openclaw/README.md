@@ -335,7 +335,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `/sentrook-revoke <id>` | Remove a grant set by command |
 | `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
-| `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
+| `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; in beta, a block in a chat you attend asks you instead, with a warning, except a change to Sentrook itself |
 | `/sentrook-notify here\|off\|status` | Where notices go (held calls, scan failures on unattended runs, [background saves](#background-skill-and-memory-saves)): `here`, sent as a direct message to the agent, sends notices to you in that chat |
 | `/sentrook-allow <id> [now\|later\|always]` | Answer a held call by the id in its notice, within 7 days: run the cron job again now and let the call through once in that run (`later`: on the job's next scheduled run instead), or with `always` for 30 days on that job (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
 | `/sentrook-deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
@@ -368,16 +368,25 @@ Run them in your direct message, the Control UI (in a session no room shares) or
 `/sentrook-notify here` also needs a direct message on a chat channel, since that is where it sends notices. Every
 attempt, allowed or refused, is recorded in the traffic log (unless you turned it off).
 
-If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
-instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
-marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
-or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
-granted, no floor, and the scan was complete) becomes an approval prompt at critical severity that says "Would be
-blocked, but a snooze is on." It is never allowed without asking, and the snooze does not skip that prompt. The score
-is the same either way.
+If Sentrook blocks your own setup work, snooze for the duration: while a snooze is on, a block in a chat you attend
+asks you instead of stopping. This is beta behaviour, and there are two kinds of prompt, both at critical severity
+and both offering **Allow once** and **Deny** only:
 
-A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
-subagents, webhooks): blocks still stop, and a review on an unattended run is held for you instead.
+- A block the scanner marks as having no clear attack signal (you asked in the chat, nothing came from content the
+  agent read, no known-bad or look-alike entity, no retry of a call you denied, no credential leaving for a
+  destination you have not named or granted, no floor, and the scan was complete) says "Would be blocked, but a
+  snooze is on."
+- Any other block, one with a floor or a strong signal included, carries a stronger warning: it names why it would
+  be blocked ("Would be blocked because ...") and says "A snooze is on: allow only if you asked for exactly this
+  call." It suggests no grant. Allow it only if you asked for exactly what the card describes.
+
+Neither is ever allowed without asking: the next call asks again. A change to Sentrook itself (a write into its state
+folder, turning the plugin off, a Sentrook command only you should run) stays a block during a snooze: a snooze is
+never a way for the agent to switch Sentrook off. The score is the same either way.
+
+For this, a chat you attend is your own message on the main agent, as below; someone else's message does not count.
+A snooze never allows a block without asking, a review the scanner marks as enforced, or anything on an unattended run
+(cron jobs, subagents, webhooks): blocks still stop there, and a review on an unattended run is held for you instead.
 
 A chat you attend is a direct chat with the agent: a DM, webchat or the Control UI. A group or channel room is not,
 even when you wrote the message, and neither is a turn of OpenClaw's own system agent. The plugin tells them apart by
