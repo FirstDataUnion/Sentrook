@@ -36,7 +36,7 @@ import * as passes from "./passes.ts";
 import * as runNow from "./runNow.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, describe as describeCall, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind, triggerKind } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL_NAMES, toolKind, triggerKind } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -115,10 +115,11 @@ export interface BeforeToolCallResult {
 }
 
 /**
- * Tool search: discovery tools have no side effects, and `tool_call` only dispatches; the call they lead to is
- * scanned on its own (a dispatched call fires its own tool hooks, with its own result).
+ * Tool search: discovery tools have no side effects, and the dispatcher (`tool_call`, `dispatch_action` from OpenClaw
+ * 2026.11.3) only dispatches; the call they lead to is scanned on its own (a dispatched call fires its own tool hooks,
+ * with its own result).
  */
-const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", TOOL_CALL]);
+const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", ...TOOL_CALL_NAMES]);
 
 /** History decisions after which the tool did not run. */
 const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held", "draft_failed"]);

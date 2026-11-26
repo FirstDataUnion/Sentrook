@@ -64,8 +64,11 @@ export function toolKind(name: string): string {
   return "other";
 }
 
-/** Tool search's dispatcher: `{id, args}` runs the named tool, which fires its own tool hooks. */
-export const TOOL_CALL = "tool_call";
+/**
+ * Tool search's dispatcher: `{id, args}` runs the named tool, which fires its own tool hooks. OpenClaw 2026.11.3
+ * renamed it `dispatch_action` and still takes `tool_call`; the calls it dispatches keep `tool_call:` ids.
+ */
+export const TOOL_CALL_NAMES: ReadonlySet<string> = new Set(["tool_call", "dispatch_action"]);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -85,8 +88,8 @@ const SELECTORS = ["id", "toolId", "name"];
 const isDotted = (k: string) => k.startsWith("args.") && k.length > 5;
 
 /**
- * The call a `tool_call` wrapper names, read as OpenClaw reads it: the tool from `id`, `toolId` or `name`; the
- * arguments from `args` (or `input`), else the wrapper's other fields; `args.<key>` fields join either.
+ * The call a `tool_call` / `dispatch_action` wrapper names, read as OpenClaw reads it: the tool from `id`, `toolId`
+ * or `name`; the arguments from `args` (or `input`), else the wrapper's other fields; `args.<key>` fields join either.
  */
 export function unwrapToolCall(params: unknown): { tool: string; arguments: Record<string, unknown> } | null {
   if (!isRecord(params)) return null;
@@ -660,12 +663,13 @@ export function buildPlanir(b: BuildInput): Built {
   const parent = isSub ? b.parents[sessionKey!] : undefined;
   const assistant = b.assistant;
   const calls: any[] = Array.isArray(assistant?.calls) ? assistant.calls : [];
-  // A call a `tool_call` wrapper dispatched is in the message through its wrapper, which is not its sibling.
+  // A call a wrapper (`tool_call` or `dispatch_action`) dispatched is in the message through its wrapper, which is
+  // not its sibling.
   const outer = dispatcherOf(hostCallId);
   const wrapper =
     outer === undefined
       ? undefined
-      : calls.find((c) => c.name === TOOL_CALL && typeof c.id === "string" && dispatchIdPart(c.id) === outer);
+      : calls.find((c) => TOOL_CALL_NAMES.has(c.name) && typeof c.id === "string" && dispatchIdPart(c.id) === outer);
   const inBatch = !!wrapper || calls.some((c) => c.id === hostCallId);
   const narration: string | undefined = (inBatch && assistant.text) || run.lastAssistantText || undefined;
   const tk = toolKind(event.toolName);
@@ -678,7 +682,7 @@ export function buildPlanir(b: BuildInput): Built {
         .filter((c) => c.id !== hostCallId && c !== wrapper)
         .map((c) => {
           // A sibling wrapper is shown as the call it dispatches.
-          const inner = c.name === TOOL_CALL ? unwrapToolCall(c.arguments) : null;
+          const inner = TOOL_CALL_NAMES.has(c.name) ? unwrapToolCall(c.arguments) : null;
           const name: string = inner?.tool ?? c.name ?? "unknown";
           return {
             call_id: c.id,
