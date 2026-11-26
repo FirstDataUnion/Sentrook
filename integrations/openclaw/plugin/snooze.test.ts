@@ -570,6 +570,24 @@ test("a strong block without a snooze, in a cron, subagent, heartbeat or webhook
   assert.equal(rec.relaxed, undefined);
 });
 
+test("a message another session sent into the owner's chat never reaches a snooze prompt", async () => {
+  put(entry());
+  override = { ...FLOOR_BLOCK };
+  const r = await registered();
+  for (const kind of ["inter_session", "internal_system"]) {
+    // trigger user, the owner's flag on the requester: only the provenance says another session wrote it
+    const { out, rec } = await r.scan("run it", "S1", "user", { ...OWNER, inputProvenance: { kind } });
+    assert.equal(rec.planir.trigger.kind, "system", kind);
+    assert.equal(out.block, true, kind);
+    assert.equal(rec.relaxed, undefined, kind);
+  }
+  // nor is its review snoozed: it asks
+  override = { risk: 55, enforced: null, status: "ok" };
+  const { out, rec } = await r.scan("run it", "S1", "user", { ...OWNER, inputProvenance: { kind: "inter_session" } });
+  assert.ok(out.requireApproval, "a review asks");
+  assert.equal(rec.snoozed, undefined);
+});
+
 test("observe mode asks nothing of a strong block", async () => {
   put(entry());
   process.env.SENTROOK_MODE = "observe";

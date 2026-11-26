@@ -16,3 +16,7 @@ during a snooze; so does a block with a floor or a strong signal on email, SMS, 
 sender. Nothing changes on unattended runs, for other senders, in group rooms, in observe mode, on
 scan errors or without a snooze. The snooze reply, `/sentrook-snooze status`, the guide and the agent skill say so.
 The traffic log marks such a prompt with `relaxed_strong: true`.
+
+A turn OpenClaw starts with trigger `user` whose input came from another session (`sessions_send` from another agent)
+or from the host itself is no longer read as your own message, even with an owner-flagged requester: it never reaches
+a snooze prompt, a snoozed review there asks, and approving never sets a suggested grant. Cron runs are unchanged.

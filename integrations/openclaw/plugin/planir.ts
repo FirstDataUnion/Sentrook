@@ -253,6 +253,9 @@ export function isSubagentSession(sessionKey: unknown): boolean {
   return typeof sessionKey === "string" && /(^|:)subagent:/.test(sessionKey);
 }
 
+/** Input provenance kinds that say a turn's message came from another session or from the host, not a person. */
+const INTERNAL_PROVENANCE = new Set(["inter_session", "internal_system"]);
+
 export function triggerKind(run: RunContext, sessionKey?: unknown): string {
   // OpenClaw starts a subagent's run with trigger `user` and no provenance: its session key says what it is. Its
   // message is the parent agent's task, not the owner's.
@@ -261,7 +264,10 @@ export function triggerKind(run: RunContext, sessionKey?: unknown): string {
   if (isSystemAgentTurn(run)) return "system";
   switch (run.trigger) {
     case "user":
-      return "message";
+      // A message another session sent in (`sessions_send` from another agent) or one the host wrote itself: it
+      // comes with trigger `user`, and may carry an owner-flagged requester, but nobody typed it in this chat. Only a
+      // `user` turn is read this way: a cron run also says `internal_system`, and stays a cron run.
+      return INTERNAL_PROVENANCE.has(run.inputProvenance?.kind) ? "system" : "message";
     case "cron":
       // Before OpenClaw 2026.11 a webhook or mapped-hook run also came with trigger "cron", in a hook session.
       return isHookSession(sessionKey) ? "hook" : "scheduled";

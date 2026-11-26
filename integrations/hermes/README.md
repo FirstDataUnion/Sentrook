@@ -547,7 +547,8 @@ everything else there. Blocks still apply. During a snooze, Sentrook reads that 
 approval module: under YOLO a block with a floor or a strong signal stays a block, and when the plugin cannot read it
 (a plugin host outside Hermes's process, another Hermes version) such a block stays a block too. One exception
 remains: a block the scanner marks as having no clear attack signal still becomes a review, which YOLO then approves,
-so the call runs. Do not snooze a session you have switched to YOLO.
+so the call runs. Do not snooze a session you have switched to YOLO. Likewise, an editor connected over ACP that is set
+to allow tool calls by itself answers these prompts itself, the snooze's included: do not snooze such a session.
 
 ### Held calls on unattended runs
 
