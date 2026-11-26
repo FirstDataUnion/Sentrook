@@ -2486,9 +2486,9 @@ def _unparsed_cli_readings(
 _REDIRECT_WORD = re.compile(r"(?:\d+|&)?(?P<op>>\||>>?|<)(?P<target>.*)", re.S)
 #: Words that end a compound command, read past to the command after them.
 _CLOSERS = frozenset({"}", "fi", "done", "esac"})
-#: The longest path a `cd` takes (Linux `PATH_MAX`). A working folder whose path grows past it
-#: is not placed (`_UNPLACED`): the files written relative to it that name a host config are
-#: asked.
+#: The longest path a `cd` takes (Linux `PATH_MAX`). In a command the scan does not parse, a
+#: working folder whose path grows past it is not placed (`_UNPLACED`): the files written relative
+#: to it that name a host config are asked.
 _PATH_MAX = 4096
 _UNPLACED = "<unplaced folder>"
 
@@ -2512,7 +2512,7 @@ _DATA_FILTERS = frozenset(
 )
 
 
-def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
+def _unparsed_segments(text: str, shells: set[str]) -> list[_UnparsedSegment]:
     """The simple commands of shell text the parser did not take, as the segments a parse gives
     (head, words after quote removal, flags, positional words, write-redirect targets), with the
     file a `<` feeds each and whether a pipe does: each simple command of `_shell_commands` read
@@ -2525,7 +2525,12 @@ def _unparsed_segments(text: str) -> list[_UnparsedSegment]:
     unclosed: list[int] = []
     commands = _shell_commands(text, piped, bodies, unclosed)
     for index, words in enumerate(commands):
-        unsure = bool(unclosed) and index >= unclosed[0]
+        # A heredoc body with no closing line is never run, unless a shell reads it.
+        unsure = (
+            bool(unclosed)
+            and index >= unclosed[0]
+            and not (unclosed[1] >= 0 and _runs_stdin(commands[unclosed[1]], shells))
+        )
         kept: list[str] = []
         redirects: list[str] = []
         stdin = None
@@ -4426,7 +4431,7 @@ def _approval_loosening(
         written_blind: set[str] = set()  # written from content the scan cannot read
         # A command the scan does not parse is read as the shell splits it, for what its commands
         # write (redirects, `tee`, `sed -i`, `cp` over a host file); its host CLIs are read below.
-        unparsed = [] if parsed else _unparsed_segments(command)
+        unparsed = [] if parsed else _unparsed_segments(command, shells)
         segments = shape.segments if parsed else [u.seg for u in unparsed]
         # Each pipeline stage's source stage, and what each segment printed (None: unreadable).
         pipe_source = {
@@ -4449,7 +4454,8 @@ def _approval_loosening(
                         moved = resolve(args[0], cwd)
                         # A folder too long to name is one the scan does not place: a long run
                         # of `cd a` would make each later path longer to read.
-                        cwd = _UNPLACED if len(moved) > _PATH_MAX else moved
+                        # (A parsed command is under the parse limit, which bounds its paths.)
+                        cwd = _UNPLACED if not parsed and len(moved) > _PATH_MAX else moved
                 continue
             script = _shell_script([_shell_word(w) for w in words], shells)
             if script is not None and depth < 3:

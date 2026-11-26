@@ -164,17 +164,35 @@ def test_an_unreadable_pipe_into_a_host_file_is_asked_when_not_parsed(length):
 _DEEP = "/".join(["d" * 250] * 9)
 
 
-def test_a_long_run_of_relative_cds_never_leaves_a_host_write_quiet():
-    """Each `cd` takes a relative argument under the path limit, so the shell takes them all. When
-    the folder's path grows past the limit the scan no longer places it, and a write there that
-    names a host config is asked rather than judged against a stale folder."""
-    command = (
-        f"cd ~/.hermes && cd {_DEEP} && cd {_DEEP} && cd {'/'.join(['..'] * 18)}"
-        " && printf 'approvals:\\n  mode: off\\n' > config.yaml"
-    )
+_UP = "/".join([".."] * 18)
+_DEEP_CDS = f"cd ~/.hermes && cd {_DEEP} && cd {_DEEP}"
+_L = "printf 'approvals:\\n  mode: off\\n'"
+#: Long runs of relative `cd`s that end back in a host tree, each argument under the path limit:
+#: the shell takes them all.
+LONG_CDS = [
+    f"{_DEEP_CDS} && cd {_UP} && {_L} > config.yaml",
+    f"{_DEEP_CDS} && " + " && ".join(["cd .."] * 18) + f" && {_L} > config.yaml",
+    f"{_DEEP_CDS} && cd {'/'.join(['..'] * 16)} && {_L} > ../../config.yaml",
+    f"{_DEEP_CDS} && cd {_UP} && {_L} | tee config.yaml",
+    f"cd ~/.openclaw && cd {_DEEP} && cd {_DEEP} && cd {_UP} && "
+    'echo \'{"tools":{"exec":{"security":"full"}}}\' > openclaw.json',
+]
+
+
+@pytest.mark.parametrize("command", LONG_CDS)
+def test_a_long_run_of_relative_cds_keeps_its_folder_when_parsed(command):
+    """A parsed command is under the parse limit, which bounds the paths it can build: its folder
+    is followed exactly."""
     assert derive_exec_shape(command).parse_ok
-    reviews(h_ex(command))
-    reviews(h_ex(before(command, MAX_PARSE_CHARS + 1)))
+    fires(call(command))
+
+
+@pytest.mark.parametrize("command", LONG_CDS)
+def test_a_long_run_of_relative_cds_never_leaves_a_host_write_quiet_unparsed(command):
+    """Unparsed, a folder whose path grows past the limit is no longer placed (a long run of `cd a`
+    would make each later path longer to read): a write there that names a host config is asked,
+    never left quiet."""
+    assert _tier(call(before(command, MAX_PARSE_CHARS + 1))) in ("block", "review")
 
 
 def test_a_cd_argument_over_the_path_limit_does_not_move_the_folder():
@@ -191,6 +209,15 @@ def test_a_write_in_a_heredoc_with_no_closing_line_is_asked_not_blocked(length):
     text = before(command, MAX_PARSE_CHARS + 1) if length == "padded" else command + ZSH
     assert not derive_exec_shape(text).parse_ok
     reviews(call(text))
+
+
+@pytest.mark.parametrize("length", ["short", "padded"])
+def test_a_shell_fed_a_heredoc_with_no_closing_line_writes_its_body(length):
+    """A shell reading its commands from a heredoc runs the body even with no closing line."""
+    command = f"bash <<EOF\n{_L} > {HC}\n"
+    text = command if length == "short" else before(command, MAX_PARSE_CHARS + 1)
+    assert not derive_exec_shape(text).parse_ok
+    fires(call(text))
 
 
 def test_the_padded_command_is_not_parsed():
