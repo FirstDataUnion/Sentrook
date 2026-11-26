@@ -6,6 +6,27 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- Beta: while a snooze is on, a block in a chat you attend asks you instead of stopping, whatever caused it: a floor,
+  a strong signal or a rule that always blocks included. Until now only a block Sentrook marks as having no clear
+  attack signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt
+  keeps its wording ("Would be blocked, but a snooze is on."). Any other block gets a stronger warning: it names why
+  it would be blocked and says "A snooze is on: allow only if you asked for exactly this call." It suggests no grant,
+  and since Hermes cannot leave buttons out, **Session** and **Always** allow that one call only, like **Once**: the
+  next call asks again, and while the snooze lasts so does the same action (after either kind of prompt) scored
+  later as an ordinary review. It needs a complete scan: when one of Sentrook's checks failed, the block stays a
+  block. A change to Sentrook itself (its files, settings or log, turning the plugin off, stopping the gateway, a
+  Sentrook command only you should run, loosening the host's approvals), and any block that may be one, stays a
+  block during a snooze; so does such a block on email, SMS, IRC or ntfy, where anyone can claim a sender, and in a
+  session switched to YOLO (read from Hermes's approval module; when it cannot be read, the block stays). Nothing
+  changes on unattended runs, for other senders, in group chats, in observe mode, on scan errors or without a
+  snooze. The snooze reply, `snooze status`, the guide and the
+  agent skill say so. The traffic log marks such a prompt with `relaxed_strong: true`. Known side effect: Hermes saves
+  each **Always** answer in `command_allowlist`, so **Always** on such a prompt leaves an entry there that never
+  matches another call.
+- A `hermes -z` turn, and a single-query run (`hermes chat -q`, or a finite turn through the gateway) where
+  `approvals.single_query_mode` is `approve`, count as runs where Hermes approves prompts by itself, like approvals
+  off or `HERMES_YOLO_MODE`: a review there is held for you rather than asked, since Hermes would approve it with
+  nobody asked, and a snooze never turns a block there into a question.
 - If you withdraw consent on the FIDU portal, the identity service stops accepting this machine's scan credentials.
   Sentrook then tells you once, where notices go and in observe mode too, that scans stopped and how to connect again
   (`hermes sentrook login`), switch to observe mode or uninstall, instead of a scan-failure notice per job. It is sent once for

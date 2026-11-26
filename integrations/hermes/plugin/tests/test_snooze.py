@@ -41,6 +41,8 @@ def term(harness, monkeypatch):
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
     monkeypatch.setattr(plugin, "session_surface", lambda: "" if facts.get("platform") else "cli")
+    # Hermes's approval module is not in the tests: no YOLO in the session unless a test says so
+    monkeypatch.setattr(plugin, "host_yolo", lambda: False)
     harness.facts = facts
     harness.file = harness.dir / "sentrook" / "snooze.json"
     return harness
@@ -285,6 +287,31 @@ def test_scan_errors_and_observe_mode_are_not_snoozed(term, monkeypatch):
 RELAX_DOC = json.loads((FIXTURES / "relax.json").read_text())
 RELAX = RELAX_DOC["cases"]
 NOTE = RELAX_DOC["relaxed_note"]
+STRONG_NOTE = RELAX_DOC["strong_note"]
+STRONG_BECAUSE = RELAX_DOC["strong_because"]
+#: Each fixture sender as this harness makes it: the chat's facts (`session_facts`) with the owner allowlisted on
+#: Telegram.
+SENDERS = {
+    "owner": {"chat_type": "dm", "user_id": "u1"},
+    "other": {"chat_type": "dm", "user_id": "u2"},
+    "owner_in_group": {"chat_type": "group", "user_id": "u1"},
+    "owner_email": {"chat_type": "dm", "user_id": "u1"},
+}
+#: The platform each fixture sender writes on.
+SENDER_PLATFORM = {"owner_email": "email"}
+WANT_SENDER = {
+    "owner": {"relation": "owner", "basis": ["host_allowlist_dm"]},
+    "other": {"relation": "other", "basis": ["host_open_access"]},
+    # this harness reads the sender in a group as someone else: a group room is what keeps the block either way
+    "owner_in_group": {"relation": "other", "basis": ["group_chat"]},
+    "owner_email": {"relation": "owner", "basis": ["host_allowlist_dm"]},
+}
+
+
+def as_sender(h, monkeypatch, sender):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1")
+    monkeypatch.setenv("EMAIL_ALLOWED_USERS", "u1")
+    h.facts.update(SENDERS[sender])
 
 
 @pytest.fixture
@@ -307,16 +334,36 @@ def scripted(term, monkeypatch):
 def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
     """The shared cases: both hosts give the same outcome for the same response, run and snooze."""
     monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: not case["attended"])
+    if case.get("mode") == "observe":
+        monkeypatch.setenv("SENTROOK_MODE", "observe")
     if case["snoozed"]:
         put(scripted, entry())
+    as_sender(scripted, monkeypatch, case["sender"])
     scripted.reply = dict(case["response"])
-    turn(scripted)
+    turn(scripted, platform=SENDER_PLATFORM.get(case["sender"], "telegram"))
     out, rec = call(scripted, "run it")
+    if case["attended"]:
+        assert rec["planir"]["trigger"]["sender"] == WANT_SENDER[case["sender"]]
+    _assert_outcome(out, rec, case)
+    then = case.get("then")
+    if then:
+        approve = scripted.ctx.hooks["post_approval_response"]
+        approve(
+            pattern_key=f"plugin_rule:{out['rule_key']}", choice=then["answer"], session_id="S1"
+        )
+        scripted.reply = dict(then["response"])
+        out, rec = call(scripted, "run it")
+        _assert_outcome(out, rec, then)
+
+
+def _assert_outcome(out, rec, case):
     want = case["outcome"]
     if want == "allow":
         assert out is None and rec["decision"] == "allowed" and "snoozed" not in rec
     elif want == "snoozed":
         assert out is None and rec["decision"] == "allowed" and rec["snoozed"] is True
+    elif want == "observed":
+        assert out is None and rec["mode"] == "observe" and "snoozed" not in rec
     elif want == "review":
         assert out["action"] == "approve" and rec["decision"] == "review_timed_out"
         assert rec["verdict"] == "review" and "snoozed" not in rec
@@ -325,15 +372,17 @@ def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
         assert rec["decision"] == "blocked" and rec["verdict"] == "block"
     else:
         assert out["action"] == "block" and rec["decision"] == "held"
-    relaxed = (
-        want == "review"
-        and case["response"]["risk"] >= 80
-        and case["response"].get("ceiling") is None
-    )
-    assert rec.get("relaxed", False) is relaxed
+    warning = case.get("warning")
+    assert rec.get("relaxed", False) is (warning is not None)
+    assert rec.get("relaxed_strong", False) is (warning == "strong")
     if want == "review":
         # the owner is told why a block asks: the shared line is on the card, and only then
-        assert (NOTE in out["message"]) is relaxed
+        assert (NOTE in out["message"]) is (warning == "relaxed")
+        assert (STRONG_NOTE in out["message"]) is (warning == "strong")
+        lines = out["message"].splitlines()
+        assert any(x.startswith(STRONG_BECAUSE) for x in lines) is (warning == "strong")
+        # a strong block's prompt is keyed to this call alone: no Session or Always answer reaches another
+        assert out["rule_key"].startswith("sentrook:call:") is (warning == "strong")
 
 
 def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
@@ -407,6 +456,258 @@ def test_observe_mode_relaxes_nothing(scripted, monkeypatch):
     scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
     out, rec = call(scripted, "run it")
     assert out is None and rec["verdict"] == "block" and "relaxed" not in rec
+
+
+# ---- beta: a snooze in the owner's own chat turns every block into a question, with a warning --------------
+
+FLOOR_BLOCK = next(c["response"] for c in RELAX if "sensitive-data floor block asks" in c["name"])
+
+
+def test_a_strong_block_asks_every_time_and_no_answer_carries_over(scripted, monkeypatch):
+    """Allow once, Session and Always each let this one call run: the same call again asks again."""
+    approve = scripted.ctx.hooks["post_approval_response"]
+    as_sender(scripted, monkeypatch, "owner")
+    slash(scripted, "snooze")
+    turn(scripted)
+    hints = [{"kind": "destination", "pattern": "paste.example.net", "risk": 20}]
+    # a relaxed block of the same reply would suggest the grant
+    scripted.reply = {"risk": 92, "enforced": None, "relaxable": True, "grant_hints": hints}
+    control, _ = call(scripted, "run it")
+    assert "30 days" in control["message"]
+    scripted.reply = {**FLOOR_BLOCK, "action_fingerprint": "afp1:exec|F", "grant_hints": hints}
+    keys = []
+    for choice in ("once", "session", "always", None):
+        out, rec = call(scripted, "run it")
+        assert out["action"] == "approve" and rec["relaxed_strong"] is True
+        assert rec["response"]["risk"] == 92  # the score is unchanged
+        assert out["message"].startswith("🪶 Sentrook security check · risk 92/100\n")
+        assert f"{STRONG_NOTE} Session and Always allow this call only." in out["message"]
+        assert NOTE not in out["message"]
+        # nothing on the card suggests a grant or covers the parties
+        assert "30 days" not in out["message"] and '"Session" also' not in out["message"]
+        keys.append(out["rule_key"])
+        if choice is not None:
+            approve(pattern_key=f"plugin_rule:{out['rule_key']}", choice=choice, session_id="S1")
+            decisions = {r["request_id"]: r["decision"] for r in records(scripted, "resolution")}
+            assert decisions[rec["request_id"]] == "approved_by_user"
+    assert len(set(keys)) == len(keys)
+    # no grant was set and no Session allowance was kept by any answer
+    assert not records(scripted, "grants")
+    assert not plugin._state(plugin._load()[0])[0].load_session("S1").get("session_allows")
+
+
+def test_a_strong_block_after_a_review_answered_always_still_asks(scripted, monkeypatch):
+    """An earlier Always for the same action, answered on a plain review, does not reach the strong block."""
+    approve = scripted.ctx.hooks["post_approval_response"]
+    as_sender(scripted, monkeypatch, "owner")
+    turn(scripted)
+    scripted.reply = {"risk": 55, "enforced": None, "action_fingerprint": "afp1:exec|F"}
+    review, _ = call(scripted, "run it")
+    approve(pattern_key=f"plugin_rule:{review['rule_key']}", choice="always", session_id="S1")
+    slash(scripted, "snooze")
+    scripted.reply = {**FLOOR_BLOCK, "action_fingerprint": "afp1:exec|F"}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "approve" and out["rule_key"] != review["rule_key"]
+    assert rec["decision"] == "review_timed_out"
+
+
+def test_a_strong_block_without_a_snooze_still_blocks(scripted, monkeypatch):
+    as_sender(scripted, monkeypatch, "owner")
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+
+
+def test_a_strong_block_in_a_cron_run_stays_a_block(scripted, monkeypatch):
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry(ref=snooze.session_ref("cron-1")), entry("all"))
+    turn(scripted, sid="cron-1", platform="cron")
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it", sid="cron-1")
+    assert out["action"] == "block" and rec["decision"] == "blocked" and "relaxed" not in rec
+
+
+def test_a_strong_block_in_a_webhook_run_stays_a_block(scripted, monkeypatch):
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry(ref=snooze.session_ref("hook-1")), entry("all"))
+    turn(scripted, sid="hook-1", platform="webhook")
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it", sid="hook-1")
+    assert out["action"] == "block" and "relaxed" not in rec
+
+
+def test_a_strong_block_in_a_subagent_stays_a_block(scripted, monkeypatch):
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry(ref=snooze.session_ref("sub-1")), entry("all"))
+    turn(scripted, sid="sub-1", platform="subagent")
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it", sid="sub-1")
+    assert out["action"] == "block" and "relaxed" not in rec
+
+
+def test_observe_mode_asks_nothing_of_a_strong_block(scripted, monkeypatch):
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    monkeypatch.setenv("SENTROOK_MODE", "observe")
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out is None and rec["verdict"] == "block" and "relaxed" not in rec
+
+
+def test_the_beta_switch_turns_strong_blocks_back_into_blocks(scripted, monkeypatch):
+    monkeypatch.setattr(snooze, "BLOCKS_ASK", False)
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+    # a block the scanner marks relaxable still asks
+    scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "approve" and rec["relaxed"] is True and "relaxed_strong" not in rec
+
+
+@pytest.mark.parametrize(
+    ("env", "config", "bypassed"),
+    [
+        (
+            {"HERMES_SINGLE_QUERY_SESSION": "1"},
+            {"approvals": {"single_query_mode": "approve"}},
+            True,
+        ),
+        (
+            {"HERMES_SINGLE_QUERY_SESSION": "true"},
+            {"approvals": {"single_query_mode": "allow"}},
+            True,
+        ),
+        ({"HERMES_SINGLE_QUERY_SESSION": "1"}, {"approvals": {"single_query_mode": "deny"}}, False),
+        ({"HERMES_SINGLE_QUERY_SESSION": "1"}, {}, False),
+        ({"HERMES_SINGLE_QUERY_SESSION": "1"}, {"approvals": {"single_query_mode": False}}, False),
+        ({}, {"approvals": {"single_query_mode": "approve"}}, False),
+    ],
+)
+def test_a_single_query_run_that_approves_by_itself_keeps_a_strong_block(
+    scripted, monkeypatch, env, config, bypassed
+):
+    """`hermes chat -q` with `approvals.single_query_mode: approve` approves every prompt itself: there a strong block
+    stays a block and a review is held, as under the other known bypasses."""
+    from plugin import intent
+
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(intent, "hermes_config", lambda: config)
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    if bypassed:
+        assert out["action"] == "block" and "relaxed" not in rec
+    else:
+        assert out["action"] == "approve" and rec["relaxed_strong"] is True
+
+
+@pytest.mark.parametrize(
+    ("planir", "attends"),
+    [
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "owner", "basis": ["host_allowlist_dm"]},
+                },
+                "session": {"agent_role": "main"},
+            },
+            True,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "owner", "basis": ["local_terminal"]},
+                },
+                "session": {"agent_role": "main"},
+                "self_edit": None,
+            },
+            True,
+        ),
+        (
+            {
+                "trigger": {"kind": "message", "sender": {"relation": "owner", "basis": ["none"]}},
+                "session": {"agent_role": "main"},
+            },
+            False,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "owner", "basis": ["host_allowlist_dm", "group_chat"]},
+                },
+                "session": {"agent_role": "main"},
+            },
+            False,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "owner", "basis": ["host_open_access"]},
+                },
+                "session": {"agent_role": "main"},
+            },
+            False,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "owner", "basis": ["host_allowlist_dm"]},
+                },
+                "session": {"agent_role": "subagent"},
+            },
+            False,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "scheduled",
+                    "sender": {"relation": "owner", "basis": ["host_allowlist_dm"]},
+                },
+                "session": {"agent_role": "main"},
+            },
+            False,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "trusted", "basis": ["plugin_allowlist:sender"]},
+                },
+                "session": {"agent_role": "main"},
+            },
+            False,
+        ),
+        (
+            {
+                "trigger": {
+                    "kind": "message",
+                    "sender": {"relation": "owner", "basis": ["host_allowlist_dm"]},
+                },
+                "session": {"agent_role": "main"},
+                "self_edit": {"kind": "x"},
+            },
+            False,
+        ),
+        ({}, False),
+    ],
+)
+def test_owner_attends_reads_the_request_as_the_scanner_does(planir, attends):
+    assert snooze.owner_attends(planir) is attends
 
 
 # ---- the commands -------------------------------------------------------------------------------------
@@ -580,3 +881,141 @@ def test_a_snooze_off_whose_file_stays_locked_says_so_and_changes_nothing(tmp_pa
     assert rec is None
     assert "is locked by another process; no snooze was changed" in reply
     assert (tmp_path / "snooze.json").read_text() == before
+
+
+# ---- beta: who may be asked, and where Hermes would answer by itself ------------------------------------------
+
+
+@pytest.mark.parametrize("platform", ["tui", "desktop", "acp", "cli"])
+def test_a_strong_block_in_the_owners_local_app_asks(scripted, monkeypatch, platform):
+    """The terminal, the TUI, the desktop app and an editor (ACP) are the owner's own surfaces."""
+    monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: False)
+    scripted.facts.update(platform=platform)
+    put(scripted, entry())
+    turn(scripted, platform=platform)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert rec["planir"]["trigger"]["sender"]["relation"] == "owner"
+    assert out["action"] == "approve" and rec["relaxed_strong"] is True
+
+
+@pytest.mark.parametrize("platform", ["email", "sms", "irc", "ntfy"])
+def test_a_strong_block_where_anyone_can_claim_the_sender_stays_a_block(
+    scripted, monkeypatch, platform
+):
+    monkeypatch.setenv(f"{platform.upper()}_ALLOWED_USERS", "u1")
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted, platform=platform)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    # the owner, by the allowlist: only the platform keeps the block
+    assert rec["planir"]["trigger"]["sender"] == {
+        "relation": "owner",
+        "basis": ["host_allowlist_dm"],
+    }
+    assert out["action"] == "block" and "relaxed" not in rec
+    # a block the scanner marks relaxable still asks there, as before
+    scripted.reply = {**FLOOR_BLOCK, "floors_applied": [], "reasons": [], "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "approve" and rec["relaxed"] is True and "relaxed_strong" not in rec
+
+
+def test_under_session_yolo_a_strong_block_stays_a_block(scripted, monkeypatch):
+    """Hermes would approve the prompt by itself: the block stays. A relaxable block asks as before."""
+    monkeypatch.setattr(plugin, "host_yolo", lambda: True)
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+    scripted.reply = {**FLOOR_BLOCK, "floors_applied": [], "reasons": [], "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "approve" and rec["relaxed"] is True
+
+
+def _fake_module(monkeypatch, name, **attrs):
+    import types
+
+    parent, _, child = name.partition(".")
+    if parent not in sys.modules or not hasattr(sys.modules[parent], "__path__"):
+        pkg = types.ModuleType(parent)
+        pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, parent, pkg)
+    mod = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    monkeypatch.setitem(sys.modules, name, mod)
+
+
+@pytest.mark.parametrize(
+    ("approval", "want"),
+    [
+        (None, True),  # Hermes's approval module cannot be read: fail closed
+        ({"_yolo_active": lambda: False}, False),
+        ({"_yolo_active": lambda: True}, True),
+        ({"is_current_session_yolo_enabled": lambda: False}, False),
+        ({"is_current_session_yolo_enabled": lambda: True}, True),
+        ({"_yolo_active": lambda: 1 / 0}, True),
+    ],
+)
+def test_host_yolo_reads_hermes_and_fails_closed(monkeypatch, approval, want):
+    from plugin import intent
+
+    monkeypatch.delitem(sys.modules, "tools.approval", raising=False)
+    if approval is not None:
+        _fake_module(monkeypatch, "tools.approval", **approval)
+    else:
+        _fake_module(monkeypatch, "tools.registry")  # a `tools` package without the approval module
+    assert intent.host_yolo() is want
+
+
+def test_a_dash_z_turn_counts_as_hermes_approving_by_itself(scripted, monkeypatch):
+    """`hermes -z`: Hermes approves every prompt with nobody asked, whatever `single_query_mode` says. The strong
+    block stays a block and a review is held."""
+    from plugin import intent
+
+    _fake_module(
+        monkeypatch,
+        "gateway.session_finite",
+        unattended_turn=lambda: True,
+        finite_turn_required=lambda: True,
+    )
+    monkeypatch.setattr(intent, "hermes_config", lambda: {})
+    assert intent.unattended_turn() is True
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+    scripted.reply = {"risk": 55, "enforced": None}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and rec["decision"] == "held"
+
+
+def test_without_the_gateway_module_no_turn_is_unattended(monkeypatch):
+    from plugin import intent
+
+    monkeypatch.delitem(sys.modules, "gateway.session_finite", raising=False)
+    monkeypatch.delitem(sys.modules, "gateway", raising=False)
+    assert intent.unattended_turn() is False
+
+
+def test_the_asked_list_keeps_each_action_once_newest_last_and_at_most_asked_max():
+    sess = {}
+    for i in range(3):
+        snooze.note_asked(sess, {"action_fingerprint": f"afp1:x|{i}"})
+    snooze.note_asked(sess, {"action_fingerprint": "afp1:x|0"})
+    assert sess["snooze_asked"] == ["afp1:x|1", "afp1:x|2", "afp1:x|0"]
+    snooze.note_asked(sess, {"action_fingerprint": None})
+    snooze.note_asked(sess, {})
+    assert len(sess["snooze_asked"]) == 3
+    for i in range(3, 3 + snooze.ASKED_MAX):
+        snooze.note_asked(sess, {"action_fingerprint": f"afp1:x|{i}"})
+    assert len(sess["snooze_asked"]) == snooze.ASKED_MAX
+    assert sess["snooze_asked"][-1] == f"afp1:x|{2 + snooze.ASKED_MAX}"
+    assert not snooze.asked_before(sess, {"action_fingerprint": "afp1:x|0"})
+    assert snooze.asked_before(sess, {"action_fingerprint": f"afp1:x|{2 + snooze.ASKED_MAX}"})
+    assert not snooze.asked_before(sess, {})

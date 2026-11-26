@@ -1,5 +1,5 @@
 {
-  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that asks and is never snoozed through (on Hermes, a Session or Always answer to it covers the same action while the same snoozes last); a review prompt's `severity`, where the host has one, is given. Any other `relaxable` value, or none (an older scanner), relaxes nothing. Unattended runs are never relaxed. A review prompt for a relaxed block carries `relaxed_note` (Hermes: the approval message; OpenClaw: the approval description), which is never cut; no other prompt carries it.",
+  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), from `sender` (`owner`: the owner's own direct chat; `other`: someone else's direct message; `owner_in_group`: the owner in a group room; `owner_email`: the owner's own message on email, a channel whose senders anyone can claim to be), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that asks and is never snoozed through (on Hermes, a Session or Always answer to it covers the same action while the same snoozes last): `warning` is `relaxed`. Beta: any other block, a floor, a strong signal or `enforced: block` included, also becomes a review in the owner's own chat (`warning` is `strong`), asked every time with Allow once and Deny only (on Hermes, Session and Always allow that call only); a block with any `guardrail_tampering` floor (its review tier included) stays a block, and so does any block from another sender or in a group room. Unattended runs are never relaxed. A review prompt's `severity`, where the host has one, is given. A review prompt for a relaxed block carries `relaxed_note`, one for a strong block `strong_note` (Hermes: in the approval message; OpenClaw: in the approval description), never cut; no other prompt carries either. A strong block's reasons line starts with `strong_because`. Only a fully informed scan asks with the strong warning: `status` ok and the rule-based probe (`aira`) answered ok in `metadata.probes`; otherwise the block stays a block. `mode` observe (default enforce): `observed` means scanned and logged only, no prompt, no `relaxed`. `then`: after the first prompt the owner answers `answer` (`once`; `always`: Hermes's Always, OpenClaw's allow-always), and the next call in the session, scanned as `then.response`, must give `then.outcome` and `then.warning`: while snoozed, a review of an action (`action_fingerprint`) the session was asked about during a snooze, relaxed or strong, asks again with the strong warning, never snoozed through; one the scanner fingerprints differently is a new call.",
   "relaxed_note": "Would be blocked, but a snooze is on.",
   "cases": [
     {
@@ -7,110 +7,262 @@
       "response": {
         "risk": 92,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
       "outcome": "review",
-      "severity": "critical"
+      "severity": "critical",
+      "sender": "owner",
+      "warning": "relaxed"
     },
     {
       "name": "snoozed: a relaxable score at the block line asks, at critical severity",
       "response": {
         "risk": 80,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
       "outcome": "review",
-      "severity": "critical"
+      "severity": "critical",
+      "sender": "owner",
+      "warning": "relaxed"
     },
     {
       "name": "snoozed: a review passes silently, as before",
       "response": {
         "risk": 55,
-        "enforced": null
+        "enforced": null,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "snoozed"
+      "outcome": "snoozed",
+      "sender": "owner"
     },
     {
       "name": "snoozed: a relaxable review passes silently, as before",
       "response": {
         "risk": 55,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "snoozed"
+      "outcome": "snoozed",
+      "sender": "owner"
     },
     {
       "name": "snoozed: an allowed call stays allowed",
       "response": {
         "risk": 5,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "allow"
+      "outcome": "allow",
+      "sender": "owner"
     },
     {
-      "name": "snoozed: a block the scanner did not mark relaxable still blocks",
-      "response": {
-        "risk": 92,
-        "enforced": null
-      },
-      "attended": true,
-      "snoozed": true,
-      "outcome": "block"
-    },
-    {
-      "name": "snoozed: a block marked not relaxable still blocks",
-      "response": {
-        "risk": 92,
-        "enforced": null,
-        "relaxable": false
-      },
-      "attended": true,
-      "snoozed": true,
-      "outcome": "block"
-    },
-    {
-      "name": "snoozed: only a JSON true relaxes a block",
+      "name": "beta, snoozed: a block the scanner did not mark relaxable asks with the strong warning",
       "response": {
         "risk": 92,
         "enforced": null,
-        "relaxable": "true"
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
-      "name": "snoozed: an enforced block still blocks, whatever the mark",
+      "name": "beta, snoozed: a block marked not relaxable asks with the strong warning",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": false,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: a block marked relaxable other than by a JSON true asks with the strong warning",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": "true",
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: an enforced block asks with the strong warning, whatever the mark",
       "response": {
         "risk": 100,
         "enforced": "block",
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
-      "name": "snoozed: a block over an enforced review still blocks, whatever the mark",
+      "name": "beta, snoozed: a block over an enforced review asks with the strong warning, whatever the mark",
       "response": {
         "risk": 92,
         "enforced": "review",
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "review",
+      "sender": "owner",
+      "severity": "critical",
+      "warning": "strong"
     },
     {
       "name": "snoozed: a block the ceiling lowered still asks, at critical severity",
@@ -118,57 +270,1823 @@
         "risk": 92,
         "enforced": null,
         "ceiling": "review",
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": true,
       "outcome": "review",
-      "severity": "critical"
+      "severity": "critical",
+      "sender": "owner"
     },
     {
       "name": "not snoozed: a relaxable block still blocks",
       "response": {
         "risk": 92,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": false,
-      "outcome": "block"
+      "outcome": "block",
+      "sender": "owner"
     },
     {
       "name": "not snoozed: a review asks, as before",
       "response": {
         "risk": 55,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": true,
       "snoozed": false,
       "outcome": "review",
-      "severity": "warning"
+      "severity": "warning",
+      "sender": "owner"
     },
     {
       "name": "unattended and snoozed: a relaxable block stays a block",
       "response": {
         "risk": 92,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": false,
       "snoozed": true,
-      "outcome": "block"
+      "outcome": "block",
+      "sender": "owner"
     },
     {
       "name": "unattended and snoozed: a review is held",
       "response": {
         "risk": 55,
         "enforced": null,
-        "relaxable": true
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
       },
       "attended": false,
       "snoozed": true,
-      "outcome": "held"
+      "outcome": "held",
+      "sender": "owner"
+    },
+    {
+      "name": "beta, snoozed: a sensitive-data floor block asks with the strong warning",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: a block on a destination only untrusted content named asks with the strong warning",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: an enforced floor block asks with the strong warning",
+      "response": {
+        "risk": 95,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "reputation.known_bad_host"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "bad.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong"
+    },
+    {
+      "name": "beta, snoozed: a relaxable block at 88 keeps the relaxed wording",
+      "response": {
+        "risk": 88,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed"
+    },
+    {
+      "name": "snoozed: a write into Sentrook's own files stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "guardrail.state_dir_write"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "subject": "E1",
+            "detail": {
+              "reason": "guardrail.state_dir_write"
+            },
+            "text": "it writes into Sentrook's own files"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.example/sentrook/snooze.json"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: turning Sentrook off stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.plugin_disable"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.plugin_disable"
+            },
+            "text": "it turns off or removes Sentrook"
+          }
+        ],
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: turning Sentrook off stays a block, read from its reasons alone",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering"
+          },
+          {
+            "code": "guardrail.plugin_disable"
+          }
+        ],
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: the guardrail's review tier asks as before, without a snooze note",
+      "response": {
+        "risk": 50,
+        "enforced": "review",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 0.5,
+            "enforce": "review",
+            "subject": "E1",
+            "reason": "guardrail.state_dir_write_review"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "subject": "E1",
+            "detail": {
+              "reason": "guardrail.state_dir_write_review"
+            },
+            "text": "it may change Sentrook's own files"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.example/sentrook/"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical"
+    },
+    {
+      "name": "not snoozed: a sensitive-data floor block still blocks",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": false,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "not snoozed: an enforced floor block still blocks",
+      "response": {
+        "risk": 95,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "reputation.known_bad_host"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "bad.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": false,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "unattended and snoozed: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": false,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "unattended and snoozed: an enforced floor block stays a block",
+      "response": {
+        "risk": 95,
+        "enforced": "block",
+        "floors_applied": [
+          {
+            "floor": "known_bad_entity",
+            "min_risk": 0.95,
+            "enforce": "block",
+            "subject": "E1",
+            "reason": "reputation.known_bad_host"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity",
+            "subject": "E1",
+            "text": "{E1} is on Sentrook's known-bad list"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "bad.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": false,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, another sender: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "other",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, the owner in a group room: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner_in_group",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, another sender: a block with no strong signal stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "other",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a guardrail block (approval_loosening) stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.approval_loosening"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.approval_loosening"
+            },
+            "text": "it lets later commands run without asking you"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a guardrail block (gateway_stop) stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.gateway_stop"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.gateway_stop"
+            },
+            "text": "it stops the agent's gateway service"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a guardrail block (config_entry) stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.config_entry"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.config_entry"
+            },
+            "text": "it edits Sentrook's settings"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a guardrail block (plugin_command) stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.plugin_command"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.plugin_command"
+            },
+            "text": "it runs a Sentrook command that only you should run"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a guardrail block (log_tamper) stays a block",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 1.0,
+            "enforce": "block",
+            "reason": "guardrail.log_tamper"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "detail": {
+              "reason": "guardrail.log_tamper"
+            },
+            "text": "it deletes or trims Sentrook's log"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: the guardrail's review tier on a block-level score stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": "review",
+        "floors_applied": [
+          {
+            "floor": "guardrail_tampering",
+            "min_risk": 0.5,
+            "enforce": "review",
+            "subject": "E1",
+            "reason": "guardrail.state_dir_write_review"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.guardrail_tampering",
+            "subject": "E1",
+            "detail": {
+              "reason": "guardrail.state_dir_write_review"
+            },
+            "text": "it may change Sentrook's own files"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.example/sentrook/"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a degraded scan's block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "degraded",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a block where the rule-based probe timed out stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "timeout"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a block from a scan that does not say its rule-based probe answered stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a degraded scan with a self-modification reason stays a block",
+      "response": {
+        "risk": 90,
+        "enforced": null,
+        "status": "degraded",
+        "reasons": [
+          {
+            "code": "jev.self_modification"
+          }
+        ]
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "block"
+    },
+    {
+      "name": "observe mode, snoozed: a strong block is only logged",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "mode": "observe",
+      "outcome": "observed"
+    },
+    {
+      "name": "observe mode, snoozed: a relaxable block is only logged",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "mode": "observe",
+      "outcome": "observed"
+    },
+    {
+      "name": "never silent: after once, the same action scored as a review still asks with the strong warning",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:paste.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong",
+      "then": {
+        "answer": "once",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:paste.example.net",
+          "reasons": [
+            {
+              "code": "origin.only_in_untrusted",
+              "subject": "E1",
+              "text": "{E1} came only from content the agent read"
+            }
+          ],
+          "entities": {
+            "E1": {
+              "kind": "host",
+              "display": "paste.example.net"
+            }
+          }
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "never silent: after once, the same strong block asks again",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:paste.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong",
+      "then": {
+        "answer": "once",
+        "response": {
+          "risk": 81,
+          "enforced": null,
+          "reasons": [
+            {
+              "code": "origin.only_in_untrusted",
+              "subject": "E1",
+              "text": "{E1} came only from content the agent read"
+            }
+          ],
+          "entities": {
+            "E1": {
+              "kind": "host",
+              "display": "paste.example.net"
+            }
+          },
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:paste.example.net"
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "never silent: after always, the same action scored as a review still asks with the strong warning",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:paste.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong",
+      "then": {
+        "answer": "always",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:paste.example.net",
+          "reasons": [
+            {
+              "code": "origin.only_in_untrusted",
+              "subject": "E1",
+              "text": "{E1} came only from content the agent read"
+            }
+          ],
+          "entities": {
+            "E1": {
+              "kind": "host",
+              "display": "paste.example.net"
+            }
+          }
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "never silent: after always, the same strong block asks again",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:paste.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong",
+      "then": {
+        "answer": "always",
+        "response": {
+          "risk": 81,
+          "enforced": null,
+          "reasons": [
+            {
+              "code": "origin.only_in_untrusted",
+              "subject": "E1",
+              "text": "{E1} came only from content the agent read"
+            }
+          ],
+          "entities": {
+            "E1": {
+              "kind": "host",
+              "display": "paste.example.net"
+            }
+          },
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:paste.example.net"
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "known limit: a review the scanner fingerprints as another action after a strong prompt is snoozed as a new call",
+      "response": {
+        "risk": 81,
+        "enforced": null,
+        "reasons": [
+          {
+            "code": "origin.only_in_untrusted",
+            "subject": "E1",
+            "text": "{E1} came only from content the agent read"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "paste.example.net"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:paste.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "strong",
+      "then": {
+        "answer": "once",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:other.example.net",
+          "reasons": [
+            {
+              "code": "origin.only_in_untrusted",
+              "subject": "E1",
+              "text": "{E1} came only from content the agent read"
+            }
+          ],
+          "entities": {
+            "E1": {
+              "kind": "host",
+              "display": "paste.example.net"
+            }
+          }
+        },
+        "outcome": "snoozed"
+      }
+    },
+    {
+      "name": "never silent: after once on a relaxed block, the same action scored as a review asks with the strong warning",
+      "response": {
+        "risk": 88,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed",
+      "then": {
+        "answer": "once",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "never silent: after always on a relaxed block, the same action scored as a review asks with the strong warning",
+      "response": {
+        "risk": 88,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed",
+      "then": {
+        "answer": "always",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "snoozed, the owner on email: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner_email",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, the owner on email: a relaxable block still asks",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner_email",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed"
     }
-  ]
+  ],
+  "strong_note": "A snooze is on: allow only if you asked for exactly this call.",
+  "strong_because": "Would be blocked because "
 }

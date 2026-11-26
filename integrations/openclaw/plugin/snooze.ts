@@ -13,8 +13,20 @@
  *
  * In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner
  * attends, nothing independent points to an attack and nothing is enforced: the score alone blocks) into
- * a review that always asks, at critical severity; it is never allowed silently. A block without the
- * mark, from an older scanner too, stays a block.
+ * a review that always asks, at critical severity; it is never allowed silently.
+ *
+ * Beta (`BLOCKS_ASK`): in a chat the owner attends, a snooze turns every other block into such a review too: a block
+ * with a floor, a strong signal or `enforced: block`, from an older scanner too. Its card warns, naming the reason it
+ * would be blocked, and says to allow it only for exactly the call the owner asked for; it offers Allow once and Deny
+ * only. Only a fully informed scan asks (`informed`: status ok and the rule-based probe answered); without it a block
+ * stays a block, since a change to Sentrook itself is found by that probe. While a snooze is on, a review of an action
+ * the session was asked about during a snooze, either way, asks again with the strong warning (`askedBefore`), never
+ * snoozed through. Attended here is what the scanner's attended-owner check reads from the request (`ownerAttends`):
+ * the owner's own message on the main agent, outside a group chat or a host open to anyone, on a chat the plugin could
+ * tell apart, and not on a channel whose senders anyone can claim to be (`SPOOFABLE_CHANNELS`). A block with any
+ * `guardrail_tampering` floor (a write into Sentrook's state folder, turning the plugin off, a Sentrook command only
+ * the owner runs, loosening the host's approvals; the floor's review tier included) stays a block: a snooze is never
+ * a way for the agent to switch Sentrook off. With `BLOCKS_ASK` off, only a block marked `relaxable` asks.
  *
  * A session is named by its `session_ref`, the same hash a scan sends. A command with no current
  * session (the command line) can only snooze every session.
@@ -40,12 +52,31 @@ const DEFAULT_MS = 3600_000;
 const MAX_MS = 24 * 3600_000;
 const MAX_ENTRIES = 200;
 const DURATION = /^(\d{1,5})([mh])$/;
-export const RULE =
-  "A snoozed review is allowed and logged. A block with no clear attack signal asks you instead; " +
-  "other blocks, enforced reviews and unattended runs are never snoozed.";
+/**
+ * Beta: during a snooze, every block in a chat the owner attends asks, with a warning, except a change to Sentrook
+ * itself. False: only a block the scanner marks `relaxable` asks; every other block stays a block.
+ */
+export const BLOCKS_ASK: boolean = true;
+export const RULE = BLOCKS_ASK
+  ? "A snoozed review is allowed and logged. In beta, a block in a chat you attend asks you instead, with a warning; " +
+    "a change to Sentrook itself stays blocked, and enforced reviews and unattended runs are never snoozed."
+  : "A snoozed review is allowed and logged. A block with no clear attack signal asks you instead; " +
+    "other blocks, enforced reviews and unattended runs are never snoozed.";
 /** The tail of the reply to a snooze that was set. */
-const SET_RULE =
-  "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and unattended runs are not snoozed.";
+const SET_RULE = BLOCKS_ASK
+  ? "In beta, blocks in a chat you attend ask you instead, with a warning; changes to Sentrook itself stay blocked, " +
+    "and enforced reviews and unattended runs are not snoozed."
+  : "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and unattended runs are not snoozed.";
+/** Sender bases of a room others can write to, and bases that say nothing about how the sender was known. */
+const SHARED_BASIS = new Set(["group_chat", "host_open_access"]);
+const NO_BASIS = new Set(["none", "unknown"]);
+/** How many actions a session remembers it asked about during a snooze (`noteAsked`). */
+export const ASKED_MAX = 50;
+/**
+ * Channels where the sender is an address or name anyone can claim (email, SMS, IRC nicks, ntfy topics): the host
+ * does not authenticate who wrote, so a block there never asks with the strong warning.
+ */
+export const SPOOFABLE_CHANNELS = new Set(["email", "sms", "irc", "ntfy"]);
 
 /** A change to write to the traffic log, with the reply. */
 export interface SnoozeResult {
@@ -116,6 +147,100 @@ export function applies(resp: { enforced?: string | null; risk?: number | null }
  */
 export function relaxes(resp: { enforced?: string | null; relaxable?: unknown }, verdict: string): boolean {
   return verdict === "block" && resp.relaxable === true && resp.enforced !== "review" && resp.enforced !== "block";
+}
+
+/**
+ * The owner is in the conversation, as the scanner's attended-owner check reads the request: a message turn from the
+ * owner on the main agent, outside a group chat or a host open to anyone, on a basis that says how the plugin knows
+ * (not `none` alone), and no host background process behind the call (`self_edit`).
+ */
+export function ownerAttends(planir: any): boolean {
+  const trig = planir?.trigger && typeof planir.trigger === "object" ? planir.trigger : {};
+  const sender = trig.sender && typeof trig.sender === "object" ? trig.sender : {};
+  const basis: string[] = Array.isArray(sender.basis) ? sender.basis.filter((b: unknown) => typeof b === "string") : [];
+  return (
+    trig.kind === "message" &&
+    sender.relation === "owner" &&
+    planir?.session?.agent_role === "main" &&
+    !basis.some((b) => SHARED_BASIS.has(b)) &&
+    basis.some((b) => !NO_BASIS.has(b)) &&
+    (planir?.self_edit ?? null) === null
+  );
+}
+
+/**
+ * The call may change Sentrook itself or loosen the host's approvals: any `guardrail_tampering` floor, its review tier
+ * included, or a reason that names one. A block that carries it stays a block while snoozed (`asks`); a review that
+ * carries it asks as it always does.
+ */
+export function tampering(resp: { floors_applied?: unknown; reasons?: unknown }): boolean {
+  const floors: unknown = resp.floors_applied;
+  for (const f of Array.isArray(floors) ? floors : []) {
+    if (f && typeof f === "object" && (f as any).floor === "guardrail_tampering") return true;
+  }
+  const reasons: unknown = resp.reasons;
+  for (const r of Array.isArray(reasons) ? reasons : []) {
+    const code: unknown = r && typeof r === "object" ? (r as any).code : undefined;
+    if (typeof code === "string" && (code === "floor.guardrail_tampering" || code.startsWith("guardrail."))) return true;
+  }
+  return false;
+}
+
+/**
+ * The scan is complete: status `ok` and the rule-based probe (`aira`, which finds a change to Sentrook itself)
+ * answered `ok` in `metadata.probes`. A response that does not say reads as not informed.
+ */
+export function informed(resp: { status?: unknown; metadata?: unknown }): boolean {
+  if (resp.status !== "ok") return false;
+  const meta: any = resp.metadata && typeof resp.metadata === "object" ? resp.metadata : {};
+  const probes: unknown[] = Array.isArray(meta.probes) ? meta.probes : [];
+  return probes.some((p: any) => p && typeof p === "object" && p.step === "aira" && p.status === "ok");
+}
+
+const fingerprintOf = (resp: { action_fingerprint?: unknown }): string | null =>
+  typeof resp.action_fingerprint === "string" && resp.action_fingerprint ? resp.action_fingerprint : null;
+
+/**
+ * Remember in the session that its owner was asked about this blocked action during a snooze (the last `ASKED_MAX`,
+ * the newest last). An action is its `action_fingerprint`: a repeat the scanner fingerprints differently (another
+ * tool, an extra party) is a new action.
+ */
+export function noteAsked(sess: { snoozeAsked?: string[] }, resp: { action_fingerprint?: unknown }): void {
+  const fp = fingerprintOf(resp);
+  if (fp === null) return;
+  const kept = (Array.isArray(sess.snoozeAsked) ? sess.snoozeAsked : []).filter((x) => typeof x === "string" && x !== fp);
+  sess.snoozeAsked = [...kept, fp].slice(-ASKED_MAX);
+}
+
+/**
+ * The session's owner was asked about this blocked action during a snooze (`noteAsked`): a review of it again, say one
+ * the scanner scored lower after the owner allowed it once, asks with the strong warning and is never snoozed.
+ */
+export function askedBefore(sess: { snoozeAsked?: string[] }, resp: { action_fingerprint?: unknown }): boolean {
+  const fp = fingerprintOf(resp);
+  return fp !== null && Array.isArray(sess.snoozeAsked) && sess.snoozeAsked.includes(fp);
+}
+
+/**
+ * What a snooze in a session on a run the owner attends does with this verdict: `relaxed` for a block the scanner
+ * marks `relaxable` (today's question), `strong` for any other block in the owner's own chat (`BLOCKS_ASK`; the card
+ * warns and nothing allows it silently), null where it stays as it is (not a block, a change to Sentrook itself, a
+ * scan that is not fully informed, another sender, a shared room, a channel whose senders anyone can claim to be
+ * (`opts.channel` in `SPOOFABLE_CHANNELS`), or `BLOCKS_ASK` off). The caller checks the snooze, the run and the mode.
+ */
+export function asks(
+  resp: Record<string, any>,
+  verdict: string,
+  planir: any,
+  opts: { channel?: string | null; blocksAsk?: boolean } = {},
+): "relaxed" | "strong" | null {
+  if (verdict !== "block") return null;
+  if (relaxes(resp, verdict)) return "relaxed";
+  const channel = String(opts.channel ?? "").trim().toLowerCase();
+  if ((opts.blocksAsk ?? BLOCKS_ASK) && informed(resp) && !tampering(resp) && ownerAttends(planir) && !SPOOFABLE_CHANNELS.has(channel)) {
+    return "strong";
+  }
+  return null;
 }
 
 // ---- status ----------------------------------------------------------------------------------------

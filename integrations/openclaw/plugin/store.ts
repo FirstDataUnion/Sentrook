@@ -114,6 +114,8 @@ export interface Session {
   seenCallIds: string[];
   history: HistoryEntry[];
   buffer: BufferedInput[];
+  /** Actions this session's owner was asked about with a snooze's strong warning (snooze.noteAsked). */
+  snoozeAsked?: string[];
 }
 
 export type RunContext = Record<string, any>;

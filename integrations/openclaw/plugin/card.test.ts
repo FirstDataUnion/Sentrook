@@ -3,14 +3,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { DESCRIPTION_BUDGET, errorCard, MARK, reviewCard, TITLE_MAX } from "./card.ts";
+import { DESCRIPTION_BUDGET, errorCard, MARK, RELAXED_NOTE, reviewCard, STRONG_NOTE, TITLE_MAX } from "./card.ts";
 import { scanErrorCopy } from "./scanErrorPolicy.ts";
 
 const FIXTURE = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../fixtures/review-card/cases.json", import.meta.url)), "utf8"),
 ) as {
   budgets: { openclaw_title: number; openclaw_description: number };
-  cases: { name: string; response: any; tool: string; relaxed: boolean; hint: any; remember: boolean; why_id: string | null; openclaw: { title: string; description: string } }[];
+  cases: { name: string; response: any; tool: string; relaxed: boolean; strong?: boolean; hint: any; remember: boolean; why_id: string | null; openclaw: { title: string; description: string } }[];
   errors: { name: string; cause: "rate_limited" | "config" | "auth" | "unreachable" | "not_signed_in" | "sign_in_rejected" | "consent_withdrawn"; openclaw: { title: string; description: string } }[];
 };
 
@@ -20,7 +20,7 @@ const codePoints = (s: string) => Array.from(s).length;
 
 test("the card is the agreed text, case by case", () => {
   for (const c of FIXTURE.cases) {
-    const card = reviewCard(c.response, c.tool, { relaxed: c.relaxed, hint: c.hint, remember: c.remember, whyId: c.why_id });
+    const card = reviewCard(c.response, c.tool, { relaxed: c.relaxed, strong: c.strong ?? false, hint: c.hint, remember: c.remember, whyId: c.why_id });
     assert.deepEqual(card, c.openclaw, c.name);
   }
 });
@@ -61,7 +61,14 @@ test("whatever the scan sends, OpenClaw never refuses the card", () => {
       { kind: "destination", pattern: "x" + "\u3164\u115f\uffa0".repeat(1 + Math.floor(rnd() * 120)) },
       { kind: "file", pattern: "/t/<@1>`[x]|@everyone".repeat(1 + Math.floor(rnd() * 20)), allows: ["read"] },
     ]);
-    const card = reviewCard(resp, word(300) || "t", { relaxed: rnd() < 0.3, hint, remember: rnd() < 0.5, whyId: pick([null, "3f9c2a1b-77aa"]) });
+    const relaxed = rnd() < 0.3;
+    const strong = rnd() < 0.5;
+    const remember = rnd() < 0.5;
+    const card = reviewCard(resp, word(300) || "t", { relaxed, strong, hint, remember, whyId: pick([null, "3f9c2a1b-77aa"]) });
+    // a snooze's note is never cut, and the strong one comes only with a relaxed block
+    const lines = card.description.split("\n");
+    if (relaxed) assert.ok(lines.includes(strong ? STRONG_NOTE : RELAXED_NOTE), card.description);
+    else assert.ok(!lines.includes(STRONG_NOTE) && !lines.includes(RELAXED_NOTE), card.description);
     assert.ok(card.title.startsWith(MARK));
     assert.ok(codePoints(card.title) <= Math.min(TITLE_MAX, FIXTURE.budgets.openclaw_title), card.title);
     assert.ok(codePoints(card.description) <= Math.min(DESCRIPTION_BUDGET, FIXTURE.budgets.openclaw_description), card.description);
