@@ -25,13 +25,15 @@ floor, a strong signal or `enforced: block`, from an older scanner too. Its card
 blocked, and says to allow it only for exactly the call the owner asked for. It is never allowed silently: its rule
 key is the call's own, so Hermes's Session and Always answers allow that call only. Only a fully informed scan asks
 (`informed`: status ok and the rule-based probe answered); without it a block stays a block, since a change to
-Sentrook itself is found by that probe. While a snooze is on, a review of an action the session was asked about this
-way asks again with the same warning (`asked_before`), never snoozed through. Attended here is what the
-scanner's attended-owner check reads from the request (`owner_attends`): the owner's own message on the main agent,
-outside a group chat or a host open to anyone, on a chat the plugin could tell apart. A change to Sentrook itself (a
-`guardrail_tampering` floor that blocks: a write into its state folder, turning the plugin off, a Sentrook command
-only the owner runs) stays a block: a snooze is never a way for the agent to switch Sentrook off. With `BLOCKS_ASK`
-off, only a block marked `relaxable` asks.
+Sentrook itself is found by that probe. While a snooze is on, a review of an action the session was asked about
+during a snooze, either way, asks again with the strong warning (`asked_before`), never snoozed through. Attended
+here is what the scanner's attended-owner check reads from the request (`owner_attends`): the owner's own message on
+the main agent, outside a group chat or a host open to anyone, on a chat the plugin could tell apart, and not on a
+platform whose senders anyone can claim to be (`SPOOFABLE_PLATFORMS`). The caller also keeps the block where Hermes
+would approve the prompt by itself (session YOLO included). A block with any `guardrail_tampering` floor (a write into
+Sentrook's state folder, turning the plugin off, a Sentrook command only the owner runs, loosening the host's
+approvals; the floor's review tier included) stays a block: a snooze is never a way for the agent to switch Sentrook
+off. With `BLOCKS_ASK` off, only a block marked `relaxable` asks.
 
 A session is named by its `session_ref`, the same hash a scan sends. A command with no current
 session (the command line) can only snooze every session.
@@ -92,8 +94,11 @@ SET_RULE = (
 #: Sender bases of a room others can write to, and bases that say nothing about how the sender was known.
 _SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
 _NO_BASIS = frozenset({"none", "unknown"})
-#: How many actions a session remembers it asked about with the strong warning (`note_asked`).
+#: How many actions a session remembers it asked about during a snooze (`note_asked`).
 ASKED_MAX = 50
+#: Platforms where the sender is an address or name anyone can claim (email, SMS, IRC nicks, ntfy topics): the host
+#: does not authenticate who wrote, so a block there never asks with the strong warning.
+SPOOFABLE_PLATFORMS = frozenset({"email", "sms", "irc", "ntfy"})
 #: Serialises read-modify-write of the file within this process; `file_lock` does across processes.
 _LOCK = threading.Lock()
 
@@ -198,25 +203,17 @@ def owner_attends(planir: dict[str, Any]) -> bool:
 
 
 def tampering(resp: dict[str, Any]) -> bool:
-    """The call changes Sentrook itself at the blocking tier: a `guardrail_tampering` floor that does not only ask
-    (`enforce` review), or a reason that says so. The guardrail's review tier is not this: it asks already."""
+    """The call may change Sentrook itself or loosen the host's approvals: any `guardrail_tampering` floor, its review
+    tier included, or a reason that names one. A block that carries it stays a block while snoozed (`asks`); a review
+    that carries it asks as it always does."""
     for f in resp.get("floors_applied") or []:
-        if (
-            isinstance(f, dict)
-            and f.get("floor") == "guardrail_tampering"
-            and f.get("enforce") != "review"
-        ):
+        if isinstance(f, dict) and f.get("floor") == "guardrail_tampering":
             return True
     for r in resp.get("reasons") or []:
         code = r.get("code") if isinstance(r, dict) else None
-        if not isinstance(code, str):
-            continue
-        if code == "floor.guardrail_tampering":
-            detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
-            behind = detail.get("reason")
-            if not (isinstance(behind, str) and behind.endswith("_review")):
-                return True
-        elif code.startswith("guardrail.") and not code.endswith("_review"):
+        if isinstance(code, str) and (
+            code == "floor.guardrail_tampering" or code.startswith("guardrail.")
+        ):
             return True
     return False
 
@@ -239,8 +236,9 @@ def _fingerprint(resp: dict[str, Any]) -> str | None:
 
 
 def note_asked(sess: dict[str, Any], resp: dict[str, Any]) -> None:
-    """Remember in the session that its owner was asked about this action with the strong warning (the last
-    `ASKED_MAX`)."""
+    """Remember in the session that its owner was asked about this blocked action during a snooze (the last
+    `ASKED_MAX`, the newest last). An action is its `action_fingerprint`: a repeat the scanner fingerprints
+    differently (another tool, an extra party) is a new action."""
     fp = _fingerprint(resp)
     if fp is None:
         return
@@ -249,23 +247,33 @@ def note_asked(sess: dict[str, Any], resp: dict[str, Any]) -> None:
 
 
 def asked_before(sess: dict[str, Any], resp: dict[str, Any]) -> bool:
-    """The session's owner was asked about this action with the strong warning (`note_asked`): a review of it again,
-    say one the scanner scored lower after the owner allowed it once, asks the same way and is never snoozed."""
+    """The session's owner was asked about this blocked action during a snooze (`note_asked`): a review of it again,
+    say one the scanner scored lower after the owner allowed it once, asks with the strong warning and is never
+    snoozed."""
     fp = _fingerprint(resp)
     return fp is not None and fp in (sess.get("snooze_asked") or [])
 
 
-def asks(resp: dict[str, Any], verdict: str, planir: dict[str, Any]) -> str | None:
+def asks(
+    resp: dict[str, Any], verdict: str, planir: dict[str, Any], platform: str = ""
+) -> str | None:
     """What a snooze in a session on a run the owner attends does with this verdict: `relaxed` for a block the
     scanner marks `relaxable` (today's question), `strong` for any other block in the owner's own chat (`BLOCKS_ASK`;
     the card warns and nothing allows it silently), None where it stays as it is (not a block, a change to Sentrook
-    itself, a scan that is not fully informed, another sender or a shared room, or `BLOCKS_ASK` off). The caller
-    checks the snooze, the run and the mode."""
+    itself, a scan that is not fully informed, another sender, a shared room, a platform whose senders anyone can
+    claim to be (`platform` in `SPOOFABLE_PLATFORMS`), or `BLOCKS_ASK` off). The caller checks the snooze, the run,
+    the mode and whether the host would approve the prompt by itself."""
     if verdict != "block":
         return None
     if relaxes(resp, verdict):
         return "relaxed"
-    if BLOCKS_ASK and informed(resp) and not tampering(resp) and owner_attends(planir):
+    if (
+        BLOCKS_ASK
+        and informed(resp)
+        and not tampering(resp)
+        and owner_attends(planir)
+        and platform.strip().lower() not in SPOOFABLE_PLATFORMS
+    ):
         return "strong"
     return None
 

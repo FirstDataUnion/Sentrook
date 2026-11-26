@@ -1,5 +1,5 @@
 {
-  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), from `sender` (`owner`: the owner's own direct chat; `other`: someone else's direct message; `owner_in_group`: the owner in a group room), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that asks and is never snoozed through (on Hermes, a Session or Always answer to it covers the same action while the same snoozes last): `warning` is `relaxed`. Beta: any other block, a floor, a strong signal or `enforced: block` included, also becomes a review in the owner's own chat (`warning` is `strong`), asked every time with Allow once and Deny only (on Hermes, Session and Always allow that call only); a change to Sentrook itself (a `guardrail_tampering` floor that blocks) stays a block, and so does any block from another sender or in a group room. Unattended runs are never relaxed. A review prompt's `severity`, where the host has one, is given. A review prompt for a relaxed block carries `relaxed_note`, one for a strong block `strong_note` (Hermes: in the approval message; OpenClaw: in the approval description), never cut; no other prompt carries either. A strong block's reasons line starts with `strong_because`. Only a fully informed scan asks with the strong warning: `status` ok and the rule-based probe (`aira`) answered ok in `metadata.probes`; otherwise the block stays a block. `mode` observe (default enforce): `observed` means scanned and logged only, no prompt, no `relaxed`. `then`: after the first prompt the owner answers `answer` (`once`; `always`: Hermes's Always, OpenClaw's allow-always), and the next call in the session, scanned as `then.response`, must give `then.outcome` and `then.warning`: while snoozed, a review of an action (`action_fingerprint`) the session was asked about with the strong warning asks again the same way, never snoozed through.",
+  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), from `sender` (`owner`: the owner's own direct chat; `other`: someone else's direct message; `owner_in_group`: the owner in a group room; `owner_email`: the owner's own message on email, a channel whose senders anyone can claim to be), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that asks and is never snoozed through (on Hermes, a Session or Always answer to it covers the same action while the same snoozes last): `warning` is `relaxed`. Beta: any other block, a floor, a strong signal or `enforced: block` included, also becomes a review in the owner's own chat (`warning` is `strong`), asked every time with Allow once and Deny only (on Hermes, Session and Always allow that call only); a block with any `guardrail_tampering` floor (its review tier included) stays a block, and so does any block from another sender or in a group room. Unattended runs are never relaxed. A review prompt's `severity`, where the host has one, is given. A review prompt for a relaxed block carries `relaxed_note`, one for a strong block `strong_note` (Hermes: in the approval message; OpenClaw: in the approval description), never cut; no other prompt carries either. A strong block's reasons line starts with `strong_because`. Only a fully informed scan asks with the strong warning: `status` ok and the rule-based probe (`aira`) answered ok in `metadata.probes`; otherwise the block stays a block. `mode` observe (default enforce): `observed` means scanned and logged only, no prompt, no `relaxed`. `then`: after the first prompt the owner answers `answer` (`once`; `always`: Hermes's Always, OpenClaw's allow-always), and the next call in the session, scanned as `then.response`, must give `then.outcome` and `then.warning`: while snoozed, a review of an action (`action_fingerprint`) the session was asked about during a snooze, relaxed or strong, asks again with the strong warning, never snoozed through; one the scanner fingerprints differently is a new call.",
   "relaxed_note": "Would be blocked, but a snooze is on.",
   "cases": [
     {
@@ -1247,7 +1247,7 @@
       "outcome": "block"
     },
     {
-      "name": "beta, snoozed: the guardrail's review tier with a block-level score asks with the strong warning",
+      "name": "snoozed: the guardrail's review tier on a block-level score stays a block",
       "response": {
         "risk": 92,
         "enforced": "review",
@@ -1293,9 +1293,7 @@
       "attended": true,
       "snoozed": true,
       "sender": "owner",
-      "outcome": "review",
-      "severity": "critical",
-      "warning": "strong"
+      "outcome": "block"
     },
     {
       "name": "snoozed: a degraded scan's block stays a block",
@@ -1834,7 +1832,7 @@
       }
     },
     {
-      "name": "never silent: a review of another action after a strong prompt is snoozed as before",
+      "name": "known limit: a review the scanner fingerprints as another action after a strong prompt is snoozed as a new call",
       "response": {
         "risk": 81,
         "enforced": null,
@@ -1907,6 +1905,186 @@
         },
         "outcome": "snoozed"
       }
+    },
+    {
+      "name": "never silent: after once on a relaxed block, the same action scored as a review asks with the strong warning",
+      "response": {
+        "risk": 88,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed",
+      "then": {
+        "answer": "once",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "never silent: after always on a relaxed block, the same action scored as a review asks with the strong warning",
+      "response": {
+        "risk": 88,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        },
+        "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed",
+      "then": {
+        "answer": "always",
+        "response": {
+          "risk": 60,
+          "enforced": null,
+          "status": "ok",
+          "metadata": {
+            "probes": [
+              {
+                "step": "context",
+                "status": "ok"
+              },
+              {
+                "step": "aira",
+                "status": "ok"
+              }
+            ]
+          },
+          "action_fingerprint": "afp1:exec|dst:relaxed.example.net"
+        },
+        "outcome": "review",
+        "severity": "critical",
+        "warning": "strong"
+      }
+    },
+    {
+      "name": "snoozed, the owner on email: a sensitive-data floor block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent",
+            "min_risk": 0.9,
+            "enforce": null,
+            "subject": "E1",
+            "reason": "exfil.attachment"
+          }
+        ],
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E1",
+            "detail": {
+              "reason": "exfil.attachment"
+            },
+            "text": "it sends {E1}, which holds sensitive data, off this machine"
+          }
+        ],
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner_email",
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed, the owner on email: a relaxable block still asks",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": true,
+        "status": "ok",
+        "metadata": {
+          "probes": [
+            {
+              "step": "context",
+              "status": "ok"
+            },
+            {
+              "step": "aira",
+              "status": "ok"
+            }
+          ]
+        }
+      },
+      "attended": true,
+      "snoozed": true,
+      "sender": "owner_email",
+      "outcome": "review",
+      "severity": "critical",
+      "warning": "relaxed"
     }
   ],
   "strong_note": "A snooze is on: allow only if you asked for exactly this call.",

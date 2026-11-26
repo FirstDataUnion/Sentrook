@@ -378,17 +378,26 @@ and both offering **Allow once** and **Deny** only:
   snooze is on."
 - Any other block, one with a floor or a strong signal included, carries a stronger warning: it names why it would
   be blocked ("Would be blocked because ...") and says "A snooze is on: allow only if you asked for exactly this
-  call." It suggests no grant. While the snooze lasts, the same action asks this way again even if Sentrook later
-  scores it as an ordinary review. Allow it only if you asked for exactly what the card describes. Such a prompt
-  needs a complete scan: when one of Sentrook's checks failed, the block stays a block.
+  call." It suggests no grant. Allow it only if you asked for exactly what the card describes. Such a prompt needs a
+  complete scan: when one of Sentrook's checks failed, the block stays a block.
 
-Neither is ever allowed without asking: the next call asks again. What Sentrook counts as a change to Sentrook itself stays a block during a snooze: writing into Sentrook's own files
+While the snooze lasts, an action you were asked about either way asks with the stronger warning again even if
+Sentrook later scores it as an ordinary review. An action is what Sentrook fingerprints: a repeat it fingerprints
+differently (another tool, an extra file or address) counts as a new call.
+
+Neither is ever allowed without asking: the next call asks again.
+
+What Sentrook counts as a change to Sentrook itself stays a block during a snooze: writing into Sentrook's own files
 or settings, trimming or deleting its log, turning the plugin off or removing it, stopping the agent's gateway,
-running a Sentrook command only you should run, and loosening approvals so later commands run without asking. A
-snooze is never a way for the agent to switch Sentrook off. The score is the same either
-way.
+running a Sentrook command only you should run, and loosening the host's approvals so later commands run without
+asking (turning approvals off, switching YOLO on, setting the approval fallback to allow, or putting a wildcard, a
+shell or an interpreter in an allowlist). A block on a call that may do one of these, which Sentrook would otherwise
+only ask about, stays a block too. Other changes to approval settings ask with the stronger warning. A snooze is never
+a way for the agent to switch Sentrook off. The score is the same either way.
 
 For this, a chat you attend is your own message on the main agent, as below; someone else's message does not count.
+On email, SMS, IRC and ntfy, where anyone can claim a sender's address or name, a block with a floor or a strong
+signal stays a block; a block with no clear attack signal still asks there.
 A snooze never allows a block without asking, a review the scanner marks as enforced, or anything on an unattended run
 (cron jobs, subagents, webhooks): blocks still stop there, and a review on an unattended run is held for you instead.
 

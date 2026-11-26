@@ -1019,8 +1019,10 @@ const plugin = {
         // that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
         // (`unattendedView`).
         verdict = decide(unattended ? unattendedView(resp) : resp, cfg);
+        // The turn's own channel as OpenClaw names it, before the plugin folds it into a few kinds.
+        const rawChannel = ctx?.requester?.channel ?? run.channel ?? run.messageProvider ?? null;
         const asked =
-          snooze.asks(resp, verdict, built.planir) ??
+          snooze.asks(resp, verdict, built.planir, { channel: typeof rawChannel === "string" ? rawChannel : null }) ??
           // a review of an action the owner was asked about with the warning asks the same way, never snoozed
           (verdict === "review" && snooze.askedBefore(sess, resp) ? "strong" : null);
         if (
@@ -1164,7 +1166,7 @@ const plugin = {
           // where the owner is the one answering. Never for a block a snooze turned into a review.
           const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
           remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
-          if (strong) snooze.noteAsked(sess, resp);
+          if (relaxed) snooze.noteAsked(sess, resp);
           const copy = reviewCard(resp, event.toolName, {
             relaxed,
             strong,

@@ -180,13 +180,46 @@ def single_query(env: dict[str, str]) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def unattended_turn() -> bool:
+    """A `hermes -z` turn: nobody can answer a prompt, and Hermes approves every one by itself (its one-shot
+    contract). Read from Hermes's gateway; False where that cannot be read (an install without it)."""
+    try:
+        from gateway.session_finite import unattended_turn as read
+
+        return read() is True
+    except Exception:  # noqa: BLE001 - an install without the gateway package, or an older one
+        return False
+
+
+def host_yolo() -> bool:
+    """Hermes would approve a prompt in the current session by itself: YOLO for the process (`--yolo`), YOLO the
+    owner switched on for this session (`/yolo`), or a `-z` turn, as Hermes's own approval gate reads them. Fails
+    closed: when Hermes's approval module cannot be read (a plugin host outside Hermes's process, another version),
+    YOLO counts as on. Used where a prompt would let a block run (a snooze's strong prompt), not for reviews."""
+    try:
+        from tools.approval import _yolo_active
+
+        return bool(_yolo_active())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from tools.approval import is_current_session_yolo_enabled
+
+        return bool(is_current_session_yolo_enabled()) or unattended_turn()
+    except Exception:  # noqa: BLE001 - nothing readable: assume Hermes would approve it
+        return True
+
+
 def _approval_bypass(env: dict[str, str]) -> bool:
     """True when Hermes would auto-approve an `approve` directive: approvals are off in the config, the
-    process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it), or a single-query run
-    (`single_query`) where `approvals.single_query_mode` is approve. YOLO the owner switches on for a session
-    (`/yolo` in a chat, `hermes chat --yolo`, which the gateway applies per session) is not visible through
-    Hermes's public API, so there the owner's YOLO choice also covers Sentrook's approval prompts."""
+    process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it), a `-z` turn
+    (`unattended_turn`), or a single-query run (`single_query`) where `approvals.single_query_mode` is approve. YOLO
+    the owner switches on for a session (`/yolo` in a chat, `hermes chat --yolo`, which the gateway applies per
+    session) is not part of Hermes's public API, so there the owner's YOLO choice also covers Sentrook's review
+    prompts; a snooze's strong prompt reads it from Hermes's approval module instead (`host_yolo`)."""
     if env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    if unattended_turn():
         return True
     cfg = hermes_config()
     if approvals_off(cfg):

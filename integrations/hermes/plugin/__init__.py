@@ -62,6 +62,7 @@ from .intent import (
     children_auto_approved,
     conversation_sender_of,
     hermes_config,
+    host_yolo,
     is_unattended,
     owner_attends,
     resolve_platform,
@@ -726,10 +727,13 @@ def _scan_one(
         asked = (
             None
             if cfg.mode == "observe" or unattended
-            else snooze.asks(resp, verdict, planir)
-            # a review of an action the owner was asked about with the warning asks the same way, never snoozed
+            else snooze.asks(resp, verdict, planir, built["platform"])
+            # a review of an action the owner was asked about during a snooze asks with the warning, never snoozed
             or ("strong" if verdict == "review" and snooze.asked_before(sess, resp) else None)
         )
+        if asked == "strong" and verdict == "block" and host_yolo():
+            # Hermes would approve the prompt by itself (session YOLO): a block with a strong signal stays a block.
+            asked = None
         if asked is not None and snooze.active(
             store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):
@@ -928,7 +932,7 @@ def _scan_one(
             # with it: no allowance besides (`session_allow`).
             if remember:
                 allow_key = None
-            if strong:
+            if relaxed:
                 snooze.note_asked(sess, resp)
             directive = {
                 "action": "approve",

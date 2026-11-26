@@ -13,7 +13,7 @@ import { actionOf, recentScans, reviewOf } from "./history.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 import * as snooze from "./snooze.ts";
-import { readTime } from "./store.ts";
+import { readTime, Store } from "./store.ts";
 
 /**
  * Snooze: owner-only relief from review prompts, kept in `<state>/sentrook/snooze.json`.
@@ -408,23 +408,25 @@ const RELAX = RELAX_DOC.cases as {
   response: Record<string, unknown>;
   attended: boolean;
   snoozed: boolean;
-  sender: "owner" | "other" | "owner_in_group";
+  sender: "owner" | "other" | "owner_in_group" | "owner_email";
   mode?: "observe";
   outcome: "allow" | "snoozed" | "review" | "block" | "held" | "observed";
   severity?: "warning" | "critical";
   warning?: "relaxed" | "strong";
-  then?: { answer: "once" | "always"; response: Record<string, unknown>; outcome: "review" | "snoozed"; severity?: "critical"; warning?: "strong" };
+  then?: Outcome & { answer: "once" | "always"; response: Record<string, unknown> };
 }[];
 /** Each fixture sender as OpenClaw reports it on an attended turn: the session key and the requester. */
 const SENDERS: Record<string, Record<string, unknown>> = {
   owner: { sessionKey: "agent:main:direct:owner", requester: { senderIsOwner: true, channel: "webchat" } },
   other: { sessionKey: "agent:main:direct:someone", requester: { senderIsOwner: false, channel: "telegram" } },
   owner_in_group: { sessionKey: "agent:main:telegram:group:g1", requester: { senderIsOwner: true, channel: "telegram" } },
+  owner_email: { sessionKey: "agent:main:email:direct:owner", requester: { senderIsOwner: true, channel: "email" } },
 };
 const WANT_SENDER: Record<string, unknown> = {
   owner: { relation: "owner", basis: ["host_owner_flag"] },
   other: { relation: "other", basis: ["none"] },
   owner_in_group: { relation: "owner", basis: ["group_chat"] },
+  owner_email: { relation: "owner", basis: ["host_owner_flag"] },
 };
 
 type Outcome = {
@@ -581,10 +583,10 @@ test("observe mode asks nothing of a strong block", async () => {
 
 test("the beta switch: off, only a relaxable block asks", () => {
   const owner = { trigger: { kind: "message", sender: { relation: "owner", basis: ["host_owner_flag"] } }, session: { agent_role: "main" }, self_edit: null };
-  assert.equal(snooze.asks(FLOOR_BLOCK, "block", owner, true), "strong");
-  assert.equal(snooze.asks(FLOOR_BLOCK, "block", owner, false), null);
-  assert.equal(snooze.asks({ risk: 92, relaxable: true }, "block", owner, false), "relaxed");
-  assert.equal(snooze.asks(FLOOR_BLOCK, "review", owner, true), null);
+  assert.equal(snooze.asks(FLOOR_BLOCK, "block", owner, { blocksAsk: true }), "strong");
+  assert.equal(snooze.asks(FLOOR_BLOCK, "block", owner, { blocksAsk: false }), null);
+  assert.equal(snooze.asks({ risk: 92, relaxable: true }, "block", owner, { blocksAsk: false }), "relaxed");
+  assert.equal(snooze.asks(FLOOR_BLOCK, "review", owner, { blocksAsk: true }), null);
 });
 
 test("ownerAttends reads the request as the scanner's attended-owner check does", () => {
@@ -599,6 +601,40 @@ test("ownerAttends reads the request as the scanner's attended-owner check does"
   assert.equal(snooze.ownerAttends(p({ relation: "owner", basis: ["host_owner_flag"] }, { self_edit: { kind: "x" } })), false);
   assert.equal(snooze.ownerAttends({ trigger: { kind: "scheduled", sender: { relation: "owner", basis: ["host_owner_flag"] } }, session: { agent_role: "main" } }), false);
   assert.equal(snooze.ownerAttends({}), false);
+});
+
+test("the asked list keeps each action once, newest last, at most ASKED_MAX, and survives a save and load", () => {
+  const sess: { snoozeAsked?: string[] } = {};
+  for (let i = 0; i < 3; i++) snooze.noteAsked(sess, { action_fingerprint: `afp1:x|${i}` });
+  snooze.noteAsked(sess, { action_fingerprint: "afp1:x|0" });
+  assert.deepEqual(sess.snoozeAsked, ["afp1:x|1", "afp1:x|2", "afp1:x|0"]);
+  snooze.noteAsked(sess, { action_fingerprint: null });
+  snooze.noteAsked(sess, {});
+  assert.equal(sess.snoozeAsked!.length, 3);
+  for (let i = 3; i < 3 + snooze.ASKED_MAX; i++) snooze.noteAsked(sess, { action_fingerprint: `afp1:x|${i}` });
+  assert.equal(sess.snoozeAsked!.length, snooze.ASKED_MAX);
+  const newest = `afp1:x|${2 + snooze.ASKED_MAX}`;
+  assert.equal(sess.snoozeAsked!.at(-1), newest);
+  assert.ok(!snooze.askedBefore(sess, { action_fingerprint: "afp1:x|0" }));
+  assert.ok(snooze.askedBefore(sess, { action_fingerprint: newest }));
+  assert.ok(!snooze.askedBefore(sess, {}));
+  // the session file keeps it
+  const store = new Store(stateDir);
+  const saved = store.loadSession("S9");
+  saved.snoozeAsked = sess.snoozeAsked;
+  store.saveSession("S9", saved, 100);
+  const loaded = new Store(stateDir).loadSession("S9");
+  assert.deepEqual(loaded.snoozeAsked, sess.snoozeAsked);
+  assert.ok(snooze.askedBefore(loaded, { action_fingerprint: newest }));
+});
+
+test("a channel whose senders anyone can claim keeps a strong block, not a relaxable one", () => {
+  const owner = { trigger: { kind: "message", sender: { relation: "owner", basis: ["host_owner_flag"] } }, session: { agent_role: "main" }, self_edit: null };
+  for (const channel of ["email", "SMS", "irc", "ntfy"]) {
+    assert.equal(snooze.asks(FLOOR_BLOCK, "block", owner, { channel }), null, channel);
+    assert.equal(snooze.asks({ risk: 92, relaxable: true }, "block", owner, { channel }), "relaxed", channel);
+  }
+  for (const channel of ["telegram", "webchat", null]) assert.equal(snooze.asks(FLOOR_BLOCK, "block", owner, { channel }), "strong");
 });
 
 test("observe mode relaxes nothing", async () => {

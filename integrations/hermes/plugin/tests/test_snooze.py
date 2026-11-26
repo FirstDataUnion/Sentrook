@@ -41,6 +41,8 @@ def term(harness, monkeypatch):
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
     monkeypatch.setattr(plugin, "session_surface", lambda: "" if facts.get("platform") else "cli")
+    # Hermes's approval module is not in the tests: no YOLO in the session unless a test says so
+    monkeypatch.setattr(plugin, "host_yolo", lambda: False)
     harness.facts = facts
     harness.file = harness.dir / "sentrook" / "snooze.json"
     return harness
@@ -293,17 +295,22 @@ SENDERS = {
     "owner": {"chat_type": "dm", "user_id": "u1"},
     "other": {"chat_type": "dm", "user_id": "u2"},
     "owner_in_group": {"chat_type": "group", "user_id": "u1"},
+    "owner_email": {"chat_type": "dm", "user_id": "u1"},
 }
+#: The platform each fixture sender writes on.
+SENDER_PLATFORM = {"owner_email": "email"}
 WANT_SENDER = {
     "owner": {"relation": "owner", "basis": ["host_allowlist_dm"]},
     "other": {"relation": "other", "basis": ["host_open_access"]},
     # this harness reads the sender in a group as someone else: a group room is what keeps the block either way
     "owner_in_group": {"relation": "other", "basis": ["group_chat"]},
+    "owner_email": {"relation": "owner", "basis": ["host_allowlist_dm"]},
 }
 
 
 def as_sender(h, monkeypatch, sender):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1")
+    monkeypatch.setenv("EMAIL_ALLOWED_USERS", "u1")
     h.facts.update(SENDERS[sender])
 
 
@@ -333,7 +340,7 @@ def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
         put(scripted, entry())
     as_sender(scripted, monkeypatch, case["sender"])
     scripted.reply = dict(case["response"])
-    turn(scripted)
+    turn(scripted, platform=SENDER_PLATFORM.get(case["sender"], "telegram"))
     out, rec = call(scripted, "run it")
     if case["attended"]:
         assert rec["planir"]["trigger"]["sender"] == WANT_SENDER[case["sender"]]
@@ -874,3 +881,141 @@ def test_a_snooze_off_whose_file_stays_locked_says_so_and_changes_nothing(tmp_pa
     assert rec is None
     assert "is locked by another process; no snooze was changed" in reply
     assert (tmp_path / "snooze.json").read_text() == before
+
+
+# ---- beta: who may be asked, and where Hermes would answer by itself ------------------------------------------
+
+
+@pytest.mark.parametrize("platform", ["tui", "desktop", "acp", "cli"])
+def test_a_strong_block_in_the_owners_local_app_asks(scripted, monkeypatch, platform):
+    """The terminal, the TUI, the desktop app and an editor (ACP) are the owner's own surfaces."""
+    monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: False)
+    scripted.facts.update(platform=platform)
+    put(scripted, entry())
+    turn(scripted, platform=platform)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert rec["planir"]["trigger"]["sender"]["relation"] == "owner"
+    assert out["action"] == "approve" and rec["relaxed_strong"] is True
+
+
+@pytest.mark.parametrize("platform", ["email", "sms", "irc", "ntfy"])
+def test_a_strong_block_where_anyone_can_claim_the_sender_stays_a_block(
+    scripted, monkeypatch, platform
+):
+    monkeypatch.setenv(f"{platform.upper()}_ALLOWED_USERS", "u1")
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted, platform=platform)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    # the owner, by the allowlist: only the platform keeps the block
+    assert rec["planir"]["trigger"]["sender"] == {
+        "relation": "owner",
+        "basis": ["host_allowlist_dm"],
+    }
+    assert out["action"] == "block" and "relaxed" not in rec
+    # a block the scanner marks relaxable still asks there, as before
+    scripted.reply = {**FLOOR_BLOCK, "floors_applied": [], "reasons": [], "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "approve" and rec["relaxed"] is True and "relaxed_strong" not in rec
+
+
+def test_under_session_yolo_a_strong_block_stays_a_block(scripted, monkeypatch):
+    """Hermes would approve the prompt by itself: the block stays. A relaxable block asks as before."""
+    monkeypatch.setattr(plugin, "host_yolo", lambda: True)
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+    scripted.reply = {**FLOOR_BLOCK, "floors_applied": [], "reasons": [], "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "approve" and rec["relaxed"] is True
+
+
+def _fake_module(monkeypatch, name, **attrs):
+    import types
+
+    parent, _, child = name.partition(".")
+    if parent not in sys.modules or not hasattr(sys.modules[parent], "__path__"):
+        pkg = types.ModuleType(parent)
+        pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, parent, pkg)
+    mod = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    monkeypatch.setitem(sys.modules, name, mod)
+
+
+@pytest.mark.parametrize(
+    ("approval", "want"),
+    [
+        (None, True),  # Hermes's approval module cannot be read: fail closed
+        ({"_yolo_active": lambda: False}, False),
+        ({"_yolo_active": lambda: True}, True),
+        ({"is_current_session_yolo_enabled": lambda: False}, False),
+        ({"is_current_session_yolo_enabled": lambda: True}, True),
+        ({"_yolo_active": lambda: 1 / 0}, True),
+    ],
+)
+def test_host_yolo_reads_hermes_and_fails_closed(monkeypatch, approval, want):
+    from plugin import intent
+
+    monkeypatch.delitem(sys.modules, "tools.approval", raising=False)
+    if approval is not None:
+        _fake_module(monkeypatch, "tools.approval", **approval)
+    else:
+        _fake_module(monkeypatch, "tools.registry")  # a `tools` package without the approval module
+    assert intent.host_yolo() is want
+
+
+def test_a_dash_z_turn_counts_as_hermes_approving_by_itself(scripted, monkeypatch):
+    """`hermes -z`: Hermes approves every prompt with nobody asked, whatever `single_query_mode` says. The strong
+    block stays a block and a review is held."""
+    from plugin import intent
+
+    _fake_module(
+        monkeypatch,
+        "gateway.session_finite",
+        unattended_turn=lambda: True,
+        finite_turn_required=lambda: True,
+    )
+    monkeypatch.setattr(intent, "hermes_config", lambda: {})
+    assert intent.unattended_turn() is True
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+    scripted.reply = {"risk": 55, "enforced": None}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and rec["decision"] == "held"
+
+
+def test_without_the_gateway_module_no_turn_is_unattended(monkeypatch):
+    from plugin import intent
+
+    monkeypatch.delitem(sys.modules, "gateway.session_finite", raising=False)
+    monkeypatch.delitem(sys.modules, "gateway", raising=False)
+    assert intent.unattended_turn() is False
+
+
+def test_the_asked_list_keeps_each_action_once_newest_last_and_at_most_asked_max():
+    sess = {}
+    for i in range(3):
+        snooze.note_asked(sess, {"action_fingerprint": f"afp1:x|{i}"})
+    snooze.note_asked(sess, {"action_fingerprint": "afp1:x|0"})
+    assert sess["snooze_asked"] == ["afp1:x|1", "afp1:x|2", "afp1:x|0"]
+    snooze.note_asked(sess, {"action_fingerprint": None})
+    snooze.note_asked(sess, {})
+    assert len(sess["snooze_asked"]) == 3
+    for i in range(3, 3 + snooze.ASKED_MAX):
+        snooze.note_asked(sess, {"action_fingerprint": f"afp1:x|{i}"})
+    assert len(sess["snooze_asked"]) == snooze.ASKED_MAX
+    assert sess["snooze_asked"][-1] == f"afp1:x|{2 + snooze.ASKED_MAX}"
+    assert not snooze.asked_before(sess, {"action_fingerprint": "afp1:x|0"})
+    assert snooze.asked_before(sess, {"action_fingerprint": f"afp1:x|{2 + snooze.ASKED_MAX}"})
+    assert not snooze.asked_before(sess, {})
