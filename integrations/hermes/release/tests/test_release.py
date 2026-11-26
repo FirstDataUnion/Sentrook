@@ -362,10 +362,8 @@ def test_the_catalog_description_carries_the_disclosure():
         assert phrase.lower() in description.lower(), phrase
     assert "{{" not in description
     # The technical details stay alongside it.
-    assert (
-        "sentrook.firstdataunion.org" in description
-        and "identity.firstdataunion.org" in description
-    )
+    assert re.search(r"\(sentrook\.firstdataunion\.org\)", description)
+    assert re.search(r"\bfrom identity\.firstdataunion\.org with\b", description)
 
 
 @pytest.mark.parametrize("phrase", ["other personal data", "OpenRouter", "TypeSafe", "beta"])
