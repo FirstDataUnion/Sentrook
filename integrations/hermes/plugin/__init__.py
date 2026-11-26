@@ -24,6 +24,7 @@ from . import (
     card,
     cli,
     commands,
+    consent,
     conversation,
     grants,
     history,
@@ -658,14 +659,16 @@ def _scan_one(
 
     ep = cfg.endpoints
     result: ScanOk | ScanFailure
+    oidc = None
     if not ep.scan.ok:
         result = ScanFailure(ok=False, kind="config", detail=f"scan URL: {ep.scan.reason}")
     elif not ep.issuer.ok:
         result = ScanFailure(ok=False, kind="config", detail=f"OIDC issuer: {ep.issuer.reason}")
     else:
+        oidc = resolve_oidc_credentials(_settings(), env, ep.issuer.url)
         result = post_scan(
             scan_url=ep.scan.url,
-            oidc=resolve_oidc_credentials(_settings(), env, ep.issuer.url),
+            oidc=oidc,
             body=json.dumps(planir, ensure_ascii=False, default=str).encode(),
             timeout_ms=cfg.timeout_ms,
         )
@@ -956,6 +959,10 @@ def _scan_one(
                 )
     else:
         logger.warning("scan failed (%s): %s", result.kind, result.detail)
+        withdrawn = result.setup == "consent_withdrawn" and oidc is not None
+        if withdrawn:
+            # One notice for the withdrawal, in either mode, instead of one per job or session.
+            notice = _consent_notice(cfg, oidc.client_id)
         if cfg.mode != "observe":
             outage = sess.setdefault("error_epoch", planir["request_id"])
             cause = failure_cause(result)
@@ -973,7 +980,7 @@ def _scan_one(
                     store.put_review(
                         key, {"sid": sid, "request_id": planir["request_id"], "on_error": True}
                     )
-                elif unattended:
+                elif unattended and not withdrawn:
                     notice = _scan_failure_notice(cfg, built, result)
         entry["decision"] = "blocked_on_error" if directive else "allowed_on_error"
 
@@ -1839,6 +1846,28 @@ def _scan_failure_notice(
         text,
         on_fail=lambda: scan_failure_notice.release(cfg.state_dir, key, stamp),
     )
+    return {"status": "queued", "target": hold.target_label(target)}
+
+
+def _consent_notice(cfg: PluginConfig, client_id: str) -> dict[str, Any]:
+    """Tells the owner, once for these credentials, that the identity service refuses them because consent was
+    withdrawn. Kept in the state folder, so a restart does not send it again; `hermes sentrook login` resets it.
+    Returns what the scan record says about the notice. Never raises: the call's outcome stands whatever happens."""
+    target, why = _notice_target(cfg)
+    if not target:
+        return {"status": "unsent", "target": None, "reason": why}
+    try:
+        stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if not consent.claim(cfg.state_dir, client_id, stamp):
+            return {"status": "quiet"}
+    except LockTimeout:
+        return {"status": "unsent", "target": None, "reason": "notice file locked"}
+    except Exception as exc:  # noqa: BLE001 - not announced, the call's outcome stands
+        logger.warning("sentrook could not read or write the consent notice: %s", exc)
+        return {"status": "unsent", "target": None, "reason": "notice file not written"}
+    text = consent.withdrawn_text(by_hand=skill_review.host_isolated())
+    # Not delivered: the next refused scan announces it instead.
+    _deliver(cfg, target, text, on_fail=lambda: consent.release(cfg.state_dir, client_id))
     return {"status": "queued", "target": hold.target_label(target)}
 
 

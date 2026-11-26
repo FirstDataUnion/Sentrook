@@ -1,0 +1,86 @@
+{
+  "_comment": "Consent texts both plugins must give, word for word. `signed_in` is printed after `{cmd} sentrook login` stores the credentials, one sentence per line: the `{terms}` line is `terms_line` (with `terms_line_dated` when a date is given) only when the identity service's answer gives a `terms_version` (and `terms_accepted_at`), and is left out otherwise; {links} is the privacy policy URL and, when set, the terms URL, joined by ` and `; {stop} is the host's command that stops all scans (`hosts`). `withdrawn_notice` is the one owner notice sent when the identity service refuses the scan credentials because consent was withdrawn (`token_error`): {reconnect} and {observe} are the host's. `rendered` is each host's text with no terms version. Hermes under `plugins.isolation: host` has no command line and sends `reconnect_by_hand` instead, with {observe} filled.",
+  "_draft": "The terms URL is not known yet: each plugin's TERMS_URL is empty, so the terms link is left out. Set it there and in `terms_url` here together.",
+  "issuer": "https://identity.firstdataunion.org",
+  "token_error": {
+    "status": 401,
+    "body": {
+      "error": "invalid_client",
+      "error_description": "Sentrook consent withdrawn: run sentrook login to reconnect",
+      "error_reason": "consent_withdrawn"
+    }
+  },
+  "privacy_url": "https://firstdataunion.org/privacy-policy/",
+  "terms_url": "",
+  "terms_line": "Terms version {version} accepted.",
+  "terms_line_dated": "Terms version {version} accepted {date}.",
+  "signed_in": [
+    "Sentrook is connected to your FIDU account.",
+    "{terms}",
+    "Each check sends the action and its context to Sentrook, which may pass it to OpenRouter and TypeSafe to judge.",
+    "Secrets are replaced with placeholders before anything leaves your machine; other personal data is sent as it is.",
+    "Sentrook is a beta and does not guarantee protection.",
+    "Policy and terms: {links}.",
+    "To stop, run {stop} or close your FIDU account."
+  ],
+  "withdrawn_notice": "Sentrook consent withdrawn: scans stopped. Run {reconnect} to connect again, or switch to observe mode, or uninstall. Observe mode: {observe}",
+  "hosts": {
+    "hermes": {
+      "stop": "hermes plugins disable sentrook && hermes gateway restart",
+      "reconnect": "hermes sentrook login",
+      "observe": "hermes config set plugins.entries.sentrook.settings.mode observe && hermes gateway restart",
+      "reconnect_by_hand": "Sentrook consent withdrawn: scans stopped. Set new credentials in Hermes (see the install guide) to connect again, or switch to observe mode, or uninstall. Observe mode: {observe}"
+    },
+    "openclaw": {
+      "stop": "openclaw plugins disable sentrook && openclaw gateway restart",
+      "reconnect": "openclaw sentrook login",
+      "observe": "openclaw config set plugins.entries.sentrook.config.mode observe && openclaw gateway restart"
+    }
+  },
+  "rendered": {
+    "hermes": {
+      "signed_in": [
+        "Sentrook is connected to your FIDU account.",
+        "Each check sends the action and its context to Sentrook, which may pass it to OpenRouter and TypeSafe to judge.",
+        "Secrets are replaced with placeholders before anything leaves your machine; other personal data is sent as it is.",
+        "Sentrook is a beta and does not guarantee protection.",
+        "Policy and terms: https://firstdataunion.org/privacy-policy/.",
+        "To stop, run hermes plugins disable sentrook && hermes gateway restart or close your FIDU account."
+      ],
+      "signed_in_dated": [
+        "Sentrook is connected to your FIDU account.",
+        "Terms version 1 accepted 2026-11-26.",
+        "Each check sends the action and its context to Sentrook, which may pass it to OpenRouter and TypeSafe to judge.",
+        "Secrets are replaced with placeholders before anything leaves your machine; other personal data is sent as it is.",
+        "Sentrook is a beta and does not guarantee protection.",
+        "Policy and terms: https://firstdataunion.org/privacy-policy/.",
+        "To stop, run hermes plugins disable sentrook && hermes gateway restart or close your FIDU account."
+      ],
+      "withdrawn_notice": "Sentrook consent withdrawn: scans stopped. Run hermes sentrook login to connect again, or switch to observe mode, or uninstall. Observe mode: hermes config set plugins.entries.sentrook.settings.mode observe && hermes gateway restart"
+    },
+    "openclaw": {
+      "signed_in": [
+        "Sentrook is connected to your FIDU account.",
+        "Each check sends the action and its context to Sentrook, which may pass it to OpenRouter and TypeSafe to judge.",
+        "Secrets are replaced with placeholders before anything leaves your machine; other personal data is sent as it is.",
+        "Sentrook is a beta and does not guarantee protection.",
+        "Policy and terms: https://firstdataunion.org/privacy-policy/.",
+        "To stop, run openclaw plugins disable sentrook && openclaw gateway restart or close your FIDU account."
+      ],
+      "signed_in_dated": [
+        "Sentrook is connected to your FIDU account.",
+        "Terms version 1 accepted 2026-11-26.",
+        "Each check sends the action and its context to Sentrook, which may pass it to OpenRouter and TypeSafe to judge.",
+        "Secrets are replaced with placeholders before anything leaves your machine; other personal data is sent as it is.",
+        "Sentrook is a beta and does not guarantee protection.",
+        "Policy and terms: https://firstdataunion.org/privacy-policy/.",
+        "To stop, run openclaw plugins disable sentrook && openclaw gateway restart or close your FIDU account."
+      ],
+      "withdrawn_notice": "Sentrook consent withdrawn: scans stopped. Run openclaw sentrook login to connect again, or switch to observe mode, or uninstall. Observe mode: openclaw config set plugins.entries.sentrook.config.mode observe && openclaw gateway restart"
+    }
+  },
+  "dated_case": {
+    "terms_version": "1",
+    "terms_accepted_at": "2026-11-26T09:30:00Z"
+  }
+}

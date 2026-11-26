@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from . import skill_review
+from .auth import ConsentWithdrawn
 from .card import error_cause, hermes_error_message
 
 OnScanError = Literal["allow", "deny", "review"]
@@ -25,8 +26,9 @@ class ScanFailure:
     detail: str
     status: int | None = None
     retry_after_sec: float | None = None
-    #: Why the credentials did not work, when that is known: `not_signed_in` (none stored) or
-    #: `sign_in_rejected` (the identity service refused them: revoked or wrong). The fix is `hermes sentrook login`.
+    #: Why the credentials did not work, when that is known: `not_signed_in` (none stored), `sign_in_rejected`
+    #: (the identity service refused them: revoked or wrong) or `consent_withdrawn` (refused because the owner
+    #: withdrew consent on the FIDU portal). The fix is `hermes sentrook login`.
     setup: str | None = None
 
 
@@ -59,6 +61,14 @@ def is_auth_failure(failure: ScanFailure) -> bool:
 
 def scan_auth_error_to_failure(err: object) -> ScanFailure:
     """Map OIDC mint / discovery errors to a scan failure."""
+    if isinstance(err, ConsentWithdrawn):
+        return ScanFailure(
+            ok=False,
+            kind="http",
+            status=err.status,
+            detail="consent withdrawn on the FIDU portal",
+            setup="consent_withdrawn",
+        )
     detail = str(err).replace("\n", " ").strip()[:200]
     lower = detail.lower()
     status_match = re.search(r"\bHTTP (\d{3})\b", detail, flags=re.IGNORECASE)
@@ -120,6 +130,15 @@ SIGN_IN_FIXES = {
         "by_hand": "Sentrook's sign-in was revoked or is wrong, so this tool call was not scanned or run. "
         f"{_SETUP} Tell the owner to set new Sentrook credentials in Hermes (see the Sentrook install guide) "
         "and restart Hermes. Do not try to set them yourself or work around this.",
+    },
+    "consent_withdrawn": {
+        "login": "The owner withdrew consent for Sentrook on the FIDU portal, so this tool call was not scanned or "
+        f"run. {_SETUP} Tell the owner to reconnect by running `hermes sentrook login` in a terminal on the "
+        "machine Hermes runs on, or to switch Sentrook to observe mode. Do not try to run it yourself or work around this.",
+        "by_hand": "The owner withdrew consent for Sentrook on the FIDU portal, so this tool call was not scanned or "
+        f"run. {_SETUP} Tell the owner to set new Sentrook credentials in Hermes (see the Sentrook install guide) "
+        "and restart Hermes, or to switch Sentrook to observe mode. Do not try to set them yourself or work around "
+        "this.",
     },
 }
 
