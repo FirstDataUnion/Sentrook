@@ -5,7 +5,7 @@
  */
 
 import { shadowCheck } from "./agentSkills.ts";
-import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
+import { clearScanTokenCache, ConsentWithdrawnError, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { configProblemsSummary, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
@@ -82,9 +82,12 @@ export async function runVerify(
       checks.push({
         name: "token mint",
         ok: false,
-        detail: detail.includes("invalid_client")
-          ? "the identity service refused these credentials (revoked or wrong); run openclaw sentrook login"
-          : detail,
+        detail:
+          err instanceof ConsentWithdrawnError
+            ? "consent for Sentrook was withdrawn on the FIDU portal; run openclaw sentrook login to reconnect"
+            : detail.includes("invalid_client")
+              ? "the identity service refused these credentials (revoked or wrong); run openclaw sentrook login"
+              : detail,
       });
     }
   }

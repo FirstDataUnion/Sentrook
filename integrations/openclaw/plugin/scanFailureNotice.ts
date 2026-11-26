@@ -21,6 +21,7 @@ const FILE = "scan-failure-notices.json";
 
 /** Why the scan gave no answer, in words for the owner; never the failure's detail, which can carry anything. */
 export function reasonOf(failure: ScanFailure): string {
+  if (failure.setup === "consent_withdrawn") return "consent for Sentrook was withdrawn on the FIDU portal";
   if (isAuthFailure(failure)) return "Sentrook's endpoint or credentials are not configured correctly";
   switch (failure.kind) {
     case "network":
