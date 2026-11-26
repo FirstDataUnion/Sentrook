@@ -543,6 +543,14 @@ test("codes, PINs, passport numbers and random values under a key leave the host
     // With Google named, a value not shaped like a Drive id still goes, and so does one under a credential key.
     [`const PLAN = "${R20}"; // documentId`, R20, "credential"],
     [`api_key: ${FOLDER}\n# then call googleapis`, FOLDER, "credential"],
+    // With Google named, a Drive id's shape under a key that names a secret, or under a custom header, still goes.
+    [`SESSION_KEY=${FOLDER}\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token`, FOLDER, "credential"],
+    [`curl https://www.googleapis.com/drive/v3/files -H 'X-Desk: ${FOLDER}'`, FOLDER, "credential"],
+    [`sessionid=${DOC}; docs.google.com`, DOC, "credential"],
+    [`hmac=${DOC}\nvia googleapis`, DOC, "credential"],
+    // "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    [`value: ${FOLDER}\nthe kid in parents' care`, FOLDER, "credential"],
+    [`parents = []\nvalue: ${DOC}`, DOC, "credential"],
   ];
   for (const [text, value, kind] of cases) {
     for (const form of forms(text)) {
@@ -588,6 +596,8 @@ test("numbers, ids and words without a cue stay", () => {
     `TARGET_A = "${FOLDER}"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x"`,
     `plan = "${DOC}"\nprint("https://docs.google.com/document/d/" + plan)`,
     `plan = "${DOC}"\nd = gapi.getdoc(plan)`,
+    // A document's name under a key with a secret-sounding word in it is still a name (`sessionPlan`).
+    `const sessionPlan = "${DOC}";\nawait tools.docs_get({ id: sessionPlan });`,
     `const r = await tools.drive_files_list({ q: "x" });\nconst dest = "${FOLDER}";`,
   ]) {
     for (const form of forms(text)) assert.equal(r.string(form), form);
@@ -619,6 +629,8 @@ test("a Drive id in an object stays only when its own object names Google", () =
   assert.deepEqual(r.value(fields), fields);
   assert.match((r.value({ parent: FOLDER }) as any).parent, /^⟦secret:credential:/);
   assert.match((r.value({ value: DOC, note: "ask my parents" }) as any).value, /^⟦secret:credential:/);
+  assert.match((r.value({ sessionid: FOLDER, url: "https://www.googleapis.com/x" }) as any).sessionid, /^⟦secret:credential:/);
+  assert.match((r.value({ "X-Desk": DOC, u: "googleapis" }) as any)["X-Desk"], /^⟦secret:credential:/);
 });
 
 test("recipients and destinations stay when a send is redacted", () => {

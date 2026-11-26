@@ -632,20 +632,39 @@ const PREFIXED_OBJECT_ID = /^(?:[a-z]{1,8}_|[Ss][Hh][Aa](?:1|256|384|512)-)/;
  */
 const DRIVE_ID = /^[01][A-Za-z0-9_-]{24,43}$/;
 /**
+ * Words in a key that make its value a secret whatever it looks like (`SIGNING_KEY`, `X-Auth`, `sessionid`, `hmac`),
+ * and the endings that do the same inside one word (`signingkey`): a Drive id's shape under such a key, or under a
+ * custom `X-` header, is redacted even where Google is named.
+ */
+const SECRET_KEY_WORDS = new Set(
+  (
+    "key keys auth cookie cookies sessionid sid sig signature hmac salt seed master license licence pwd pass " +
+    "passwd credential credentials access private secret token otp jwt csrf xsrf"
+  ).split(" "),
+);
+const SECRET_KEY_END = /(?:key|token|secret|auth|sig|pass|pwd)$/;
+/**
  * What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
  * Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
- * (`drive_files_list`, `docs_get`). A word alone ("my parents") does not.
+ * (`drive_files_list`, `docs_get`). The word alone ("my parents", "kid in parents", `parents = []`) does not.
  */
 const GOOGLE_CONTEXT = new RegExp(
-  String.raw`googleapis|googleapiclient|google-apps|gspread|(?:drive|docs|sheets|slides|script)\.google\.com|` +
+  String.raw`googleapis|googleapiclient|google-apps|gspread|(?:drive|docs|sheets|slides|script)\.google\.com` +
+    String.raw`|["'][ \t]{1,8}in[ \t]{1,8}parents(?![A-Za-z0-9_])|` +
     CUE_START +
     String.raw`(?:(?:documentId|spreadsheetId|presentationId|fileId|folderId|driveId|textRun|batchUpdate)(?![A-Za-z0-9_])` +
-    String.raw`|gapi\.|in[ \t]{1,8}parents(?![A-Za-z0-9_])|parents\\{0,8}["']?[ \t]{0,8}=` +
+    String.raw`|gapi\.|parents\\{0,8}["']?[ \t]{0,8}=[ \t]{0,8}\\{0,8}["'][01][A-Za-z0-9_-]{24}` +
     String.raw`|g?drive_(?:files?|folders?|permissions?)(?![A-Za-z0-9])` +
     String.raw`|(?:g?docs|sheets|slides)_(?:get|create|append|update|batch|export|insert|replace|values))`,
 );
-/** A Drive, Docs or Sheets id where Google is named: the document or folder a call works on, not a secret. */
-const googleId = (value: string, google: boolean) => google && DRIVE_ID.test(value);
+/** A key whose value is a secret whatever it looks like: a custom `X-` header, or a key with a secret word. */
+const secretKey = (key: string) =>
+  key.slice(0, 2).toLowerCase() === "x-" || keyWords(key).some((w) => SECRET_KEY_WORDS.has(w) || SECRET_KEY_END.test(w));
+/**
+ * A Drive, Docs or Sheets id where Google is named, under a key that does not name a secret: the document or folder a
+ * call works on.
+ */
+const googleId = (key: string, value: string, google: boolean) => google && DRIVE_ID.test(value) && !secretKey(key);
 /** Whether a parsed object names Google among its own keys and string values (`GOOGLE_CONTEXT`). */
 const namesGoogle = (obj: Record<string, unknown>) =>
   Object.entries(obj).some(([k, v]) => GOOGLE_CONTEXT.test(k) || (typeof v === "string" && GOOGLE_CONTEXT.test(v)));
@@ -762,7 +781,7 @@ function cueSpans(text: string): Array<[number, number, CueKind]> {
     if (g.sep === ":" && !startsEntry(text, m.index)) return;
     const idx = m.indices?.groups?.v;
     if (!idx || !randomKey(g.k, g.v, afterQuery(text, m.index))) return;
-    if (DRIVE_ID.test(g.v)) {
+    if (DRIVE_ID.test(g.v) && !secretKey(g.k)) {
       google ??= GOOGLE_CONTEXT.test(text);
       if (google) return;
     }
@@ -798,7 +817,7 @@ function objectKind(key: string, value: unknown, google = false): CueKind | null
     const kind = keyKind(key, text, ":", false);
     if (kind) return kind;
   }
-  if (typeof value === "string" && RANDOM_VALUE.test(value) && randomKey(key, value, false) && !googleId(value, google)) {
+  if (typeof value === "string" && RANDOM_VALUE.test(value) && randomKey(key, value, false) && !googleId(key, value, google)) {
     return "random";
   }
   return null;

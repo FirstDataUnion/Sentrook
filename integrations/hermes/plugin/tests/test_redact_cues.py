@@ -106,6 +106,24 @@ MUST_REDACT = [
     ),
     (f"api_key: {FOLDER}\n# then call googleapis", FOLDER, "credential"),
     (f'curl -H "Authorization: Bearer {DOC}" https://docs.google.com/x', DOC, "credential"),
+    # With Google named, a Drive id's shape under a key that names a secret, or under a custom header, still goes.
+    (
+        f"SESSION_KEY={FOLDER}\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token",
+        FOLDER,
+        "credential",
+    ),
+    (f"signing_key: {DOC}\n# for googleapis", DOC, "credential"),
+    (f"curl https://www.googleapis.com/drive/v3/files -H 'X-Desk: {FOLDER}'", FOLDER, "credential"),
+    (f"sessionid={DOC}; docs.google.com", DOC, "credential"),
+    (
+        f"signature: {FOLDER}\nconst doc = await docs.documents.get({{ documentId: id }});",
+        FOLDER,
+        "credential",
+    ),
+    (f"hmac={DOC}\nauth={FOLDER}\nvia googleapis", FOLDER, "credential"),
+    # "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    (f"value: {FOLDER}\nthe kid in parents' care", FOLDER, "credential"),
+    (f"parents = []\nvalue: {DOC}", DOC, "credential"),
 ]
 
 MUST_STAY = [
@@ -165,6 +183,8 @@ MUST_STAY = [
     f'TARGET_A = "{FOLDER}"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x" -H "Authorization: Bearer $T"',
     f'plan = "{DOC}"\nprint("https://docs.google.com/document/d/" + plan)',
     f'plan = "{DOC}"\nd = gapi.getdoc(plan)',
+    # A document's name under a key with a secret-sounding word in it is still a name (`sessionPlan`).
+    f'const sessionPlan = "{DOC}";\nawait tools.docs_get({{ id: sessionPlan }});',
     f'const r = await tools.drive_files_list({{ q: "x" }});\nconst dest = "{FOLDER}";',
 ]
 
@@ -179,6 +199,10 @@ MUST_REDACT_OBJECTS = [
     # A Drive id's shape under a key, with nothing beside it naming Google.
     ({"parent": FOLDER}, FOLDER, "credential"),
     ({"value": DOC, "note": "ask my parents"}, DOC, "credential"),
+    # With Google beside it, under a key that names a secret or a custom header.
+    ({"sessionid": FOLDER, "url": "https://www.googleapis.com/x"}, FOLDER, "credential"),
+    ({"X-Desk": DOC, "u": "googleapis"}, DOC, "credential"),
+    ({"cookie": FOLDER, "fileId": "x"}, FOLDER, "credential"),
 ]
 
 MUST_STAY_OBJECTS = [

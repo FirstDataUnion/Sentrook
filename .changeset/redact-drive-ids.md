@@ -8,4 +8,5 @@ documents (`const PLAN = "<id>"` beside `documentId`, `textRun`, a Google API ho
 tool such as `drive_files_list` or `docs_get`) became a placeholder: the scanner could not see which document or folder
 the call reads or writes, and counted the id as a secret being sent. Such an id now stays when its own text, or for a
 value in a call's arguments its own object, names Google. A value of that shape with nothing naming Google, any value
-under a credential key, and every other random value are redacted as before.
+under a credential key, a key with a secret word in it (`SESSION_KEY`, `X-Auth`, `cookie`, `hmac`) or a custom `X-`
+header, and every other random value are redacted as before.

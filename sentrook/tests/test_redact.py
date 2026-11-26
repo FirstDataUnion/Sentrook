@@ -595,9 +595,11 @@ def test_rules_are_the_plugins_rules():
         "_PREFIXED_OBJECT_ID",
         "_DRIVE_ID",
         "_GOOGLE_CONTEXT",
+        "_SECRET_KEY_END",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._ORDINARY_CODE_PREFIX == plugin._ORDINARY_CODE_PREFIX
+    assert redact._SECRET_KEY_WORDS == plugin._SECRET_KEY_WORDS
     assert redact.PLACEHOLDER_KIND == plugin.PLACEHOLDER_KIND
 
 
@@ -632,6 +634,14 @@ CUE_MUST_REPLACE = [
     # With Google named, a value not shaped like a Drive id still goes, and so does one under a credential key.
     ('const PLAN = "' + _R20 + '"; // documentId', _R20),
     ("api_key: " + _FOLDER + "\n# then call googleapis", _FOLDER),
+    # With Google named, a Drive id's shape under a key that names a secret, or under a custom header, still goes.
+    ("SESSION_KEY=" + _FOLDER + "\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token", _FOLDER),
+    ("curl https://www.googleapis.com/drive/v3/files -H 'X-Desk: " + _FOLDER + "'", _FOLDER),
+    ("sessionid=" + _DOC + "; docs.google.com", _DOC),
+    ("hmac=" + _DOC + "\nvia googleapis", _DOC),
+    # "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    ("value: " + _FOLDER + "\nthe kid in parents' care", _FOLDER),
+    ("parents = []\nvalue: " + _DOC, _DOC),
 ]
 CUE_MUST_STAY = [
     "zip_code=94107",
@@ -664,6 +674,7 @@ CUE_MUST_STAY = [
     'TARGET_A = "' + _FOLDER + '"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x"',
     'plan = "' + _DOC + '"\nprint("https://docs.google.com/document/d/" + plan)',
     'plan = "' + _DOC + '"\nd = gapi.getdoc(plan)',
+    'const sessionPlan = "' + _DOC + '";\nawait tools.docs_get({ id: sessionPlan });',
     'const r = await tools.drive_files_list({ q: "x" });\nconst dest = "' + _FOLDER + '";',
 ]
 
@@ -713,6 +724,9 @@ def test_a_drive_id_in_an_object_stays_only_beside_google():
         {"value": P, "note": "ask my parents"},
         1,
     )
+    secret = {"sessionid": _FOLDER, "url": "https://www.googleapis.com/x"}
+    assert second_pass(secret) == ({"sessionid": P, "url": "https://www.googleapis.com/x"}, 1)
+    assert second_pass({"X-Desk": _DOC, "u": "googleapis"}) == ({"X-Desk": P, "u": "googleapis"}, 1)
 
 
 def test_parity_with_the_hermes_plugin():
@@ -810,6 +824,8 @@ def test_object_parity_with_the_hermes_plugin():
         {"parent": _FOLDER, "url": "https://www.googleapis.com/upload/drive/v3/files"},
         {"parent": _FOLDER},
         {"plan": _DOC, "nested": {"fields": "textRun", "value": _FOLDER}},
+        {"sessionid": _FOLDER, "url": "https://www.googleapis.com/x"},
+        {"X-Desk": _DOC, "cookie": _FOLDER, "fileId": "x"},
     ]
     objects.append(
         {

@@ -832,14 +832,23 @@ _PREFIXED_OBJECT_ID = re.compile(r"[a-z]{1,8}_|(?i:sha(?:1|256|384|512))-")
 # A Google Drive, Docs or Sheets file or folder id: `0` or `1`, then 24 to 43 letters, digits, `-` and `_`. It looks
 # random, but where Google is named (`_GOOGLE_CONTEXT`) it is the document or folder a call works on, so it stays.
 _DRIVE_ID = re.compile(r"[01][A-Za-z0-9_-]{24,43}")
+# Words in a key that make its value a secret whatever it looks like (`SIGNING_KEY`, `X-Auth`, `sessionid`, `hmac`), and
+# the endings that do the same inside one word (`signingkey`): a Drive id's shape under such a key, or under a custom
+# `X-` header, is redacted even where Google is named.
+_SECRET_KEY_WORDS = frozenset(
+    "key keys auth cookie cookies sessionid sid sig signature hmac salt seed master license licence pwd pass "
+    "passwd credential credentials access private secret token otp jwt csrf xsrf".split()
+)
+_SECRET_KEY_END = re.compile(r"(?:key|token|secret|auth|sig|pass|pwd)$")
 # What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
 # Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
-# (`drive_files_list`, `docs_get`). A word alone ("my parents") does not.
+# (`drive_files_list`, `docs_get`). The word alone ("my parents", "kid in parents", `parents = []`) does not.
 _GOOGLE_CONTEXT = re.compile(
-    r"googleapis|googleapiclient|google-apps|gspread|(?:drive|docs|sheets|slides|script)\.google\.com|"
+    r"googleapis|googleapiclient|google-apps|gspread|(?:drive|docs|sheets|slides|script)\.google\.com"
+    r"|[\"'][ \t]{1,8}in[ \t]{1,8}parents(?![A-Za-z0-9_])|"
     + _CUE_START
     + r"(?:(?:documentId|spreadsheetId|presentationId|fileId|folderId|driveId|textRun|batchUpdate)(?![A-Za-z0-9_])"
-    r"|gapi\.|in[ \t]{1,8}parents(?![A-Za-z0-9_])|parents\\{0,8}[\"']?[ \t]{0,8}="
+    r"|gapi\.|parents\\{0,8}[\"']?[ \t]{0,8}=[ \t]{0,8}\\{0,8}[\"'][01][A-Za-z0-9_-]{24}"
     r"|g?drive_(?:files?|folders?|permissions?)(?![A-Za-z0-9])"
     r"|(?:g?docs|sheets|slides)_(?:get|create|append|update|batch|export|insert|replace|values))"
 )
@@ -929,9 +938,17 @@ def _random_key(key: str, value: str, after_query: bool) -> bool:
     )
 
 
-def _google_id(value: str, google: bool) -> bool:
-    """A Drive, Docs or Sheets id where Google is named: the document or folder a call works on, not a secret."""
-    return google and _DRIVE_ID.fullmatch(value) is not None
+def _secret_key(key: str) -> bool:
+    """A key whose value is a secret whatever it looks like: a custom `X-` header, or a key with a secret word."""
+    if key[:2].lower() == "x-":
+        return True
+    return any(w in _SECRET_KEY_WORDS or _SECRET_KEY_END.search(w) for w in _key_words(key))
+
+
+def _google_id(key: str, value: str, google: bool) -> bool:
+    """A Drive, Docs or Sheets id where Google is named, under a key that does not name a secret: the document or
+    folder a call works on."""
+    return google and _DRIVE_ID.fullmatch(value) is not None and not _secret_key(key)
 
 
 def names_google(obj: dict[Any, Any]) -> bool:
@@ -996,7 +1013,7 @@ def cue_spans(text: str) -> list[tuple[int, int, int, str]]:
         if m.group("sep") == ":" and not _starts_entry(text, m.start()):
             continue
         if _random_key(m.group("k"), m.group("v"), _after_query(text, m.start())):
-            if _DRIVE_ID.fullmatch(m.group("v")):
+            if _DRIVE_ID.fullmatch(m.group("v")) and not _secret_key(m.group("k")):
                 if google is None:
                     google = _GOOGLE_CONTEXT.search(text) is not None
                 if google:
@@ -1022,7 +1039,7 @@ def object_kind(key: str, value: Any, google: bool = False) -> str | None:
         isinstance(value, str)
         and _RANDOM_VALUE.fullmatch(value)
         and _random_key(key, value, False)
-        and not _google_id(value, google)
+        and not _google_id(key, value, google)
     ):
         return RANDOM
     return None
