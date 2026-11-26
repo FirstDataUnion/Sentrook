@@ -183,6 +183,9 @@ HOSTS: dict[str, dict] = {
                 "through for the rest of this session; **Always** lets it through from now on; **Deny** stops it. "
                 "Where a grant would cover calls like this, the prompt says what Session and Always also set."
             ),
+            "always_answer": (
+                "answering **Always** on an approval prompt that names a grant (it sets that grant for 30 days)"
+            ),
             "unattended_runs": "cron jobs, webhooks, the API server, subagents of those",
             "run_sources": "a subagent's parent session, a webhook's route",
             "sourceless_runs": "the API server",
@@ -271,6 +274,9 @@ HOSTS: dict[str, dict] = {
                 "OpenClaw shows its own buttons: **Allow once** runs this call; **Allow always** appears only when a "
                 "grant would cover calls like this and the owner asked for the work, and also sets that grant for 30 "
                 "days; **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 minutes."
+            ),
+            "always_answer": (
+                "answering **Allow always** on an approval card that offers it (it sets that grant for 30 days)"
             ),
             "unattended_runs": "cron jobs, heartbeats, subagents, webhooks",
             "run_sources": "a heartbeat's agent, a subagent's parent session",

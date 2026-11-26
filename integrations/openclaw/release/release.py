@@ -8,7 +8,8 @@ with the runner's python3.
     release.py check --channel next|latest [--github-output F]
         refuses the release unless the package is bound for public npmjs, PLUGIN_VERSION (planir.ts) equals
         package.json's version, the channel fits the version (a prerelease only to next, a stable version only
-        to latest) and CHANGELOG.md has a non-empty entry for it. Prints name, version, tag (the npm dist-tag)
+        to latest), CHANGELOG.md has a non-empty entry for it and the package README (the ClawHub and npm
+        listing) carries the disclosure (`docs.REQUIRED_PHRASES`). Prints name, version, tag (the npm dist-tag)
         and clawhub_tag (beta for next, latest for latest) as key=value lines.
     release.py pack --out DIR                runs `npm pack` into DIR/package and writes DIR/release.json (name,
                                              version, file, sha256): the one artifact ClawHub and npm get.
@@ -32,6 +33,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 PLUGIN_DIR = REPO_ROOT / "integrations/openclaw/plugin"
+sys.path.insert(0, str(REPO_ROOT / "integrations/docs"))
+import docs  # noqa: E402  (the disclosure paragraph every listing carries)
+
 PACKAGE_NAME = "@firstdataunion/sentrook-openclaw"
 NPMJS_REGISTRY = "https://registry.npmjs.org"
 #: npm dist-tag → ClawHub tag. `openclaw plugins install <name>@beta` is how testers take a prerelease.
@@ -106,7 +110,21 @@ def check(plugin_dir: Path, channel: str) -> dict:
     if not changelog.exists():
         raise ReleaseError(f"{changelog} is missing")
     changelog_entry(changelog.read_text(), version)
+    check_listing(plugin_dir)
     return {"name": name, "version": version, "tag": channel, "clawhub_tag": CLAWHUB_TAG[channel]}
+
+
+def check_listing(plugin_dir: Path = PLUGIN_DIR) -> None:
+    """The package README is the listing ClawHub and npm show: refused unless it carries the disclosure."""
+    readme = Path(plugin_dir) / "README.md"
+    if not readme.exists():
+        raise ReleaseError(f"{readme} is missing: it is the ClawHub and npm listing")
+    missing = docs.missing_phrases(readme.read_text())
+    if missing:
+        raise ReleaseError(
+            "the package README (the ClawHub listing) must disclose "
+            + ", ".join(repr(p) for p in missing)
+        )
 
 
 # --- the artifact -----------------------------------------------------------------------------------

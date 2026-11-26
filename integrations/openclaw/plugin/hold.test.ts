@@ -17,6 +17,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
+import { ERROR_CAUSES } from "./card.ts";
+import * as consent from "./consent.ts";
+import { SIGN_IN_FIXES } from "./scanErrorPolicy.ts";
 import { formatHistory, recentScans, actionOf, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
 import { roomRefusal } from "./owner.ts";
@@ -64,6 +67,10 @@ const FIXTURES = JSON.parse(
   history: { name: string; decision: string; resolution: string | null; action: string; review: string }[];
 };
 const SEND = FIXTURES.notices[0]!;
+const CONSENT = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../fixtures/consent/cases.json", import.meta.url)), "utf8"),
+);
+const CONSENT_NOTICE: string = CONSENT.rendered.openclaw.withdrawn_notice;
 const HINT = FIXTURES.hints[0]!.hint as Record<string, unknown>;
 const HOUR = 3600_000;
 
@@ -85,6 +92,11 @@ let reply: Record<string, unknown> = {};
 let unreachable = false;
 /** The scanner refuses the credentials (401) while set. */
 let unauthorized = false;
+/** The identity service refuses the credentials with `tokenAnswer` (consent withdrawn by default) while set. */
+let withdrawn = false;
+let tokenAnswer: { status: number; body: unknown } = CONSENT.token_error;
+/** Every URL fetched. */
+let requests: string[] = [];
 
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -103,12 +115,17 @@ beforeEach(() => {
   reply = { risk: 47, enforced: null };
   unreachable = false;
   unauthorized = false;
+  withdrawn = false;
+  tokenAnswer = CONSENT.token_error;
+  requests = [];
   clearScanTokenCache();
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input);
+    requests.push(url);
     const json = (status: number, body: unknown) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (url.endsWith("/.well-known/openid-configuration")) return json(200, { token_endpoint: "http://idp.test/oauth/token" });
+    if (url.endsWith("/oauth/token") && withdrawn) return json(tokenAnswer.status, tokenAnswer.body);
     if (url.endsWith("/oauth/token")) return json(200, { access_token: "tok", expires_in: 600 });
     if (url === "http://scan.test/scan") {
       const planir = JSON.parse(String(init?.body));
@@ -1016,3 +1033,114 @@ test("only a block on an unattended run is announced, whatever the scan-error po
   assert.equal(allow.sent.length, 1);
   assert.match(allow.sent[0].text, /^Reason: Sentrook's endpoint or credentials are not configured correctly\.$/m);
 });
+
+// ---- consent withdrawn on the FIDU portal ----------------------------------------------------------------
+
+/** The identity service starts refusing the credentials; a token already issued would last until it expires. */
+function withdraw() {
+  withdrawn = true;
+  clearScanTokenCache();
+  scans = [];
+}
+
+test("after consent is withdrawn the owner is told once, not again after a restart", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  withdraw();
+  const first = await cronSend(r, "cron-1");
+  assert.equal(first.out.block, true);
+  assert.equal(first.rec.decision, "blocked_on_error");
+  assert.deepEqual(first.rec.notice, { status: "queued", target: "telegram" });
+  assert.deepEqual(r.sent.map((m) => m.text), [CONSENT_NOTICE]);
+  assert.deepEqual(scans, [], "nothing is sent to the scan service without a token");
+  const again = await cronSend(r, "cron-2");
+  assert.deepEqual(again.rec.notice, { status: "quiet" });
+  await cronSend(r, "cron-3", "xyz");
+  const restarted = registered();
+  await cronSend(restarted, "cron-4");
+  assert.equal(r.sent.length + restarted.sent.length, 1);
+});
+
+test("after consent is withdrawn enforce mode still asks when attended and blocks when not", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  withdraw();
+  const chat = await r.send("user", "chat-1");
+  assert.ok(chat.out.requireApproval);
+  assert.match(chat.out.requireApproval.description, new RegExp(`^${ERROR_CAUSES.consent_withdrawn}\n`));
+  assert.equal(chat.rec.decision, "blocked_on_error");
+  assert.deepEqual(chat.rec.notice, { status: "queued", target: "telegram" });
+  const cron = await cronSend(r, "cron-1");
+  assert.deepEqual(cron.out, { block: true, blockReason: SIGN_IN_FIXES.consent_withdrawn });
+  assert.deepEqual(cron.rec.notice, { status: "quiet" }, "no scan-failure notice on top of the consent notice");
+  assert.equal(r.sent.length, 1);
+});
+
+test("after consent is withdrawn onScanError allow still blocks", async () => {
+  const r = registered({ onScanError: "allow" });
+  withdraw();
+  const chat = await r.send("user", "chat-1");
+  assert.equal(chat.out.block, true);
+});
+
+test("after consent is withdrawn observe mode does not ask, and the owner is still told once", async () => {
+  process.env.SENTROOK_MODE = "observe";
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  withdraw();
+  const chat = await r.send("user", "chat-1");
+  assert.equal(chat.out, undefined);
+  assert.equal(chat.rec.decision, "allowed_on_error");
+  const cron = await cronSend(r, "cron-1");
+  assert.equal(cron.out, undefined);
+  assert.deepEqual(r.sent.map((m) => m.text), [CONSENT_NOTICE]);
+});
+
+test("signing in again or new credentials announce a later withdrawal", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  withdraw();
+  await cronSend(r, "cron-1");
+  await cronSend(r, "cron-2");
+  assert.equal(r.sent.length, 1);
+  process.env.SENTROOK_SCAN_CLIENT_ID = "client-2";
+  await cronSend(r, "cron-3");
+  assert.equal(r.sent.length, 2);
+  consent.reset(stateDir); // what `openclaw sentrook login` does
+  await cronSend(r, "cron-4");
+  assert.equal(r.sent.length, 3);
+});
+
+test("a consent notice with nowhere to go is announced once a target is set", async () => {
+  const r = registered();
+  withdraw();
+  const first = await cronSend(r, "cron-1");
+  assert.deepEqual(first.rec.notice, { status: "unsent", target: null, reason: hold.NOTIFY_UNSET });
+  await r.command("sentrook-notify", "here");
+  const next = await cronSend(r, "cron-2");
+  assert.deepEqual(next.rec.notice, { status: "queued", target: "telegram" });
+});
+
+test("other refused credentials send no consent notice", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  withdraw();
+  tokenAnswer = { status: 401, body: { error: "invalid_client" } };
+  const chat = await r.send("user", "chat-1");
+  assert.match(chat.out.requireApproval.description, new RegExp(`^${ERROR_CAUSES.sign_in_rejected}\n`));
+  assert.equal(chat.rec.notice, undefined);
+  assert.ok(!existsSync(path.join(stateDir, consent.FILE)));
+});
+
+for (const missing of ["SENTROOK_SCAN_CLIENT_ID", "SENTROOK_SCAN_CLIENT_SECRET"]) {
+  test(`no scan request is made without ${missing}`, async () => {
+    // Must stay silent: no token is asked for and no scan is sent, not even anonymously.
+    process.env[missing] = "  ";
+    const r = registered();
+    const { out, rec } = await cronSend(r, "cron-1");
+    assert.deepEqual(out, { block: true, blockReason: SIGN_IN_FIXES.not_signed_in });
+    assert.equal(rec.failure.kind, "config");
+    assert.deepEqual(requests, []);
+    assert.deepEqual(scans, []);
+  });
+}

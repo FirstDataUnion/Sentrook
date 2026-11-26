@@ -136,5 +136,7 @@ def test_every_cache_on_a_text_is_cleared_between_timed_runs():
         "sentrook.prepare.redact_shapes._cached",
         "sentrook.aira.exec_shape._parser",
         "sentrook.aira.lists._cached",
+        # Keyed by the host trees, home, workspace and file system, not by the text scanned.
+        "sentrook.aira.detectors._tree_roots",
     }
     assert found == set(TEXT_CACHES) | config

@@ -398,10 +398,13 @@ ERROR_CAUSES = {
     # {login} is the host's sign-in command (`HOSTS[host]["login"]`).
     "not_signed_in": "Sentrook isn't signed in yet. {login}",
     "sign_in_rejected": "Sentrook's sign-in was revoked or is wrong. {login}",
+    "consent_withdrawn": "Consent for Sentrook was withdrawn on the FIDU portal. {login}",
     # Hermes under `plugins.isolation: host` has no `hermes sentrook` command line.
     "not_signed_in_by_hand": "Sentrook isn't signed in yet. Set its credentials in Hermes (see the install guide).",
     "sign_in_rejected_by_hand": "Sentrook's sign-in was revoked or is wrong. Set new credentials in Hermes "
     "(see the install guide).",
+    "consent_withdrawn_by_hand": "Consent for Sentrook was withdrawn on the FIDU portal. To reconnect, set new "
+    "credentials in Hermes (see the install guide).",
 }
 ERROR_RUNS_UNCHECKED = "If you allow it, it runs without a security check."
 #: On Hermes, Session and Always answer every scan error in the chat (`error_rule_key` in the plugin).
@@ -411,7 +414,7 @@ ERROR_SESSION_NOTE = (
 
 
 def error_cause(kind: str, auth: bool, setup: str | None = None, by_hand: bool = False) -> str:
-    if setup in ("not_signed_in", "sign_in_rejected"):
+    if setup in ("not_signed_in", "sign_in_rejected", "consent_withdrawn"):
         return f"{setup}_by_hand" if by_hand else setup
     if kind == "rate_limited":
         return "rate_limited"

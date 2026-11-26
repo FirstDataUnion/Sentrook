@@ -337,3 +337,24 @@ def test_cli_refuses_ablation_outside_test_mode(tmp_path, attack_case, monkeypat
     monkeypatch.delenv("SENTROOK_PROBES")
     assert main(["scan", str(path), "--probes", "aira,context"]) == 2
     assert "only available in test mode" in capsys.readouterr().err
+
+
+def test_security_policy_names_only_routes_that_exist():
+    """SECURITY.md lists the routes of `sentrook serve` that are in scope; each one must answer on a
+    production (not test-mode) server, with the method it is listed under."""
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "SECURITY.md").read_text()
+    routes = re.findall(r"`(?:(GET|POST) )?(/[A-Za-z0-9_./-]*)`", text)
+    assert ("POST", "/scan") in routes, routes
+    config = ServeConfig(state_key=KEY, scan_auth_mode="open")
+    with running(config) as srv, httpx.Client(base_url=srv.url) as c:
+        for method, path in routes:
+            methods = [method] if method else ["GET", "POST"]
+            codes = [
+                c.request(m, path, json={} if m == "POST" else None).status_code for m in methods
+            ]
+            assert any(code != 404 for code in codes), (
+                f"SECURITY.md names {method or ''} {path}: {codes}"
+            )

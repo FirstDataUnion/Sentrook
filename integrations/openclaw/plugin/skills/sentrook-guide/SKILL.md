@@ -50,10 +50,13 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A background-save notice.** OpenClaw saves skills and memory on its own (the Skill Workshop review, the memory flush, the skill collection review), with nobody there to answer a prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a save it would review is let through, saved as a Skill Workshop draft for the owner, or held; a blocked one is not saved. A notice where held-call notices go says which.
 - **A scan failure.** When the scan service cannot answer, the owner is asked whether to run the call unscanned where
   someone is there to answer; on an unattended run the call is blocked and the owner gets one notice. This is a
-  service problem, not a security block.
+  service problem, not a security block. If the owner withdrew consent on the FIDU portal, Sentrook cannot scan until
+  they run `openclaw sentrook login` again; they get one notice about it. Do not run that command yourself.
 
 Grants and channel bindings tell Sentrook what is routine (a host the agent always sends to, a folder it works in, the
-channel a daily report goes to). They never lower Sentrook's floors: reading secrets and sending them somewhere is
+channel a daily report goes to). The owner sets them, with `/sentrook-setup apply`, `/sentrook-grant` and `/sentrook-bind`,
+or by answering **Allow always** on an approval card that offers it (it sets that grant for 30 days); Sentrook does not add or widen them by itself, and approving the same kind of call again and
+again changes nothing unless the owner sets a grant for it. They never lower Sentrook's floors: reading secrets and sending them somewhere is
 still blocked whatever is granted.
 
 ## The owner's commands

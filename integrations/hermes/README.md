@@ -41,9 +41,11 @@ hermes sentrook login
 ```
 
 It prints a link and a code. Open the link on any device (your phone is fine), sign in to your FIDU account or
-create a free one, check that the code on the page matches the one in your terminal, and click **Approve**. The
-command then has Hermes store this machine's scan credentials (in Hermes's own `.env`, never `config.yaml`) and runs
-the checks from step 3. There is nothing to copy. Then restart Hermes so the gateway uses them:
+create a free one, check that the code on the page matches the one in your terminal, accept the terms and what is
+sent (see [What is sent](#what-is-sent)), and click **Approve**. No credentials are issued until you accept. The
+command then has Hermes store this machine's scan credentials (in Hermes's own `.env`, never `config.yaml`), prints
+what is sent, the privacy policy, the terms and how to stop (with the terms version you accepted, when the identity service
+gives it), and runs the checks from step 3. There is nothing to copy. Then restart Hermes so the gateway uses them:
 
 ```bash
 hermes gateway restart
@@ -56,6 +58,10 @@ If you don't run the gateway as a service, restart Hermes the way you normally s
 - Signing in again from the same machine replaces its credentials rather than adding new ones.
 - Your account can have 5 Sentrook connections. To remove one, use the **Sentrook** tab at
   <https://identity.firstdataunion.org/dashboard>.
+- If you withdraw consent on the FIDU portal, the identity service stops accepting this machine's credentials. A token
+  already issued keeps working until it expires; after that no call is scanned, and you get one
+  notice saying so (see [When the scan service fails](#when-the-scan-service-fails)). Run `hermes sentrook login`
+  again to reconnect.
 
 ### Set the credentials by hand instead
 
@@ -117,8 +123,10 @@ First, tell Sentrook where to reach you. When a scheduled job or another run nob
 Sentrook wants you to check, it stops that call and sends you a notice. In a direct message with the agent, send
 `/sentrook notify here` (see [Where notices go](#where-notices-go)). Until you do, those calls are held silently.
 
-Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
-work stops asking for approval:
+Sentrook doesn't know which destinations and files are routine for your deployment, and it does not work this out
+by itself over time: approving the same kind of call again and again does not make it ask less. What makes routine work stop
+asking for approval is two things you set, with `/sentrook setup apply`, `/sentrook bind` and `/sentrook grant`, or by
+answering **Always** on an approval prompt that names a grant (a grant for 30 days):
 
 - **Channel bindings**: the channels this deployment normally delivers to, such as the chat your daily report goes
   to. A send to a bound channel is not treated as an unfamiliar destination.
@@ -152,8 +160,9 @@ alone: `hermes sentrook grant file '/home/you/notes/*' --allows read,write --per
 
 ### Set up with /sentrook setup
 
-`/sentrook setup` lists what Sentrook would need to stop asking about routine work, worked out from what it can see
-itself, and sets it with one command:
+`/sentrook setup` lists bindings and grants you could set to stop routine work asking, found in your config, in
+grants it suggested on reviews you approved and in what the agent proposed. Nothing on the list is set until you apply it,
+with one command:
 
 - **From your config**: a channel binding for each cron job that delivers to a chat room not bound yet
   (`deliver: discord:#daily-brief` in `~/.hermes/cron/jobs.json`), and a provider grant for each MCP server in
@@ -804,6 +813,18 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
   sends one message per job, not one per call. The traffic log records each with `notice` `queued`, `quiet` or
   `unsent`.
 
+**No credentials** (you have not signed in, or a setting is missing) means no scan request is sent at all, not even
+one without a token: the calls are handled as above, and the prompt and the agent's message say to run
+`hermes sentrook login`.
+
+**Consent withdrawn:** when you withdraw consent on the FIDU portal, the identity service refuses this machine's
+credentials and Sentrook cannot scan. Calls are handled as for any credential problem (asked where attended, blocked
+on unattended runs, and blocked with `allow` too); the prompt and the agent's message say consent was withdrawn.
+Instead of the per-job notices above you get one notice, wherever notices go and in observe mode too: it says scans
+stopped and that you can run `hermes sentrook login` to connect again, switch to observe mode, or uninstall. It is
+sent once for these credentials, also across restarts; signing in again (or setting new credentials) resets it. The
+traffic log records it as the scan's `notice`.
+
 A snooze does not change this. Set `on_scan_error` to `deny` to block the call everywhere, or to `allow` to run it
 without a scan everywhere. Bad credentials or endpoints are never let through silently: with `allow` the call is
 blocked, and with `review` you are asked as above. Whatever the setting, a call blocked on an unattended run because
@@ -829,10 +850,13 @@ would have done, such as `observed (would review)`.
 
 ## What is sent
 
-Each scan sends one request to `sentrook.firstdataunion.org`:
+Each scan sends one request to the Sentrook scan service, `sentrook.firstdataunion.org`, run by First International
+Data Union Ltd:
 
-- the request you gave the agent in this turn, and whether it came from you, a scheduled job, a subagent, another
-  sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on).
+- **Your request to the agent, the action about to run and its arguments, and the agent's narration** before it,
+  plus any other calls in the same batch. With the request goes whether it came from you, a scheduled job, a
+  subagent, another sender or Hermes's own background skill review, and the kind of channel it arrived on (chat,
+  API, cron and so on).
   Hermes also starts turns with its own text: when a sub-agent or a background process the agent started finishes
   (or a process matches a watch, is still running or has its watch turned off), for a kanban task's update or
   next step, and for your heartbeats, `/loop` wakeups and standing goals. None of these is counted as your
@@ -846,40 +870,44 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   restart or shutdown interrupted, its note is not your request either: the calls carry the interrupted turn's
   request and the turn it came from, and the note is sent as content. A message another Hermes plugin injects into
   the chat is not recognised and is sent as the turn's request, as before: Hermes does not tell plugins which
-  messages were injected;
-- the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
-- the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
-- a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
-- host facts: platform and plugin version, operating system, home and workspace paths, and whether Hermes's
-  approvals and secret redaction are on;
-- the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
-  server it calls (a `#name` also fits `channel:name`, and a `<platform>:` prefix fits a send that names that
-  platform);
-- references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
-- for Hermes's own background skill and memory saves only (see
-  [Hermes's own skill and memory saves](#hermess-own-skill-and-memory-saves)): your recent messages with who sent
-  them, the agent's replies, and excerpts of the tool results the save draws on, all redacted the same way. To
-  have them at hand, the plugin keeps the last 200 or so messages and tool results of each session, redacted, in
+  messages were injected.
+- **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
+  last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `history_limit` changes the
+  number).
+- **Your operating system, home and workspace folder paths, and the plugin version.** Folder paths can identify you.
+  Also the platform, and whether Hermes's approvals and secret redaction are on.
+- **Hashed session IDs, and any grants you have set that could apply**: the grants and channel bindings whose
+  pattern fits the call's arguments or the MCP server it calls (a `#name` also fits `channel:name`, and a
+  `<platform>:` prefix fits a send that names that platform). References to the session and agent go too; session
+  ids are sent as hashes, not as the ids themselves.
+- **When your agent saves skills or memory in the background** (see
+  [Hermes's own skill and memory saves](#hermess-own-skill-and-memory-saves)): recent messages with who sent them,
+  the agent's replies and excerpts of the tool results the save draws on, all redacted the same way. To have them at
+  hand, the plugin keeps the last 200 or so messages and tool results of each session, redacted, in
   `~/.hermes/sentrook/conversations/`. When it writes one of these logs, at most once an hour, it deletes logs not
   changed in 7 days and keeps only the 100 most recently changed. With `skill_review` set to `review` it deletes them
   all (at startup, or on its next hook after you change the setting) and keeps nothing.
 
-Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
-similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
-`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept, and a command
-piped from, substituted or run after a value (`TOKEN=…|curl …`, `TOKEN=…$(…)`, `TOKEN=…;curl …`) is kept outside
-it; a lone word after `|` at the end of a line, or one with a glob or a `$@`-style parameter in it (`TOKEN=…|sh`,
-`TOKEN=…|c*rl …`), is read as part of the value, as a password's tail would be. So are access codes and PINs named as such ("the
-gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
-header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
-hosts and email addresses are kept,
-because the scanner needs them to judge where data is going, and so is a Google Drive, Docs or Sheets file or folder
-id where the call names Google (a Google API host or library, `documentId`, a Drive query, a Drive or Docs tool), as
-it says which document or folder the call works on. So is code that only reads a secret from where it is
-kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
-`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too, and so is a quoted
-example value that only stands in for one, such as `"access_token": "ya29.a0..."` or `"token": "REDACTED"`. Your
-files, messages and tool output can still contain other personal information, and that is sent as it is.
+Secrets such as API keys, tokens and passwords are replaced with placeholders on your machine before anything is
+sent. This is best effort and can miss some. A secret becomes a placeholder such as `⟦secret:github:…⟧`, the whole
+value even when it holds `&`, `,` or `;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the
+next parameter is kept, and a command piped from, substituted or run after a value (`TOKEN=…|curl …`, `TOKEN=…$(…)`,
+`TOKEN=…;curl …`) is kept outside it; a lone word after `|` at the end of a line, or one with a glob or a
+`$@`-style parameter in it (`TOKEN=…|sh`, `TOKEN=…|c*rl …`), is read as part of the value, as a password's tail
+would be. So are access codes and PINs named as such ("the gate code is …", `client_pin=…`), passport numbers
+(`⟦secret:identifier:…⟧`) and random-looking values under a key or header (`X-Desk: …`); a number with no such cue
+word, such as an order number or a status code, is kept. Recipients, hosts and email addresses are kept, because
+Sentrook needs them to judge where data is going, and so is a Google Drive, Docs or Sheets file or folder id where the
+call names Google (a Google API host or library, `documentId`, a Drive query, a Drive or Docs tool), as it says which
+document or folder the call works on. So is code that only reads a secret from where it is kept, such as
+`os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a
+credential field, such as `api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too,
+and so is a quoted example value that only stands in for one, such as `"access_token": "ya29.a0..."` or
+`"token": "REDACTED"`. **Other personal data, including other people's, is sent as it is.**
+
+To judge a call, the scan service may pass it to OpenRouter and TypeSafe (United States). The scan service does not
+store scan content; its metadata logs are kept for up to 60 days. On your machine, the redacted traffic log keeps
+records for 30 days (see below) and the conversation copies above are kept for 7 days. Sentrook is a beta and does not guarantee protection.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.hermes/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. Records are kept for 30 days: the plugin deletes older ones from it
@@ -901,11 +929,11 @@ In short, for anyone deciding whether to install it:
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
   call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review holds the call and
   sends you one notice in the chat or home channel you set, with Hermes's own `hermes send`, and a call blocked because the scan
-  failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
-  only messages it sends.
+  failed sends you one notice per job (per session for other runs) every 6 hours at most. If you withdraw consent on
+  the FIDU portal it sends you one notice saying scans stopped. Those notices are the only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
   the traffic log, grants, snooze state, held calls, passes and denials, where notices go and the attended platforms
-  you added, when each job last had a scan-failure notice, the agent's setup proposals and the last `/sentrook setup`
+  you added, when each job last had a scan-failure notice, whether the consent-withdrawn notice was sent, the agent's setup proposals and the last `/sentrook setup`
   list with its code, and the conversation logs above), or to the paths you set for them (`state_dir`,
   `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and secret redaction
   are on (and, when you open `/sentrook setup`, your MCP servers), and the cron jobs in `cron/jobs.json` (a running
