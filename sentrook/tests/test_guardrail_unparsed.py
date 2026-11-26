@@ -25,7 +25,7 @@ import copy
 import pytest
 import test_aira_detectors as detector_tests
 from linear_time import assert_linear
-from test_aira_detectors import ex, floor_reasons, run
+from test_aira_detectors import ex, floor_reasons, planir, run
 from test_approval_loosening_unparsed import _CLI_WORD, FILL, SIZES, ZSH, padded
 
 from sentrook.aira.exec_shape import MAX_PARSE_CHARS, derive_exec_shape
@@ -97,13 +97,23 @@ FIRES = [
     ("true; hermes gateway stop", "gateway_stop"),
     ("true && openclaw config set plugins.entries.sentrook-openclaw.enabled false", "config_entry"),
     ("{ hermes config set plugins.disabled sentrook; }", "config_entry"),
+    # Wrapper options and their values, then the program.
+    ("timeout -s KILL 5 " + D, "plugin_disable"),
+    ("timeout --signal=KILL 5 " + D, "plugin_disable"),
+    ("timeout -k 1 5 " + D, "plugin_disable"),
+    ("nice -n 10 " + D, "plugin_disable"),
+    ("stdbuf -oL " + D, "plugin_disable"),
+    ("sudo -u root " + D, "plugin_disable"),
+    ("sudo -E " + D, "plugin_disable"),
+    ("env -u HOME " + D, "plugin_disable"),
+    ("env -i " + D, "plugin_disable"),
     ("true && openclaw sentrook snooze 1h", "plugin_command"),
     ("bash -c 'hermes sentrook grant host example.test'", "plugin_command"),
 ]
 
-#: Forms the parsed route does not read yet (it takes `eval`'s words as arguments): the unparsed
-#: reading blocks them.
-PARSED_GAPS = {"eval " + D}
+#: Forms the parsed route does not read yet (it takes `eval`'s words as arguments, and `env -u`'s
+#: value as the program): the unparsed reading blocks them.
+PARSED_GAPS = {"eval " + D, "env -u HOME " + D}
 
 
 @pytest.mark.parametrize("size", SIZES)
@@ -181,6 +191,40 @@ def test_a_guardrail_command_named_only_is_asked_when_not_parsed(command, length
     text = _named(command, length)
     assert not derive_exec_shape(text).parse_ok
     assert tier(_call(text)) == "review"
+
+
+def xc(code: str) -> dict:
+    return planir("execute_code", "exec", {"code": code}, platform="hermes")
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "open('notes.md', 'w').write('```bash\\nhermes plugins disable sentrook\\n```\\n')",
+        "print('run: hermes plugins disable sentrook')",
+        "# hermes plugins disable sentrook turns the scan off\nx = 1",
+        '"""Do not run `hermes gateway stop` from a job."""\nx = 1',
+    ],
+    ids=["markdown fence", "print", "comment", "docstring"],
+)
+@pytest.mark.parametrize("size", ["short", "padded"])
+def test_inline_code_that_names_a_guardrail_command_stays_quiet(code, size):
+    """Inline interpreter code is not shell: it is not read with the unparsed shell readings."""
+    if size == "padded":
+        code = "x = 0\n" * 3000 + code
+    assert tier(xc(code)) == "quiet"
+
+
+#: A heredoc with no closing line: the shell runs nothing of its body.
+UNCLOSED = "cat > g.md <<'EOF'\n# Notes\n" + D + "\n"
+
+
+@pytest.mark.parametrize("length", ["short", "padded"])
+def test_the_body_of_a_heredoc_with_no_closing_line_is_asked_not_blocked(length):
+    text = UNCLOSED if length == "short" else UNCLOSED.replace("# Notes", "# " + FILL)
+    assert tier(ex(text)) in ("quiet", "review")
+    if not derive_exec_shape(text).parse_ok:
+        assert tier(ex(text)) == "review"
 
 
 def test_a_real_command_and_a_named_one_take_the_block_alone():

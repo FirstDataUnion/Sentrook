@@ -16,6 +16,7 @@ Classes:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -47,7 +48,7 @@ from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
-from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
+from .exec_shape import WRAPPER_VALUE_FLAGS, ExecSegment, ExecShape, derive_exec_shape
 from .linear_search import finditer as _finditer
 from .linear_search import found as _found
 from .linear_search import search as _search
@@ -2089,6 +2090,7 @@ class _ArgsAfter:
         return self._allowlist[1][start] if start <= n else ()
 
 
+@functools.lru_cache(maxsize=4096)
 def _program_name(token: str) -> str:
     """`/usr/bin/hermes` -> `hermes`, `openclaw@latest` -> `openclaw`."""
     name = os.path.basename(token).lower()
@@ -2211,7 +2213,7 @@ class _ShFrame:
         self.words = []
 
 
-def _shell_commands(text: str) -> list[list[str]]:
+def _shell_commands(text: str, unclosed: list[int] | None = None) -> list[list[str]]:
     """The simple commands of shell text the parser did not take, as words after quote removal
     (a quoted string stays in its word): split at control operators and newlines, with the
     commands of `$(…)` and backtick substitutions (also inside double quotes) read as commands of
@@ -2219,8 +2221,10 @@ def _shell_commands(text: str) -> list[list[str]]:
     `$[…]`, `${…}`) kept whole, so a `<<` inside them is no heredoc. One pass over the text.
 
     A heredoc body ends at a line holding only its tag. One with no such line is read as commands,
-    and no later heredoc is looked for: that keeps the pass linear, and reading too much only adds
-    findings. Unclosed quotes and substitutions run to the end."""
+    and no later heredoc is looked for: that keeps the pass linear. The shell runs none of such a
+    body, so `unclosed`, when given, gets the position of the first command read from it: what
+    those commands do is only asked about, never blocked. Unclosed quotes and substitutions run to
+    the end."""
     commands: list[list[str]] = []
     stack = [_ShFrame("cmd")]
     pending: list[str] = []  # heredoc tags whose bodies start at the next newline
@@ -2297,6 +2301,8 @@ def _shell_commands(text: str) -> list[list[str]]:
                         line_at = line_end + 1
                     else:
                         heredocs = False
+                        if unclosed is not None:
+                            unclosed.append(len(commands))
                         break
         elif kind == "op":
             if piece == f.close:  # the end of a `$(…)` or backtick substitution
@@ -2356,22 +2362,36 @@ _COMMAND_PREFIXES = frozenset(
     }
 )
 _ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+#: The options that take a value, per wrapper whose options are known.
+_PREFIX_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    **WRAPPER_VALUE_FLAGS,
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+}
 
 
 def _program_at(words: list[str], heads: set[str]) -> int:
     """The position of a command's program after its prefixes (`nice`, `time -p`, `timeout 5`,
     `sudo -u me`, `env X=1`, `{`, `!`, `then`); a host CLI word ends the prefixes."""
     after_option = False
+    owed = 0  # bare words a prefix takes after its options: `timeout`'s duration, a function's name
+    valued: frozenset[str] | None = None  # the options of the last prefix that take a value
     for i, w in enumerate(words):
         low = w.lower()
         if _program_name(w) in heads:
             return i
         if low in _COMMAND_PREFIXES or _ASSIGNMENT_WORD.match(w):
-            after_option = low in ("timeout", "function")  # `timeout 5`, `function f {`
+            after_option = False
+            owed = 1 if low in ("timeout", "function") else 0  # `timeout 5`, `function f {`
+            valued = _PREFIX_VALUE_FLAGS.get(low)
         elif w.startswith("-") and len(w) > 1:
-            after_option = "=" not in w
+            # A known wrapper's option takes a value only when it is one that does (`env -i`,
+            # `sudo -E`, `timeout --signal=KILL` do not take the next word); another's might.
+            after_option = "=" not in w and (valued is None or w in valued)
         elif after_option:
             after_option = False
+        elif owed:
+            owed -= 1
         else:
             return i
     return len(words)
@@ -2388,7 +2408,11 @@ def _unparsed_cli_readings(
     (`_quoted_cli_readings` reads it)."""
     shells = set(lists.strings("installers", "shell_heads"))
     out: list[list[str]] = []
-    for words in _shell_commands(command):
+    unclosed: list[int] = []
+    commands = _shell_commands(command, unclosed)
+    # The body of a heredoc with no closing line is no command; the whitespace reading asks about
+    # what it names.
+    for words in commands[: unclosed[0]] if unclosed else commands:
         script = _shell_script(words, shells)
         if script is not None and depth < 3:
             out.extend(_unparsed_cli_readings(script, heads, lists, depth + 1))
@@ -2431,26 +2455,52 @@ def _quoted_cli_readings(command: str, heads: set[str], lists: Lists) -> list[li
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print"})
 
 
+#: The launcher lists `_cli_tokens` reads, built once per `Lists` (the last one seen): a long
+#: unparsed command calls it once per simple command.
+_CLI_LAUNCH_CACHE: list[tuple[Lists, Any]] = []
+
+
+def _cli_launch_lists(lists: Lists) -> Any:
+    if _CLI_LAUNCH_CACHE and _CLI_LAUNCH_CACHE[0][0] is lists:
+        return _CLI_LAUNCH_CACHE[0][1]
+    built = (
+        [
+            [str(w).lower() for w in words]
+            for words in lists.get("guardrail", "cli_launchers", default=[]) or []
+        ],
+        lists.patterns("guardrail", "cli_module_runner_patterns"),
+        {
+            str(k).lower(): str(v).lower()
+            for k, v in (lists.get("guardrail", "cli_modules", default={}) or {}).items()
+        },
+        lists.patterns("guardrail", "cli_script_runner_patterns"),
+        {
+            str(head).lower(): lists.patterns(
+                "guardrail", "cli_scripts", str(head), "path_patterns"
+            )
+            for head in lists.get("guardrail", "cli_scripts", default={}) or {}
+        },
+    )
+    built = (*built, frozenset(words[0] for words in built[0] if words))
+    _CLI_LAUNCH_CACHE[:] = [(lists, built)]
+    return built
+
+
 def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
     """The words of one simple command from the CLI head on, launchers (`uv run`, `npx`, `exec`,
     `python -m <module>`, `node <entry script>`, …) and their options peeled off. Unchanged, bar
     the head's name, when the command is not a known CLI behind launchers."""
     if not tokens:
         return tokens
-    launchers = [
-        [str(w).lower() for w in words]
-        for words in lists.get("guardrail", "cli_launchers", default=[]) or []
-    ]
-    runners = lists.patterns("guardrail", "cli_module_runner_patterns")
-    modules = {
-        str(k).lower(): str(v).lower()
-        for k, v in (lists.get("guardrail", "cli_modules", default={}) or {}).items()
-    }
-    script_runners = lists.patterns("guardrail", "cli_script_runner_patterns")
-    scripts = {
-        str(head).lower(): lists.patterns("guardrail", "cli_scripts", str(head), "path_patterns")
-        for head in lists.get("guardrail", "cli_scripts", default={}) or {}
-    }
+    launchers, runners, modules, script_runners, scripts, firsts = _cli_launch_lists(lists)
+    first = _program_name(tokens[0])
+    if (
+        first not in heads
+        and first not in firsts
+        and not _match_any(runners, first)
+        and not _match_any(script_runners, first)
+    ):
+        return [first, *tokens[1:]]  # no CLI and no launcher: the common case, kept cheap
 
     def launches(name: str) -> bool:
         return (
@@ -4788,7 +4838,8 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     cli_heads = {
         str(e.get("head")).lower() for e in (*plugin_cli, *command_cli, *config_cli, *gateway_cli)
     }
-    if a.shape is not None and a.shape.parse_ok:
+    if a.shape is None or a.shape.parse_ok:
+        # A parsed command, or inline interpreter code (no shell shape: Python is not read as shell).
         for words, line in _cli_segments(a, lists):
             tokens = _cli_tokens(words, cli_heads, lists)
             if not tokens:
@@ -4815,12 +4866,12 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
             emit("guardrail.gateway_stop", None, {"match": line[:120], "mechanism": "process_kill"})
         command = a.command or a.scan_text
         texts = [command, *([norm] if (norm := normalise_text(command)) != command else [])]
-        found: list[str] = []
+        found: set[str] = set()
         for text in texts:
             for tokens in _unparsed_cli_readings(text, cli_heads, lists):
                 for reason in _cli_guardrail_reasons(tokens, lists):
                     emit(reason, None, {"match": " ".join(tokens[:40])[:120]})
-                    found.append(reason)
+                    found.add(reason)
         named: list[str] = []
         match = ""
         for text in texts:
