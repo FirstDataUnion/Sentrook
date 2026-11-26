@@ -120,20 +120,24 @@ function pruneFile(file: string, cutoff: number): void {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   }
-  let data: Buffer;
+  // Every read goes through this one descriptor, so the bytes carried over are from the file we checked.
   try {
-    const head = Buffer.alloc(HEAD_BYTES);
-    const n = readSync(fd, head, 0, HEAD_BYTES, 0);
-    for (const line of splitLines(head.subarray(0, n))) {
-      const ts = lineTs(line);
-      if (ts === undefined) continue;
-      if (ts >= cutoff) return; // the first record is inside the window
-      break;
-    }
-    data = readFileSync(fd); // the whole file: the read above did not move the file position
+    rewrite(file, fd, cutoff);
   } finally {
     closeSync(fd);
   }
+}
+
+function rewrite(file: string, fd: number, cutoff: number): void {
+  const head = Buffer.alloc(HEAD_BYTES);
+  const n = readSync(fd, head, 0, HEAD_BYTES, 0);
+  for (const line of splitLines(head.subarray(0, n))) {
+    const ts = lineTs(line);
+    if (ts === undefined) continue;
+    if (ts >= cutoff) return; // the first record is inside the window
+    break;
+  }
+  const data = readFileSync(fd); // the whole file: the read above did not move the file position
   const keep = kept(data, cutoff);
   if (keep === undefined || keep.equals(data)) return;
   const tmp = `${file}.prune.tmp`;
@@ -142,8 +146,8 @@ function pruneFile(file: string, cutoff: number): void {
     let written = 0;
     try {
       for (let off = 0; off < keep.length; ) off += writeSync(out, keep, off);
-      // Another process may have appended since the read: carry its bytes over.
-      const extra = readFileSync(file).subarray(data.length);
+      // Another process may have appended since the read: carry its bytes over (read on from the position above).
+      const extra = readFileSync(fd);
       for (let off = 0; off < extra.length; ) off += writeSync(out, extra, off);
       written = keep.length + extra.length;
     } finally {

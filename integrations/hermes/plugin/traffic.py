@@ -21,7 +21,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 logger = logging.getLogger("sentrook")
 
@@ -99,18 +99,23 @@ def prune(path: Path, cutoff: float) -> None:
 
 def _prune_file(path: Path, cutoff: float) -> None:
     try:
-        f = open(path, "rb")  # noqa: SIM115 - read in two steps below
+        f = open(path, "rb")  # noqa: SIM115 - kept open for the whole rewrite below
     except FileNotFoundError:
         return
+    # Every read goes through this one handle, so the bytes carried over are from the file we checked.
     with f:
-        data = f.read(_HEAD_BYTES)
-        for raw in data.split(b"\n"):
-            ts = _line_ts(raw)
-            if ts is not None:
-                if ts >= cutoff:
-                    return  # the first record is inside the window
-                break
-        data += f.read()
+        _rewrite(path, f, cutoff)
+
+
+def _rewrite(path: Path, f: BinaryIO, cutoff: float) -> None:
+    data = f.read(_HEAD_BYTES)
+    for raw in data.split(b"\n"):
+        ts = _line_ts(raw)
+        if ts is not None:
+            if ts >= cutoff:
+                return  # the first record is inside the window
+            break
+    data += f.read()
     keep = _kept(data, cutoff)
     if keep is None or keep == data:
         return
@@ -120,9 +125,7 @@ def _prune_file(path: Path, cutoff: float) -> None:
         with os.fdopen(fd, "wb") as out:
             out.write(keep)
             # Another process may have appended since the read: carry its bytes over.
-            with open(path, "rb") as f:
-                f.seek(len(data))
-                extra = f.read()
+            extra = f.read()
             out.write(extra)
             written = len(keep) + len(extra)
         if written == 0:
