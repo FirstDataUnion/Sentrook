@@ -5051,14 +5051,27 @@ def _sentrook_runs(text: str) -> Iterator[tuple[int, int]]:
         pos = end
 
 
+_TO_BACKTICK = re.compile(r"[^`\n]*")
+
+
 def _slash_command(text: str, start: int, end: int) -> bool:
     """Whether the run `text[start:end]` is a slash command in prose (`/sentrook status`, `` `/sentrook
-    report` ``): `/sentrook` alone, after the start of a line, a space or an opening backtick, and
-    before a space and a word, or the end of a line."""
+    report` ``): `/sentrook` alone, after the start of a line, a space or a backtick that opens inline
+    code (itself after the start of the text or a space, and closed later on the line; a shell
+    substitution's closing backtick, `` `echo $H`/sentrook ``, is not one), and before a space and a
+    word, or the end of a line."""
     if text[start:end] != "/sentrook":
         return False
-    if start and text[start - 1] not in " \t\n`":
-        return False
+    if start:
+        before = text[start - 1]
+        if before == "`":
+            if start > 1 and not text[start - 2].isspace():
+                return False
+            close = _TO_BACKTICK.match(text, end).end()  # type: ignore[union-attr]
+            if close == len(text) or text[close] != "`":
+                return False
+        elif before not in " \t\n":
+            return False
     if end == len(text) or text[end] in "\r\n":
         return True
     rest = end
@@ -5078,8 +5091,9 @@ def _code_text_state_paths(text: str, lists: Lists) -> Iterator[str]:
     packages = {s.lower() for s in lists.strings(*key, "source_packages")}
     tops = {s.lower() for s in lists.strings(*key, "source_top_folders")}
     legacy = {s.lower() for s in lists.strings("guardrail", "legacy_basenames")}
-    # A `..` anywhere may climb out of a cited folder (`h + '/sentrook/tests' + '/../x'`): no citation.
-    climbs = _found_any(lists.patterns(*key, "parent_component_patterns"), text)
+    # A `..`, or a call that cuts a path back, anywhere may climb out of a cited folder into the state
+    # folder (`h + '/sentrook/tests' + '/../x'`, `dirname(dirname(...))`): then nothing is a citation.
+    climbs = _found_any(lists.patterns(*key, "climb_patterns"), text)
 
     def package_citation(j: int, parts: list[str]) -> bool:
         # `sentrook/sentrook/<package or module>/...`, starting at component `j`.
