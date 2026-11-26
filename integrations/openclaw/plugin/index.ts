@@ -39,7 +39,7 @@ import { blockReason, decide, describe as describeCall, severity, tiersOf, unatt
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL_NAMES, toolKind, triggerKind, unwrapToolCall } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
-import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
+import { invalidEndpointEffect, type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
 import * as consent from "./consent.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
@@ -1836,7 +1836,7 @@ const plugin = {
       api.logger.warn(`${LOG} skillReview ${JSON.stringify(boot.skillReviewUnknown)} is not allow or review; reading it as allow`);
     }
     if (!ep.scan.ok || !ep.issuer.ok) {
-      api.logger.error(`${LOG} endpoint configuration is invalid; every tool call will fail closed until fixed`);
+      api.logger.error(`${LOG} endpoint configuration is invalid; ${invalidEndpointEffect(boot.mode, boot.onScanError)}`);
     }
     const unsent = grants.unsentSummary(boot);
     if (unsent) {

@@ -44,7 +44,7 @@ It prints a link and a code. Open the link on any device (your phone is fine), s
 create a free one, check that the code on the page matches the one in your terminal, accept the terms and what is
 sent (see [What is sent](#what-is-sent)), and click **Approve**. No credentials are issued until you accept. The
 command then has Hermes store this machine's scan credentials (in Hermes's own `.env`, never `config.yaml`), prints
-what is sent, the privacy policy and how to stop (with the terms version you accepted, when the identity service
+what is sent, the privacy policy, the terms and how to stop (with the terms version you accepted, when the identity service
 gives it), and runs the checks from step 3. There is nothing to copy. Then restart Hermes so the gateway uses them:
 
 ```bash

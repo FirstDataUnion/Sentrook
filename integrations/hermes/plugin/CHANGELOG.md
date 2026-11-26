@@ -12,7 +12,7 @@ since the version the catalog pins.
   these credentials, also across restarts; signing in again or setting new credentials resets it. Calls are handled
   as for any credential problem: asked where you can answer, blocked where nobody can (and with `on_scan_error: allow` too), run
   in observe mode; the prompt, the agent's message and `verify` say consent was withdrawn.
-- `hermes sentrook login` now prints what each check sends and to whom, the privacy policy and how to stop, with the
+- `hermes sentrook login` now prints what each check sends and to whom, the privacy policy, the terms and how to stop, with the
   terms version you accepted (and when) if the identity service gives it.
 - `/sentrook dismiss <id>` (or `/sentrook dismiss all`) takes a held call off the waiting list without answering it,
   as if it had expired now. It works on any hold, including one that offers no answer (a run with no source, or a

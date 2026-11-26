@@ -49,6 +49,17 @@ def parse_on_scan_error(raw: Any, fallback: OnScanError = "review") -> OnScanErr
     return fallback
 
 
+def invalid_endpoint_effect(mode: str, on_scan_error: OnScanError) -> str:
+    """What happens to tool calls while an endpoint setting is invalid, for the owner's log. Every scan fails as a
+    configuration error, which `scan_error_to_directive` never lets through; observe mode lets everything run.
+    Keep it identical to `invalidEndpointEffect` in the OpenClaw plugin's `scanErrorPolicy.ts`."""
+    if mode == "observe":
+        return "no tool call is scanned until this is fixed (observe mode: nothing is blocked)"
+    if on_scan_error == "review":
+        return "every tool call will be held for review, or blocked on unattended runs, until this is fixed"
+    return "every tool call will be blocked until this is fixed"
+
+
 def is_scan_failure(value: Any) -> bool:
     return isinstance(value, ScanFailure) and value.ok is False
 

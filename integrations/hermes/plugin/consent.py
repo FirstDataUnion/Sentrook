@@ -34,9 +34,8 @@ SIGNED_IN_TEXT: tuple[str, ...] = (
 )
 TERMS_LINE = "Terms version {version} accepted."
 TERMS_LINE_DATED = "Terms version {version} accepted {date}."
-PRIVACY_URL = "https://firstdataunion.org/privacy-policy/"
-#: The terms page; not published yet. While empty, the terms link is left out.
-TERMS_URL = ""
+PRIVACY_URL = "https://firstdataunion.org/sentrook/privacy/"
+TERMS_URL = "https://firstdataunion.org/sentrook/terms/"
 #: A terms version is printed only when it is short plain text, and a date only as YYYY-MM-DD.
 _TERMS_VERSION = re.compile(r"[A-Za-z0-9._-]{1,40}")
 _DATE = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?")

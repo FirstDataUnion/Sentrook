@@ -31,9 +31,8 @@ export const SIGNED_IN_TEXT: readonly string[] = [
 ];
 export const TERMS_LINE = "Terms version {version} accepted.";
 export const TERMS_LINE_DATED = "Terms version {version} accepted {date}.";
-export const PRIVACY_URL = "https://firstdataunion.org/privacy-policy/";
-/** The terms page; not published yet. While empty, the terms link is left out. */
-export const TERMS_URL = "";
+export const PRIVACY_URL = "https://firstdataunion.org/sentrook/privacy/";
+export const TERMS_URL = "https://firstdataunion.org/sentrook/terms/";
 /** A terms version is printed only when it is short plain text, and a date only as YYYY-MM-DD. */
 const TERMS_VERSION = /^[A-Za-z0-9._-]{1,40}$/;
 const DATE = /^(\d{4}-\d{2}-\d{2})(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$/;

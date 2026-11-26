@@ -9,5 +9,5 @@ these credentials, also across restarts; signing in again or setting new credent
 as for any credential problem: asked where you can answer, blocked where nobody can (and with `onScanError: allow` too), run
 in observe mode; the prompt, the agent's message and `verify` say consent was withdrawn.
 
-`openclaw sentrook login` now prints what each check sends and to whom, the privacy policy and how to stop, with the
+`openclaw sentrook login` now prints what each check sends and to whom, the privacy policy, the terms and how to stop, with the
 terms version you accepted (and when) if the identity service gives it.

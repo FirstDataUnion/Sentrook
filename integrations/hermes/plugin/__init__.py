@@ -71,7 +71,12 @@ from .intent import (
 from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
-from .scan_error_policy import ScanFailure, failure_cause, scan_error_to_directive
+from .scan_error_policy import (
+    ScanFailure,
+    failure_cause,
+    invalid_endpoint_effect,
+    scan_error_to_directive,
+)
 from .store import LockTimeout, Store
 from .traffic import TrafficLog
 
@@ -2372,7 +2377,8 @@ def register(ctx: Any) -> None:
         )
     if not ep.scan.ok or not ep.issuer.ok:
         logger.error(
-            "sentrook endpoint configuration is invalid; every tool call will fail closed until fixed"
+            "sentrook endpoint configuration is invalid; %s",
+            invalid_endpoint_effect(cfg.mode, cfg.on_scan_error),
         )
     if cfg.skill_review_unknown is not None:
         logger.warning(

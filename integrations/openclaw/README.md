@@ -61,7 +61,7 @@ It prints a link and a code. Open the link on any device (your phone is fine), s
 create a free one, check that the code on the page matches the one in your terminal, accept the terms and what is
 sent (see [What is sent](#what-is-sent)), and click **Approve**. No credentials are issued until you accept. The
 command then saves this machine's scan credentials to `~/.openclaw/.env` (readable only by you), prints what is sent,
-the privacy policy and how to stop (with the terms version you accepted, when the identity service gives it), and
+the privacy policy, the terms and how to stop (with the terms version you accepted, when the identity service gives it), and
 runs the checks from step 4. There is nothing to copy.
 
 - If OpenClaw runs in Docker, run it inside the container: `docker compose exec <service> openclaw sentrook login`.

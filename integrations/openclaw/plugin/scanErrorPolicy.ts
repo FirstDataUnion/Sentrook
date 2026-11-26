@@ -14,6 +14,19 @@ export type ScanFailureKind = "rate_limited" | "http" | "timeout" | "network" | 
 
 export const DEFAULT_ON_SCAN_ERROR: OnScanError = "review";
 
+/**
+ * What happens to tool calls while an endpoint setting is invalid, for the owner's log. Every scan fails as a
+ * configuration error, which `scanErrorToHookResult` never lets through; observe mode lets everything run.
+ * Keep it identical to `invalid_endpoint_effect` in the Hermes plugin's `scan_error_policy.py`.
+ */
+export function invalidEndpointEffect(mode: string, onScanError: OnScanError): string {
+  if (mode === "observe") return "no tool call is scanned until this is fixed (observe mode: nothing is blocked)";
+  if (onScanError === "review") {
+    return "every tool call will be held for review, or blocked on unattended runs, until this is fixed";
+  }
+  return "every tool call will be blocked until this is fixed";
+}
+
 export interface ScanFailure {
   ok: false;
   kind: ScanFailureKind;
