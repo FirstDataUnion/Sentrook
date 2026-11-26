@@ -26,15 +26,17 @@ export function decide(resp: ScanResponse, lines: { reviewAt: number; blockAt: n
 
 /** The scanner's reason for a ceiling on a retry of a review nobody answered: kept on an unattended run. */
 export const RETRY_CAP = "cap.unanswered_retry";
+/** The scanner's reason for a ceiling on code that reaches no network sink: kept on an unattended run. */
+export const LOCAL_CODE_CAP = "cap.local_code";
 
 /**
  * `resp` as an unattended run decides from it. The attended-owner ceiling is dropped: nobody can answer, so a block
- * is not lowered to a review with it. The ceiling on a retry of a review nobody answered is kept, so that retry is
- * held for the owner rather than blocked.
+ * is not lowered to a review with it. The ceilings on a retry of a review nobody answered and on code that reaches
+ * no network sink are kept, so that call is held for the owner rather than blocked.
  */
 export function unattendedView(resp: ScanResponse): ScanResponse {
   const codes = new Set((resp.reasons ?? []).map((r) => (r && typeof r === "object" ? r.code : undefined)));
-  return codes.has(RETRY_CAP) ? resp : { ...resp, ceiling: null };
+  return codes.has(RETRY_CAP) || codes.has(LOCAL_CODE_CAP) ? resp : { ...resp, ceiling: null };
 }
 
 export function tiersOf(resp: ScanResponse) {
