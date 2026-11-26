@@ -52,6 +52,7 @@ from .linear_search import finditer as _finditer
 from .linear_search import found as _found
 from .linear_search import search as _search
 from .lists import Lists, Rule
+from .normalize import normalise_text
 from .path_classes import _URL_RE, locations_of
 from .sensitive_paths import basename_pattern
 from .stage_programs import stage_runs_stdin
@@ -4661,6 +4662,12 @@ def _sentrook_paths(text: str) -> Iterator[re.Match[str]]:
         pos = m.end() if m.end() > m.start() else m.end() + 1
 
 
+#: Guardrail reasons of the review tier: the owner is always asked, the floor never blocks.
+_GUARDRAIL_REVIEW_REASONS = frozenset(
+    {"guardrail.approval_loosening_review", "guardrail.tampering_review"}
+)
+
+
 def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C4*: guardrail tampering per `guardrail.yaml`. Never fires on reads, lists, restart or
     reload."""
@@ -4673,10 +4680,10 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if key in seen:
             return
         seen.add(key)
-        if reason == "guardrail.approval_loosening_review":
+        if reason in _GUARDRAIL_REVIEW_REASONS:
             # The review tier: the owner is always asked; the floor adds no score and never blocks.
             f = Finding(
-                rule="C4star.approval_loosening_review", cls="C4*", reason=reason, detail=detail
+                rule=f"C4star.{reason.split('.')[-1]}", cls="C4*", reason=reason, detail=detail
             )
             f.floors.append(
                 Floor(
@@ -4781,16 +4788,55 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     cli_heads = {
         str(e.get("head")).lower() for e in (*plugin_cli, *command_cli, *config_cli, *gateway_cli)
     }
-    for words, line in _cli_segments(a, lists):
-        tokens = _cli_tokens(words, cli_heads, lists)
-        if not tokens:
-            continue
-        # A command whose head is in no entry (`ls`, `curl`) has no CLI form to find.
-        if tokens[0] in cli_heads:
-            for reason in _cli_guardrail_reasons(tokens, lists):
-                emit(reason, None, {"match": line[:120]})
+    if a.shape is not None and a.shape.parse_ok:
+        for words, line in _cli_segments(a, lists):
+            tokens = _cli_tokens(words, cli_heads, lists)
+            if not tokens:
+                continue
+            # A command whose head is in no entry (`ls`, `curl`) has no CLI form to find.
+            if tokens[0] in cli_heads:
+                for reason in _cli_guardrail_reasons(tokens, lists):
+                    emit(reason, None, {"match": line[:120]})
+            if _found_any(lists.patterns("guardrail", "process_kill_patterns"), line):
+                emit(
+                    "guardrail.gateway_stop",
+                    None,
+                    {"match": line[:120], "mechanism": "process_kill"},
+                )
+    else:
+        # A command the scan does not parse (one over the parse limit, padded with options to get
+        # there, or one whose parse it does not trust) is read without the parser, as approval
+        # loosening reads it. The host CLIs it runs, as the shell splits it (each command of a
+        # chain, `{ }`, substitutions and `bash -c` scripts read as commands, from the program
+        # after `nice`, `sudo`, `env`, …), take the floor. One it only names as an argument
+        # (`echo run openclaw …`) or inside quotes, heredocs or comments is asked, not blocked.
+        line = a.normalised_command() if a.command else a.scan_text
         if _found_any(lists.patterns("guardrail", "process_kill_patterns"), line):
             emit("guardrail.gateway_stop", None, {"match": line[:120], "mechanism": "process_kill"})
+        command = a.command or a.scan_text
+        texts = [command, *([norm] if (norm := normalise_text(command)) != command else [])]
+        found: list[str] = []
+        for text in texts:
+            for tokens in _unparsed_cli_readings(text, cli_heads, lists):
+                for reason in _cli_guardrail_reasons(tokens, lists):
+                    emit(reason, None, {"match": " ".join(tokens[:40])[:120]})
+                    found.append(reason)
+        named: list[str] = []
+        match = ""
+        for text in texts:
+            for tokens in _quoted_cli_readings(text, cli_heads, lists):
+                for reason in _cli_guardrail_reasons(tokens, lists):
+                    # Host approval changes are scored, and approval loosening asks on its own.
+                    if reason in found or reason in named or reason == "guardrail.host_approvals":
+                        continue
+                    named.append(reason)
+                    match = match or " ".join(tokens[:40])[:120]
+        if named:
+            emit(
+                "guardrail.tampering_review",
+                None,
+                {"match": match, "named": named, "mechanism": "named_unparsed"},
+            )
     if _found_any(lists.patterns("guardrail", "process_kill_patterns"), a.scan_text):
         emit(
             "guardrail.gateway_stop",

@@ -376,6 +376,10 @@ REASONS: dict[str, ReasonText | None] = {
         "it turns off or removes Sentrook",
         "it turns off or removes Sentrook",
     ),
+    "guardrail.tampering_review": ReasonText(
+        "it may turn off or get around the agent's safety controls",
+        "it may turn off or get around the agent's safety controls",
+    ),
     "guardrail.state_dir_write": ReasonText(
         "it writes into Sentrook's own files",
         "it writes into Sentrook's own files",
