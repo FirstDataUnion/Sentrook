@@ -41,9 +41,11 @@ hermes sentrook login
 ```
 
 It prints a link and a code. Open the link on any device (your phone is fine), sign in to your FIDU account or
-create a free one, check that the code on the page matches the one in your terminal, and click **Approve**. The
-command then has Hermes store this machine's scan credentials (in Hermes's own `.env`, never `config.yaml`) and runs
-the checks from step 3. There is nothing to copy. Then restart Hermes so the gateway uses them:
+create a free one, check that the code on the page matches the one in your terminal, accept the terms and what is
+sent (see [What is sent](#what-is-sent)), and click **Approve**. No credentials are issued until you accept. The
+command then has Hermes store this machine's scan credentials (in Hermes's own `.env`, never `config.yaml`), prints
+what is sent, the privacy policy and how to stop (with the terms version you accepted, when the identity service
+gives it), and runs the checks from step 3. There is nothing to copy. Then restart Hermes so the gateway uses them:
 
 ```bash
 hermes gateway restart
@@ -56,6 +58,10 @@ If you don't run the gateway as a service, restart Hermes the way you normally s
 - Signing in again from the same machine replaces its credentials rather than adding new ones.
 - Your account can have 5 Sentrook connections. To remove one, use the **Sentrook** tab at
   <https://identity.firstdataunion.org/dashboard>.
+- If you withdraw consent on the FIDU portal, the identity service stops accepting this machine's credentials. A token
+  already issued keeps working until it expires; after that no call is scanned, and you get one
+  notice saying so (see [When the scan service fails](#when-the-scan-service-fails)). Run `hermes sentrook login`
+  again to reconnect.
 
 ### Set the credentials by hand instead
 
@@ -771,6 +777,18 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
   sends one message per job, not one per call. The traffic log records each with `notice` `queued`, `quiet` or
   `unsent`.
 
+**No credentials** (you have not signed in, or a setting is missing) means no scan request is sent at all, not even
+one without a token: the calls are handled as above, and the prompt and the agent's message say to run
+`hermes sentrook login`.
+
+**Consent withdrawn:** when you withdraw consent on the FIDU portal, the identity service refuses this machine's
+credentials and Sentrook cannot scan. Calls are handled as for any credential problem (asked where attended, blocked
+on unattended runs, and blocked with `allow` too); the prompt and the agent's message say consent was withdrawn.
+Instead of the per-job notices above you get one notice, wherever notices go and in observe mode too: it says scans
+stopped and that you can run `hermes sentrook login` to connect again, switch to observe mode, or uninstall. It is
+sent once for these credentials, also across restarts; signing in again (or setting new credentials) resets it. The
+traffic log records it as the scan's `notice`.
+
 A snooze does not change this. Set `on_scan_error` to `deny` to block the call everywhere, or to `allow` to run it
 without a scan everywhere. Bad credentials or endpoints are never let through silently: with `allow` the call is
 blocked, and with `review` you are asked as above. Whatever the setting, a call blocked on an unattended run because
@@ -865,11 +883,11 @@ In short, for anyone deciding whether to install it:
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
   call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review holds the call and
   sends you one notice in the chat or home channel you set, with Hermes's own `hermes send`, and a call blocked because the scan
-  failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
-  only messages it sends.
+  failed sends you one notice per job (per session for other runs) every 6 hours at most. If you withdraw consent on
+  the FIDU portal it sends you one notice saying scans stopped. Those notices are the only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
   the traffic log, grants, snooze state, held calls, passes and denials, where notices go and the attended platforms
-  you added, when each job last had a scan-failure notice, the agent's setup proposals and the last `/sentrook setup`
+  you added, when each job last had a scan-failure notice, whether the consent-withdrawn notice was sent, the agent's setup proposals and the last `/sentrook setup`
   list with its code, and the conversation logs above), or to the paths you set for them (`state_dir`,
   `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and secret redaction
   are on (and, when you open `/sentrook setup`, your MCP servers), and the cron jobs in `cron/jobs.json` (a running

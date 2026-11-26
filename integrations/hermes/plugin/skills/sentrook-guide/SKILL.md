@@ -43,7 +43,8 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A background-save notice.** Hermes saves skills and memory in the background after a turn, with nobody there to answer a prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a save it would review is let through, staged in Hermes's pending list (`/skills pending`, `/memory pending`) or held; a blocked one is not saved. A notice where held-call notices go says which.
 - **A scan failure.** When the scan service cannot answer, the owner is asked whether to run the call unscanned where
   someone is there to answer; on an unattended run the call is blocked and the owner gets one notice. This is a
-  service problem, not a security block.
+  service problem, not a security block. If the owner withdrew consent on the FIDU portal, Sentrook cannot scan until
+  they run `hermes sentrook login` again; they get one notice about it. Do not run that command yourself.
 
 Grants and channel bindings tell Sentrook what is routine (a host the agent always sends to, a folder it works in, the
 channel a daily report goes to). They never lower Sentrook's floors: reading secrets and sending them somewhere is
