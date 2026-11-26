@@ -29,7 +29,9 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A block a snooze turned into a prompt** (beta). While the owner has snoozed with `/sentrook-snooze`, a block in the
   owner's own chat asks instead of stopping. The prompt warns that the call would be blocked; one with a floor or a
   strong signal names why, says to allow it only if the owner asked for exactly that call, and asks again every time.
-  A change to Sentrook itself still blocks during a snooze. Never press the owner to allow one.
+  A block from an incomplete scan, and a change to Sentrook itself (its files, settings or log, turning it off,
+  stopping the gateway, a Sentrook command, loosening approvals), still blocks during a snooze. Never press the owner
+  to allow one.
 - **A held call.** Where nobody can answer a prompt (cron jobs, heartbeats, subagents, webhooks), a call that needs review does not run, and
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `/sentrook-allow <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's

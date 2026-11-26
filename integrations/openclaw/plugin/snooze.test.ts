@@ -409,9 +409,11 @@ const RELAX = RELAX_DOC.cases as {
   attended: boolean;
   snoozed: boolean;
   sender: "owner" | "other" | "owner_in_group";
-  outcome: "allow" | "snoozed" | "review" | "block" | "held";
+  mode?: "observe";
+  outcome: "allow" | "snoozed" | "review" | "block" | "held" | "observed";
   severity?: "warning" | "critical";
   warning?: "relaxed" | "strong";
+  then?: { answer: "once" | "always"; response: Record<string, unknown>; outcome: "review" | "snoozed"; severity?: "critical"; warning?: "strong" };
 }[];
 /** Each fixture sender as OpenClaw reports it on an attended turn: the session key and the requester. */
 const SENDERS: Record<string, Record<string, unknown>> = {
@@ -425,44 +427,70 @@ const WANT_SENDER: Record<string, unknown> = {
   owner_in_group: { relation: "owner", basis: ["group_chat"] },
 };
 
+type Outcome = {
+  outcome: "allow" | "snoozed" | "review" | "block" | "held" | "observed";
+  severity?: "warning" | "critical";
+  warning?: "relaxed" | "strong";
+};
+
+function assertOutcome(out: any, rec: any, c: Outcome, name: string) {
+  if (c.outcome === "allow") {
+    assert.equal(out, undefined, name);
+    assert.equal(rec.decision, "allowed");
+    assert.equal(rec.snoozed, undefined);
+  } else if (c.outcome === "snoozed") {
+    assert.equal(out, undefined, name);
+    assert.equal(rec.decision, "allowed");
+    assert.equal(rec.snoozed, true);
+  } else if (c.outcome === "observed") {
+    assert.equal(out, undefined, name);
+    assert.equal(rec.mode, "observe");
+    assert.equal(rec.snoozed, undefined);
+  } else if (c.outcome === "review") {
+    assert.ok(out?.requireApproval, `prompts the owner: ${name}`);
+    assert.deepEqual([rec.verdict, rec.decision, rec.snoozed], ["review", "review_timed_out", undefined]);
+    assert.equal(out.requireApproval.severity, c.severity);
+  } else if (c.outcome === "block") {
+    assert.equal(out?.block, true, name);
+    assert.match(out.blockReason, /^Sentrook security block:/);
+    assert.deepEqual([rec.verdict, rec.decision], ["block", "blocked"]);
+  } else {
+    assert.equal(out.block, true, name);
+    assert.equal(rec.decision, "held");
+  }
+  assert.equal(rec.relaxed, c.warning ? true : undefined, name);
+  assert.equal(rec.relaxed_strong, c.warning === "strong" ? true : undefined, name);
+  if (c.outcome === "review") {
+    // the owner is told why a block asks: the shared line is on the card, and only then
+    const lines = out.requireApproval.description.split("\n");
+    assert.equal(lines.includes(NOTE), c.warning === "relaxed");
+    assert.equal(lines.includes(STRONG_NOTE), c.warning === "strong");
+    assert.equal(lines.some((l: string) => l.startsWith(STRONG_BECAUSE)), c.warning === "strong");
+    // a block a snooze turned into a question offers Allow once and Deny only
+    if (c.warning) assert.deepEqual(out.requireApproval.allowedDecisions, ["allow-once", "deny"]);
+  }
+}
+
+/** The fixture's answers as OpenClaw's approval resolves them. */
+const ANSWERS: Record<string, string> = { once: "allow-once", always: "allow-always" };
+
 for (const c of RELAX) {
   test(`snooze outcome: ${c.name}`, async () => {
     const sid = c.attended ? "S1" : "C1";
     if (c.snoozed) put(entry("session", snooze.sessionRef(sid)));
+    if (c.mode === "observe") process.env.SENTROOK_MODE = "observe";
     override = { ceiling: null, ...c.response };
     const r = await registered();
-    const { out, rec } = await r.scan("run it", sid, c.attended ? "user" : "cron", c.attended ? SENDERS[c.sender] : {});
+    const extra = c.attended ? SENDERS[c.sender] : {};
+    const trigger = c.attended ? "user" : "cron";
+    const { out, rec } = await r.scan("run it", sid, trigger, extra);
     if (c.attended) assert.deepEqual(rec.planir.trigger.sender, WANT_SENDER[c.sender]);
-    if (c.outcome === "allow") {
-      assert.equal(out, undefined);
-      assert.equal(rec.decision, "allowed");
-      assert.equal(rec.snoozed, undefined);
-    } else if (c.outcome === "snoozed") {
-      assert.equal(out, undefined);
-      assert.equal(rec.decision, "allowed");
-      assert.equal(rec.snoozed, true);
-    } else if (c.outcome === "review") {
-      assert.ok(out.requireApproval, "prompts the owner");
-      assert.deepEqual([rec.verdict, rec.decision, rec.snoozed], ["review", "review_timed_out", undefined]);
-      assert.equal(out.requireApproval.severity, c.severity);
-    } else if (c.outcome === "block") {
-      assert.equal(out.block, true);
-      assert.match(out.blockReason, /^Sentrook security block:/);
-      assert.deepEqual([rec.verdict, rec.decision], ["block", "blocked"]);
-    } else {
-      assert.equal(out.block, true);
-      assert.equal(rec.decision, "held");
-    }
-    assert.equal(rec.relaxed, c.warning ? true : undefined);
-    assert.equal(rec.relaxed_strong, c.warning === "strong" ? true : undefined);
-    if (c.outcome === "review") {
-      // the owner is told why a block asks: the shared line is on the card, and only then
-      const lines = out.requireApproval.description.split("\n");
-      assert.equal(lines.includes(NOTE), c.warning === "relaxed");
-      assert.equal(lines.includes(STRONG_NOTE), c.warning === "strong");
-      assert.equal(lines.some((l: string) => l.startsWith(STRONG_BECAUSE)), c.warning === "strong");
-      // a block a snooze turned into a question offers Allow once and Deny only
-      if (c.warning) assert.deepEqual(out.requireApproval.allowedDecisions, ["allow-once", "deny"]);
+    assertOutcome(out, rec, c, c.name);
+    if (c.then) {
+      await out.requireApproval.onResolution(ANSWERS[c.then.answer]);
+      override = { ceiling: null, ...c.then.response };
+      const again = await r.scan("run it", sid, trigger, extra);
+      assertOutcome(again.out, again.rec, c.then, `${c.name} (then)`);
     }
   });
 }
@@ -524,12 +552,13 @@ test("a strong block where the host still answers allow-always sets nothing and 
   assert.ok(again.out.requireApproval, "asks again");
 });
 
-test("a strong block without a snooze, in a cron run or in a subagent run stays a block", async () => {
+test("a strong block without a snooze, in a cron, subagent, heartbeat or webhook run stays a block", async () => {
   put(entry("all"));
   override = { ...FLOOR_BLOCK };
   const r = await registered();
-  for (const [sid, trigger] of [["C1", "cron"], ["SUB", "subagent"], ["H1", "heartbeat"]] as const) {
-    const { out, rec } = await r.scan("run it", sid, trigger);
+  for (const [sid, trigger] of [["C1", "cron"], ["SUB", "subagent"], ["H1", "heartbeat"], ["W1", "event"]] as const) {
+    // the owner's own requester, as OpenClaw may attach to a run it starts: the run is still not attended
+    const { out, rec } = await r.scan("run it", sid, trigger, { requester: { senderIsOwner: true, channel: "webchat" } });
     assert.equal(out.block, true, trigger);
     assert.equal(rec.relaxed, undefined, trigger);
   }

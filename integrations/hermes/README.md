@@ -330,18 +330,28 @@ asks you instead of stopping. This is beta behaviour, and there are two kinds of
 - Any other block, one with a floor or a strong signal included, becomes an approval prompt with a stronger
   warning: it names why it would be blocked ("Would be blocked because ...") and says "A snooze is on: allow only if
   you asked for exactly this call." Hermes cannot leave buttons out, so **Session** and **Always** allow that one
-  call only, like **Once**: the next call asks again, and no answer sets a grant. Allow it only if you asked for
-  exactly what the card describes.
+  call only, like **Once**: the next call asks again, and no answer sets a grant. While the snooze lasts, the same
+  action asks this way again even if Sentrook later scores it as an ordinary review. Allow it only if you asked for
+  exactly what the card describes. Such a prompt needs a complete scan: when one of Sentrook's checks failed, the
+  block stays a block.
 
-A change to Sentrook itself (a write into its state folder, turning the plugin off, a Sentrook command only you should
-run) stays a block during a snooze: a snooze is never a way for the agent to switch Sentrook off. The snooze does not
-skip any of these prompts, and the score is the same either way.
+What Sentrook counts as a change to Sentrook itself stays a block during a snooze: writing into Sentrook's own files
+or settings, trimming or deleting its log, turning the plugin off or removing it, stopping the agent's gateway,
+running a Sentrook command only you should run, and loosening approvals so later commands run without asking. A
+snooze is never a way for the agent to switch Sentrook off. The snooze does not skip any of these prompts, and the score is the same
+either way.
+
+Known side effect: Hermes saves every **Always** answer in `command_allowlist` in its `config.yaml`, and a plugin
+cannot opt out. **Always** on a strong prompt therefore adds a `plugin_rule:sentrook:call:...` entry that never
+matches another call. It is harmless; remove such entries by hand if you like.
 
 A chat you attend here is your own message on the main agent: a direct message from a sender listed in
 `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, or the local terminal. A group or channel, a sender you did not
-list, a sub-agent and the background review are not. A snooze never allows a block without asking, a review the
-scanner marks as enforced, or anything on an unattended run (cron jobs, webhooks, the API server): blocks still stop
-there, and a review on an unattended run is held for you instead.
+list, a sub-agent and the background review are not, and neither is a run where Hermes approves prompts by itself
+(approvals off, a gateway started with `HERMES_YOLO_MODE=1`, or `hermes chat -q` and other single-query runs with
+`approvals.single_query_mode: approve`). A snooze never allows a block without asking, a review the scanner marks as
+enforced, or anything on an unattended run (cron jobs, webhooks, the API server): blocks still stop there, and a
+review on an unattended run is held for you instead.
 
 Where slash commands don't reach the plugin, use `hermes sentrook <command>` on the machine instead:
 
@@ -522,12 +532,14 @@ Details: /sentrook why 3f9c2a1b
   addresses in full, and every grant that would allow it next time.
 
 With approvals switched off (`approvals.mode: off`), Hermes would approve every prompt itself, so a review holds the
-call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment, and on those runs a
-snooze never turns a block into a question. YOLO you switch on for one session (`/yolo` in a chat, or `hermes --yolo` /
+call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment, and for `hermes chat
+-q` and other single-query runs when `approvals.single_query_mode` is `approve`. On those runs a snooze never turns a
+block into a question. YOLO you switch on for one session (`/yolo` in a chat, or `hermes --yolo` /
 `hermes chat --yolo`, which Hermes applies to that session) is not visible to Sentrook, so in that session Hermes
 approves Sentrook's reviews the way it approves everything else there. Blocks still apply, with one exception: if a
 snooze is on in that session, a block in your own chat becomes a review (see [Commands](#commands)), which YOLO then
-approves, so the call runs. Do not snooze a session you have switched to YOLO.
+approves, so the call runs: a snooze in a session switched to YOLO lets every block through, except changes to
+Sentrook itself, without asking. Do not snooze a session you have switched to YOLO.
 
 ### Held calls on unattended runs
 

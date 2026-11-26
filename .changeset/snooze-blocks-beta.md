@@ -7,8 +7,10 @@ strong signal or a rule that always blocks included. Until now only a block Sent
 signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt keeps its
 wording ("Would be blocked, but a snooze is on."). Any other block gets a stronger warning: it names why it would be
 blocked and says "A snooze is on: allow only if you asked for exactly this call." Both are at critical severity, offer
-**Allow once** and **Deny** only, and ask again on the next call; the stronger one suggests no grant. A change to
-Sentrook itself (a write into its state folder, turning the plugin off, a Sentrook command only you should run) stays
-a block during a snooze. Nothing changes on unattended runs, for other senders, in group rooms, in observe mode, on
+**Allow once** and **Deny** only, and ask again on the next call; the stronger one suggests no grant, and while the
+snooze lasts the same action asks that way again even when it is scored later as an ordinary review. The stronger one
+needs a complete scan: when one of Sentrook's checks failed, the block stays a block. A change to Sentrook itself (its
+files, settings or log, turning the plugin off, stopping the gateway, a Sentrook command only you should run,
+loosening approvals) stays a block during a snooze. Nothing changes on unattended runs, for other senders, in group rooms, in observe mode, on
 scan errors or without a snooze. The snooze reply, `/sentrook-snooze status`, the guide and the agent skill say so.
 The traffic log marks such a prompt with `relaxed_strong: true`.

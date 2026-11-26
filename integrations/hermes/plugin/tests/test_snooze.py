@@ -327,6 +327,8 @@ def scripted(term, monkeypatch):
 def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
     """The shared cases: both hosts give the same outcome for the same response, run and snooze."""
     monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: not case["attended"])
+    if case.get("mode") == "observe":
+        monkeypatch.setenv("SENTROOK_MODE", "observe")
     if case["snoozed"]:
         put(scripted, entry())
     as_sender(scripted, monkeypatch, case["sender"])
@@ -335,11 +337,26 @@ def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
     out, rec = call(scripted, "run it")
     if case["attended"]:
         assert rec["planir"]["trigger"]["sender"] == WANT_SENDER[case["sender"]]
+    _assert_outcome(out, rec, case)
+    then = case.get("then")
+    if then:
+        approve = scripted.ctx.hooks["post_approval_response"]
+        approve(
+            pattern_key=f"plugin_rule:{out['rule_key']}", choice=then["answer"], session_id="S1"
+        )
+        scripted.reply = dict(then["response"])
+        out, rec = call(scripted, "run it")
+        _assert_outcome(out, rec, then)
+
+
+def _assert_outcome(out, rec, case):
     want = case["outcome"]
     if want == "allow":
         assert out is None and rec["decision"] == "allowed" and "snoozed" not in rec
     elif want == "snoozed":
         assert out is None and rec["decision"] == "allowed" and rec["snoozed"] is True
+    elif want == "observed":
+        assert out is None and rec["mode"] == "observe" and "snoozed" not in rec
     elif want == "review":
         assert out["action"] == "approve" and rec["decision"] == "review_timed_out"
         assert rec["verdict"] == "review" and "snoozed" not in rec
@@ -544,6 +561,47 @@ def test_the_beta_switch_turns_strong_blocks_back_into_blocks(scripted, monkeypa
     scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
     out, rec = call(scripted, "run it")
     assert out["action"] == "approve" and rec["relaxed"] is True and "relaxed_strong" not in rec
+
+
+@pytest.mark.parametrize(
+    ("env", "config", "bypassed"),
+    [
+        (
+            {"HERMES_SINGLE_QUERY_SESSION": "1"},
+            {"approvals": {"single_query_mode": "approve"}},
+            True,
+        ),
+        (
+            {"HERMES_SINGLE_QUERY_SESSION": "true"},
+            {"approvals": {"single_query_mode": "allow"}},
+            True,
+        ),
+        ({"HERMES_SINGLE_QUERY_SESSION": "1"}, {"approvals": {"single_query_mode": "deny"}}, False),
+        ({"HERMES_SINGLE_QUERY_SESSION": "1"}, {}, False),
+        ({"HERMES_SINGLE_QUERY_SESSION": "1"}, {"approvals": {"single_query_mode": False}}, False),
+        ({}, {"approvals": {"single_query_mode": "approve"}}, False),
+    ],
+)
+def test_a_single_query_run_that_approves_by_itself_keeps_a_strong_block(
+    scripted, monkeypatch, env, config, bypassed
+):
+    """`hermes chat -q` with `approvals.single_query_mode: approve` approves every prompt itself: there a strong block
+    stays a block and a review is held, as under the other known bypasses."""
+    from plugin import intent
+
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(intent, "hermes_config", lambda: config)
+    as_sender(scripted, monkeypatch, "owner")
+    put(scripted, entry())
+    turn(scripted)
+    scripted.reply = dict(FLOOR_BLOCK)
+    out, rec = call(scripted, "run it")
+    if bypassed:
+        assert out["action"] == "block" and "relaxed" not in rec
+    else:
+        assert out["action"] == "approve" and rec["relaxed_strong"] is True
 
 
 @pytest.mark.parametrize(

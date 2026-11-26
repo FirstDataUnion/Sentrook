@@ -723,13 +723,15 @@ def _scan_one(
         # that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
         # (`decision.unattended_view`).
         verdict = decide(unattended_view(resp) if unattended else resp, cfg.review_at, cfg.block_at)
-        if (
-            cfg.mode != "observe"
-            and not unattended
-            and (asked := snooze.asks(resp, verdict, planir)) is not None
-            and snooze.active(
-                store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
-            )
+        asked = (
+            None
+            if cfg.mode == "observe" or unattended
+            else snooze.asks(resp, verdict, planir)
+            # a review of an action the owner was asked about with the warning asks the same way, never snoozed
+            or ("strong" if verdict == "review" and snooze.asked_before(sess, resp) else None)
+        )
+        if asked is not None and snooze.active(
+            store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):
             # The owner snoozed this attended session: the block asks instead (`snooze.asks`). One the scanner marks
             # relaxable is allowed silently only where the owner answered Session or Always for the same action under
@@ -926,6 +928,8 @@ def _scan_one(
             # with it: no allowance besides (`session_allow`).
             if remember:
                 allow_key = None
+            if strong:
+                snooze.note_asked(sess, resp)
             directive = {
                 "action": "approve",
                 "message": card.hermes_message(

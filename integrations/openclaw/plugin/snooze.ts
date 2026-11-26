@@ -18,7 +18,10 @@
  * Beta (`BLOCKS_ASK`): in a chat the owner attends, a snooze turns every other block into such a review too: a block
  * with a floor, a strong signal or `enforced: block`, from an older scanner too. Its card warns, naming the reason it
  * would be blocked, and says to allow it only for exactly the call the owner asked for; it offers Allow once and Deny
- * only. Attended here is what the scanner's attended-owner check reads from the request (`ownerAttends`): the owner's
+ * only. Only a fully informed scan asks (`informed`: status ok and the rule-based probe answered); without it a block
+ * stays a block, since a change to Sentrook itself is found by that probe. While a snooze is on, a review of an action
+ * the session was asked about this way asks again with the same warning (`askedBefore`), never snoozed through.
+ * Attended here is what the scanner's attended-owner check reads from the request (`ownerAttends`): the owner's
  * own message on the main agent, outside a group chat or a host open to anyone, on a chat the plugin could tell apart.
  * A change to Sentrook itself (a `guardrail_tampering` floor that blocks: a write into its state folder, turning the
  * plugin off, a Sentrook command only the owner runs) stays a block: a snooze is never a way for the agent to switch
@@ -66,6 +69,8 @@ const SET_RULE = BLOCKS_ASK
 /** Sender bases of a room others can write to, and bases that say nothing about how the sender was known. */
 const SHARED_BASIS = new Set(["group_chat", "host_open_access"]);
 const NO_BASIS = new Set(["none", "unknown"]);
+/** How many actions a session remembers it asked about with the strong warning (`noteAsked`). */
+export const ASKED_MAX = 50;
 
 /** A change to write to the traffic log, with the reply. */
 export interface SnoozeResult {
@@ -180,15 +185,47 @@ export function tampering(resp: { floors_applied?: unknown; reasons?: unknown })
 }
 
 /**
+ * The scan is complete: status `ok` and the rule-based probe (`aira`, which finds a change to Sentrook itself)
+ * answered `ok` in `metadata.probes`. A response that does not say reads as not informed.
+ */
+export function informed(resp: { status?: unknown; metadata?: unknown }): boolean {
+  if (resp.status !== "ok") return false;
+  const meta: any = resp.metadata && typeof resp.metadata === "object" ? resp.metadata : {};
+  const probes: unknown[] = Array.isArray(meta.probes) ? meta.probes : [];
+  return probes.some((p: any) => p && typeof p === "object" && p.step === "aira" && p.status === "ok");
+}
+
+const fingerprintOf = (resp: { action_fingerprint?: unknown }): string | null =>
+  typeof resp.action_fingerprint === "string" && resp.action_fingerprint ? resp.action_fingerprint : null;
+
+/** Remember in the session that its owner was asked about this action with the strong warning (the last `ASKED_MAX`). */
+export function noteAsked(sess: { snoozeAsked?: string[] }, resp: { action_fingerprint?: unknown }): void {
+  const fp = fingerprintOf(resp);
+  if (fp === null) return;
+  const kept = (Array.isArray(sess.snoozeAsked) ? sess.snoozeAsked : []).filter((x) => typeof x === "string" && x !== fp);
+  sess.snoozeAsked = [...kept, fp].slice(-ASKED_MAX);
+}
+
+/**
+ * The session's owner was asked about this action with the strong warning (`noteAsked`): a review of it again, say
+ * one the scanner scored lower after the owner allowed it once, asks the same way and is never snoozed.
+ */
+export function askedBefore(sess: { snoozeAsked?: string[] }, resp: { action_fingerprint?: unknown }): boolean {
+  const fp = fingerprintOf(resp);
+  return fp !== null && Array.isArray(sess.snoozeAsked) && sess.snoozeAsked.includes(fp);
+}
+
+/**
  * What a snooze in a session on a run the owner attends does with this verdict: `relaxed` for a block the scanner
  * marks `relaxable` (today's question), `strong` for any other block in the owner's own chat (`BLOCKS_ASK`; the card
- * warns and nothing allows it silently), null where it stays as it is (not a block, a change to Sentrook itself,
- * another sender or a shared room, or `BLOCKS_ASK` off). The caller checks the snooze, the run and the mode.
+ * warns and nothing allows it silently), null where it stays as it is (not a block, a change to Sentrook itself, a
+ * scan that is not fully informed, another sender or a shared room, or `BLOCKS_ASK` off). The caller checks the
+ * snooze, the run and the mode.
  */
 export function asks(resp: Record<string, any>, verdict: string, planir: any, blocksAsk: boolean = BLOCKS_ASK): "relaxed" | "strong" | null {
   if (verdict !== "block") return null;
   if (relaxes(resp, verdict)) return "relaxed";
-  if (blocksAsk && !tampering(resp) && ownerAttends(planir)) return "strong";
+  if (blocksAsk && informed(resp) && !tampering(resp) && ownerAttends(planir)) return "strong";
   return null;
 }
 

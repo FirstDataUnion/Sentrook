@@ -296,3 +296,34 @@ def test_a_subagent_of_the_background_review_stays_a_background_run(h, monkeypat
     out, rec = child_send(h)
     assert out["action"] == "block" and rec.get("background_run") is True
     assert "parent_chat" not in rec
+
+
+def test_a_strong_block_in_a_subagent_of_the_owners_chat_stays_a_block_while_snoozed(h):
+    """A snooze turns a block into a question only on the main agent: a delegated child's block stays a block, even
+    though its reviews ask in the owner's chat."""
+    import json
+    from datetime import UTC, datetime, timedelta
+    from pathlib import Path
+
+    from plugin import snooze
+
+    relax = json.loads(
+        (Path(__file__).resolve().parents[3] / "fixtures" / "snooze" / "relax.json").read_text()
+    )
+    floor = next(
+        c["response"] for c in relax["cases"] if "sensitive-data floor block asks" in c["name"]
+    )
+    now = datetime.now(UTC)
+    path = h.dir / "sentrook" / "snooze.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    every = {
+        "scope": "all",
+        "set_at": snooze.iso(now),
+        "expires_at": snooze.iso(now + timedelta(hours=1)),
+    }
+    path.write_text(json.dumps({"version": 1, "snoozes": [every]}))
+    delegate(h)
+    h.reply = {**NAMED, **floor}
+    out, rec = child_send(h)
+    assert out["action"] == "block" and rec["decision"] == "blocked"
+    assert "relaxed" not in rec

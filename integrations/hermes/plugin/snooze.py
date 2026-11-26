@@ -23,7 +23,10 @@ snoozes covered the session.
 Beta (`BLOCKS_ASK`): in a chat the owner attends, a snooze turns every other block into a review too: a block with a
 floor, a strong signal or `enforced: block`, from an older scanner too. Its card warns, naming the reason it would be
 blocked, and says to allow it only for exactly the call the owner asked for. It is never allowed silently: its rule
-key is the call's own, so Hermes's Session and Always answers allow that call only. Attended here is what the
+key is the call's own, so Hermes's Session and Always answers allow that call only. Only a fully informed scan asks
+(`informed`: status ok and the rule-based probe answered); without it a block stays a block, since a change to
+Sentrook itself is found by that probe. While a snooze is on, a review of an action the session was asked about this
+way asks again with the same warning (`asked_before`), never snoozed through. Attended here is what the
 scanner's attended-owner check reads from the request (`owner_attends`): the owner's own message on the main agent,
 outside a group chat or a host open to anyone, on a chat the plugin could tell apart. A change to Sentrook itself (a
 `guardrail_tampering` floor that blocks: a write into its state folder, turning the plugin off, a Sentrook command
@@ -89,6 +92,8 @@ SET_RULE = (
 #: Sender bases of a room others can write to, and bases that say nothing about how the sender was known.
 _SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
 _NO_BASIS = frozenset({"none", "unknown"})
+#: How many actions a session remembers it asked about with the strong warning (`note_asked`).
+ASKED_MAX = 50
 #: Serialises read-modify-write of the file within this process; `file_lock` does across processes.
 _LOCK = threading.Lock()
 
@@ -216,17 +221,51 @@ def tampering(resp: dict[str, Any]) -> bool:
     return False
 
 
+def informed(resp: dict[str, Any]) -> bool:
+    """The scan is complete: status `ok` and the rule-based probe (`aira`, which finds a change to Sentrook itself)
+    answered `ok` in `metadata.probes`. A response that does not say reads as not informed."""
+    if resp.get("status") != "ok":
+        return False
+    meta = resp.get("metadata") if isinstance(resp.get("metadata"), dict) else {}
+    probes = meta.get("probes") if isinstance(meta.get("probes"), list) else []
+    return any(
+        isinstance(p, dict) and p.get("step") == "aira" and p.get("status") == "ok" for p in probes
+    )
+
+
+def _fingerprint(resp: dict[str, Any]) -> str | None:
+    fp = resp.get("action_fingerprint")
+    return fp if isinstance(fp, str) and fp else None
+
+
+def note_asked(sess: dict[str, Any], resp: dict[str, Any]) -> None:
+    """Remember in the session that its owner was asked about this action with the strong warning (the last
+    `ASKED_MAX`)."""
+    fp = _fingerprint(resp)
+    if fp is None:
+        return
+    kept = [x for x in sess.get("snooze_asked") or [] if isinstance(x, str) and x != fp]
+    sess["snooze_asked"] = [*kept, fp][-ASKED_MAX:]
+
+
+def asked_before(sess: dict[str, Any], resp: dict[str, Any]) -> bool:
+    """The session's owner was asked about this action with the strong warning (`note_asked`): a review of it again,
+    say one the scanner scored lower after the owner allowed it once, asks the same way and is never snoozed."""
+    fp = _fingerprint(resp)
+    return fp is not None and fp in (sess.get("snooze_asked") or [])
+
+
 def asks(resp: dict[str, Any], verdict: str, planir: dict[str, Any]) -> str | None:
     """What a snooze in a session on a run the owner attends does with this verdict: `relaxed` for a block the
     scanner marks `relaxable` (today's question), `strong` for any other block in the owner's own chat (`BLOCKS_ASK`;
     the card warns and nothing allows it silently), None where it stays as it is (not a block, a change to Sentrook
-    itself, another sender or a shared room, or `BLOCKS_ASK` off). The caller checks the snooze, the run and the
-    mode."""
+    itself, a scan that is not fully informed, another sender or a shared room, or `BLOCKS_ASK` off). The caller
+    checks the snooze, the run and the mode."""
     if verdict != "block":
         return None
     if relaxes(resp, verdict):
         return "relaxed"
-    if BLOCKS_ASK and not tampering(resp) and owner_attends(planir):
+    if BLOCKS_ASK and informed(resp) and not tampering(resp) and owner_attends(planir):
         return "strong"
     return None
 

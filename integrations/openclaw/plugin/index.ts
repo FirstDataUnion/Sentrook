@@ -1019,7 +1019,10 @@ const plugin = {
         // that reaches no network sink: that call is held for the owner. The attended-owner ceiling is dropped there
         // (`unattendedView`).
         verdict = decide(unattended ? unattendedView(resp) : resp, cfg);
-        const asked = snooze.asks(resp, verdict, built.planir);
+        const asked =
+          snooze.asks(resp, verdict, built.planir) ??
+          // a review of an action the owner was asked about with the warning asks the same way, never snoozed
+          (verdict === "review" && snooze.askedBefore(sess, resp) ? "strong" : null);
         if (
           // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
           cfg.mode !== "observe" &&
@@ -1161,6 +1164,7 @@ const plugin = {
           // where the owner is the one answering. Never for a block a snooze turned into a review.
           const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
           remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
+          if (strong) snooze.noteAsked(sess, resp);
           const copy = reviewCard(resp, event.toolName, {
             relaxed,
             strong,
