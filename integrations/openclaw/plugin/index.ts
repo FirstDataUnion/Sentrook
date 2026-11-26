@@ -36,7 +36,7 @@ import * as passes from "./passes.ts";
 import * as runNow from "./runNow.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, describe as describeCall, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL_NAMES, toolKind, triggerKind } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL_NAMES, toolKind, triggerKind, unwrapToolCall } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -114,12 +114,18 @@ export interface BeforeToolCallResult {
   params?: Record<string, unknown>;
 }
 
+/** Tool search's discovery tools: no side effects, and names OpenClaw keeps for itself. */
+const DISCOVERY_TOOLS = new Set(["tool_search", "tool_describe"]);
+
 /**
  * Tool search: discovery tools have no side effects, and the dispatcher (`tool_call`, `dispatch_action` from OpenClaw
  * 2026.11.3) only dispatches; the call they lead to is scanned on its own (a dispatched call fires its own tool hooks,
- * with its own result).
+ * with its own result). Only one of the dispatcher's names is reserved on a given OpenClaw, and none is with tool search
+ * off, so a call by either name is skipped only when it names a tool the way the dispatcher takes it; anything else is
+ * another tool of that name and is scanned.
  */
-const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", ...TOOL_CALL_NAMES]);
+const isUnscanned = (event: any) =>
+  DISCOVERY_TOOLS.has(event?.toolName) || (TOOL_CALL_NAMES.has(event?.toolName) && unwrapToolCall(event?.params) !== null);
 
 /** History decisions after which the tool did not run. */
 const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held", "draft_failed"]);
@@ -678,13 +684,16 @@ const plugin = {
       safely("own tool check", () => foreignOwnTool(event, ctx));
       try {
         const hostId: string | undefined = event?.toolCallId ?? ctx?.toolCallId;
-        if (!hostId || UNSCANNED_TOOLS.has(event?.toolName)) return;
+        if (!hostId || DISCOVERY_TOOLS.has(event?.toolName)) return;
+        // A dispatcher call that was skipped left no history entry: its result (the envelope) belongs only to an
+        // entry of that tool, never to another call that had the same host id (some providers reuse them).
+        const dispatcher = TOOL_CALL_NAMES.has(event?.toolName);
         const { cfg } = loadConfig();
         const sid = sessionIdOf(ctx);
         await store.withSession(sid, () => {
           const sess = store.loadSession(sid);
           const entry = [...sess.history].reverse().find((h) => h._host_call_id === hostId || h.call_id === hostId);
-          if (!entry) return;
+          if (!entry || (dispatcher && entry.tool !== event.toolName)) return;
           const text = fullResults.get(hostId) ?? resultText(event?.result ?? event?.error);
           if (entry.decision === "drafted") {
             // Only now is the draft known kept, lost, or ignored (OpenClaw ran the call's own create, so the skill
@@ -766,7 +775,7 @@ const plugin = {
     api.on(
       "before_tool_call",
       async (event: any, ctx: any): Promise<BeforeToolCallResult | undefined> => {
-        if (UNSCANNED_TOOLS.has(event?.toolName)) return undefined;
+        if (isUnscanned(event)) return undefined;
         const own = ownToolCall(event, ctx);
         if (own) return ownToolGate(event, ctx, own);
         try {
