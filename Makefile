@@ -1,12 +1,14 @@
 # Sentrook 2.0 scanner.
 # Everything runs through uv; `make install` creates .venv with the dev extras.
-.PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check \
+.PHONY: help install test test-large test-rest lint lint-fix schema schema-check redact-shapes redact-shapes-check \
 	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat openclaw-compat \
 	hermes-release-test openclaw-release-test docs-check
 
 help:
 	@echo "install       uv sync with dev extras"
 	@echo "test          unit tests (sentrook/tests)"
+	@echo "test-large    the unit test files of large inputs (one CI job)"
+	@echo "test-rest     every other unit test (the other CI job)"
 	@echo "lint          ruff check + format check"
 	@echo "lint-fix      ruff format + check --fix"
 	@echo "schema        regenerate schema/*.json from the models"
@@ -41,6 +43,24 @@ install:
 PYTEST_WORKERS ?= 4
 test:
 	uv run pytest sentrook/tests -q -n $(PYTEST_WORKERS)
+
+# CI runs the unit tests as two jobs side by side: the files that are mostly large inputs (timing checks
+# and padded calls), and everything else. Together they are `make test`. A file named here that no longer
+# exists fails the large-input half, so the list cannot quietly drift.
+LARGE_INPUT_TESTS = \
+	sentrook/tests/test_approval_loosening_probes.py \
+	sentrook/tests/test_guardrail_unparsed.py \
+	sentrook/tests/test_large_calls.py \
+	sentrook/tests/test_linear_time.py \
+	sentrook/tests/test_long_option_runs.py \
+	sentrook/tests/test_prepare_long_option_runs.py \
+	sentrook/tests/test_redact.py \
+	sentrook/tests/test_redact_shapes.py \
+	sentrook/tests/test_slow_shapes.py
+test-large:
+	uv run pytest $(LARGE_INPUT_TESTS) -q -n $(PYTEST_WORKERS)
+test-rest:
+	uv run pytest sentrook/tests -q -n $(PYTEST_WORKERS) $(addprefix --ignore=,$(LARGE_INPUT_TESTS))
 
 lint:
 	uv run ruff check .

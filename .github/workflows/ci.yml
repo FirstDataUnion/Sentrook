@@ -50,9 +50,33 @@ jobs:
         if: ${{ !cancelled() }}
         run: make redact-shapes-check
 
+      # The large-input files run in the large-inputs job beside this one.
       - name: Unit tests
         if: ${{ !cancelled() }}
-        run: make test
+        run: make test-rest
+
+  # About half the unit tests' time, on a runner of its own, so the two halves run side by side.
+  large-inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        run: make install
+
+      - name: Unit tests, large-input files
+        run: make test-large
 
   plugins:
     runs-on: ubuntu-latest
