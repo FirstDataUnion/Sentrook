@@ -795,10 +795,11 @@ _DRIVE_ID = re.compile(r"[01][A-Za-z0-9_-]{24,43}")
 # the endings that do the same inside one word (`signingkey`): a Drive id's shape under such a key, or under a custom
 # `X-` header, is redacted even where Google is named.
 _SECRET_KEY_WORDS = frozenset(
-    "key keys auth cookie cookies sessionid sid sig signature hmac salt seed master license licence pwd pass "
-    "passwd credential credentials access private secret token otp jwt csrf xsrf".split()
+    "key keys auth authorization cookie cookies sessionid sid sess phpsessid jsessionid sig signature hmac salt seed "
+    "master license licence pwd pw pass passwd credential credentials cred creds access private priv pk sk pat secret "
+    "token otp totp mfa jwt csrf xsrf".split()
 )
-_SECRET_KEY_END = re.compile(r"(?:key|token|secret|auth|sig|pass|pwd)$")
+_SECRET_KEY_END = re.compile(r"(?:key|token|secret|auth|sig|pass|pwd)[0-9]*$")
 # What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
 # Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
 # (`drive_files_list`, `docs_get`). The word alone ("my parents", "kid in parents", `parents = []`) does not.
@@ -898,10 +899,16 @@ def _random_key(key: str, value: str, after_query: bool) -> bool:
 
 
 def _secret_key(key: str) -> bool:
-    """A key whose value is a secret whatever it looks like: a custom `X-` header, or a key with a secret word."""
-    if key[:2].lower() == "x-":
+    """A key whose value is a secret whatever it looks like: a credential key (`_CREDENTIAL_FIELD`), a custom `X-`
+    header, a key with a secret word in any of its dotted parts (`connect.sid`, `GITHUB_TOKEN2`), or one whose last
+    word is `session` (`x_session`, not `sessionPlan`)."""
+    if key[:2].lower() == "x-" or _CREDENTIAL_FIELD.search(key):
         return True
-    return any(w in _SECRET_KEY_WORDS or _SECRET_KEY_END.search(w) for w in _key_words(key))
+    words = [w for part in key.split(".") for w in _key_words(part)]
+    return bool(words) and (
+        words[-1] == "session"
+        or any(w in _SECRET_KEY_WORDS or _SECRET_KEY_END.search(w) for w in words)
+    )
 
 
 def _google_id(key: str, value: str, google: bool) -> bool:

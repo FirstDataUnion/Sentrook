@@ -638,11 +638,12 @@ const DRIVE_ID = /^[01][A-Za-z0-9_-]{24,43}$/;
  */
 const SECRET_KEY_WORDS = new Set(
   (
-    "key keys auth cookie cookies sessionid sid sig signature hmac salt seed master license licence pwd pass " +
-    "passwd credential credentials access private secret token otp jwt csrf xsrf"
+    "key keys auth authorization cookie cookies sessionid sid sess phpsessid jsessionid sig signature hmac salt seed " +
+    "master license licence pwd pw pass passwd credential credentials cred creds access private priv pk sk pat secret " +
+    "token otp totp mfa jwt csrf xsrf"
   ).split(" "),
 );
-const SECRET_KEY_END = /(?:key|token|secret|auth|sig|pass|pwd)$/;
+const SECRET_KEY_END = /(?:key|token|secret|auth|sig|pass|pwd)[0-9]*$/;
 /**
  * What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
  * Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
@@ -657,9 +658,16 @@ const GOOGLE_CONTEXT = new RegExp(
     String.raw`|g?drive_(?:files?|folders?|permissions?)(?![A-Za-z0-9])` +
     String.raw`|(?:g?docs|sheets|slides)_(?:get|create|append|update|batch|export|insert|replace|values))`,
 );
-/** A key whose value is a secret whatever it looks like: a custom `X-` header, or a key with a secret word. */
-const secretKey = (key: string) =>
-  key.slice(0, 2).toLowerCase() === "x-" || keyWords(key).some((w) => SECRET_KEY_WORDS.has(w) || SECRET_KEY_END.test(w));
+/**
+ * A key whose value is a secret whatever it looks like: a credential key (`CREDENTIAL_FIELD`), a custom `X-` header, a
+ * key with a secret word in any of its dotted parts (`connect.sid`, `GITHUB_TOKEN2`), or one whose last word is
+ * `session` (`x_session`, not `sessionPlan`).
+ */
+const secretKey = (key: string): boolean => {
+  if (key.slice(0, 2).toLowerCase() === "x-" || CREDENTIAL_FIELD.test(key)) return true;
+  const words = key.split(".").flatMap((part) => keyWords(part));
+  return words.length > 0 && (words[words.length - 1] === "session" || words.some((w) => SECRET_KEY_WORDS.has(w) || SECRET_KEY_END.test(w)));
+};
 /**
  * A Drive, Docs or Sheets id where Google is named, under a key that does not name a secret: the document or folder a
  * call works on.

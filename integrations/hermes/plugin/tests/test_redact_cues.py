@@ -122,6 +122,19 @@ MUST_REDACT = [
     ),
     (f"hmac={DOC}\nauth={FOLDER}\nvia googleapis", FOLDER, "credential"),
     # "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    (
+        f'curl -H "Authorization: {FOLDER}" https://api.example.test/v1\n# via https://oauth2.googleapis.com/token',
+        FOLDER,
+        "credential",
+    ),
+    (
+        f'"password": "{DOC}"\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token',
+        DOC,
+        "credential",
+    ),
+    (f"GITHUB_TOKEN2={FOLDER}\nconnect.sid={DOC}\nvia googleapis", FOLDER, "credential"),
+    (f"connect.sid={DOC}\nvia googleapis", DOC, "credential"),
+    (f"x_session: {DOC}\nvia googleapis", DOC, "credential"),
     (f"value: {FOLDER}\nthe kid in parents' care", FOLDER, "credential"),
     (f"parents = []\nvalue: {DOC}", DOC, "credential"),
 ]
@@ -203,6 +216,10 @@ MUST_REDACT_OBJECTS = [
     ({"sessionid": FOLDER, "url": "https://www.googleapis.com/x"}, FOLDER, "credential"),
     ({"X-Desk": DOC, "u": "googleapis"}, DOC, "credential"),
     ({"cookie": FOLDER, "fileId": "x"}, FOLDER, "credential"),
+    ({"Authorization": DOC, "url": "https://www.googleapis.com/x"}, DOC, "credential"),
+    ({"Proxy-Authorization": FOLDER, "u": "googleapis"}, FOLDER, "credential"),
+    ({"auth.password": DOC, "u": "googleapis"}, DOC, "credential"),
+    ({"apiKey2": FOLDER, "u": "googleapis"}, FOLDER, "credential"),
 ]
 
 MUST_STAY_OBJECTS = [

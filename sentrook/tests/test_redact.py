@@ -640,6 +640,16 @@ CUE_MUST_REPLACE = [
     ("sessionid=" + _DOC + "; docs.google.com", _DOC),
     ("hmac=" + _DOC + "\nvia googleapis", _DOC),
     # "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    (
+        'curl -H "Authorization: '
+        + _FOLDER
+        + '" https://x.example\n# via https://oauth2.googleapis.com/token',
+        _FOLDER,
+    ),
+    ('"password": "' + _DOC + '"\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token', _DOC),
+    ("GITHUB_TOKEN2=" + _FOLDER + "\nvia googleapis", _FOLDER),
+    ("connect.sid=" + _DOC + "\nvia googleapis", _DOC),
+    ("x_session: " + _DOC + "\nvia googleapis", _DOC),
     ("value: " + _FOLDER + "\nthe kid in parents' care", _FOLDER),
     ("parents = []\nvalue: " + _DOC, _DOC),
 ]
@@ -826,6 +836,12 @@ def test_object_parity_with_the_hermes_plugin():
         {"plan": _DOC, "nested": {"fields": "textRun", "value": _FOLDER}},
         {"sessionid": _FOLDER, "url": "https://www.googleapis.com/x"},
         {"X-Desk": _DOC, "cookie": _FOLDER, "fileId": "x"},
+        {
+            "Authorization": _DOC,
+            "Proxy-Authorization": _FOLDER,
+            "url": "https://www.googleapis.com/x",
+        },
+        {"auth.password": _DOC, "apiKey2": _FOLDER, "u": "googleapis"},
     ]
     objects.append(
         {

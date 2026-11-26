@@ -549,6 +549,11 @@ test("codes, PINs, passport numbers and random values under a key leave the host
     [`sessionid=${DOC}; docs.google.com`, DOC, "credential"],
     [`hmac=${DOC}\nvia googleapis`, DOC, "credential"],
     // "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    [`curl -H "Authorization: ${FOLDER}" https://x.example\n# via https://oauth2.googleapis.com/token`, FOLDER, "credential"],
+    [`"password": "${DOC}"\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token`, DOC, "credential"],
+    [`GITHUB_TOKEN2=${FOLDER}\nvia googleapis`, FOLDER, "credential"],
+    [`connect.sid=${DOC}\nvia googleapis`, DOC, "credential"],
+    [`x_session: ${DOC}\nvia googleapis`, DOC, "credential"],
     [`value: ${FOLDER}\nthe kid in parents' care`, FOLDER, "credential"],
     [`parents = []\nvalue: ${DOC}`, DOC, "credential"],
   ];
@@ -631,6 +636,9 @@ test("a Drive id in an object stays only when its own object names Google", () =
   assert.match((r.value({ value: DOC, note: "ask my parents" }) as any).value, /^⟦secret:credential:/);
   assert.match((r.value({ sessionid: FOLDER, url: "https://www.googleapis.com/x" }) as any).sessionid, /^⟦secret:credential:/);
   assert.match((r.value({ "X-Desk": DOC, u: "googleapis" }) as any)["X-Desk"], /^⟦secret:credential:/);
+  for (const key of ["Authorization", "Proxy-Authorization", "auth.password", "apiKey2"]) {
+    assert.match((r.value({ [key]: DOC, u: "googleapis" }) as any)[key], /^⟦secret:credential:/, key);
+  }
 });
 
 test("recipients and destinations stay when a send is redacted", () => {

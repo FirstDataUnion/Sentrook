@@ -348,8 +348,8 @@ since the version the catalog pins.
   or a Drive or Docs tool such as `drive_files_list` or `docs_get`) became a placeholder: the scanner could not see
   which document or folder the call reads or writes, and counted the id as a secret being sent. Such an id now stays
   when its own text, or for a value in a call's arguments its own object, names Google. A value of that shape with
-  nothing naming Google, any value under a credential key, a key with a secret word in it (`SESSION_KEY`, `X-Auth`,
-  `cookie`, `hmac`) or a custom `X-` header, and every other random value are redacted as before.
+  nothing naming Google, any value under a credential key, a key with a secret word in it (`SESSION_KEY`, `Authorization`,
+  `connect.sid`, `cookie`, `hmac`) or a custom `X-` header, and every other random value are redacted as before.
 
 ## 2.0.0-beta.17
 
