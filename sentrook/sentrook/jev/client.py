@@ -5,6 +5,12 @@ there and replays or records every answer; Sentrook has no other cache awareness
 `provider: {zdr: true, allow_fallbacks: false}` (zero data retention, no provider fallback) and retry with backoff on 429 and
 5xx. Over the 32k context limit the API returns a hard `400 max_tokens_exceeded`, surfaced as
 `ApiError.context_limit` so the probe records a coverage event instead of crashing.
+
+`classify_failure` sorts a failed call (after its retries) into the outcome classes `/metrics` reports per route:
+`provider_rejected` (a 4xx other than 429 and the context limit: the key, the credit or the account refused, which
+does not heal on its own), `rate_limited` (429), `outage` (5xx, timeouts, connection errors), `context_limit` (the
+request was too large, which says nothing about the provider) and `invalid` (an answer that is not the typed answer
+the questions asked for). A second, OpenAI-compatible route lives in `secondary.py`; `routing.py` picks between them.
 """
 
 from __future__ import annotations
@@ -41,6 +47,43 @@ class ApiError(Exception):
         return self.status is None and "timeout" in self.body.lower()
 
 
+class InvalidAnswer(ApiError):
+    """A route answered, but not with the typed answer the questions asked for."""
+
+    def __init__(self, body: str):
+        super().__init__(None, body)
+
+    @property
+    def timeout(self) -> bool:
+        return False
+
+
+OK = "ok"
+PROVIDER_REJECTED = "provider_rejected"
+RATE_LIMITED = "rate_limited"
+OUTAGE = "outage"
+CONTEXT_LIMIT = "context_limit"
+INVALID = "invalid"
+#: Every outcome of one routed call, for metric label initialisation.
+OUTCOMES = (OK, PROVIDER_REJECTED, RATE_LIMITED, OUTAGE, CONTEXT_LIMIT, INVALID)
+
+
+def classify_failure(exc: Exception) -> str:
+    """The outcome class of a failed call: see the module docstring. Anything that is not an `ApiError` (a 2xx
+    whose body is not JSON, say) is `invalid`."""
+    if isinstance(exc, InvalidAnswer) or not isinstance(exc, ApiError):
+        return INVALID
+    if exc.status is None or exc.status >= 500 or exc.status == 499:
+        return OUTAGE
+    if exc.status == 429:
+        return RATE_LIMITED
+    if exc.context_limit:
+        return CONTEXT_LIMIT
+    if 400 <= exc.status < 500:
+        return PROVIDER_REJECTED
+    return OUTAGE
+
+
 @dataclass
 class DecisionResult:
     response: dict[str, Any]
@@ -58,6 +101,9 @@ class DecisionResult:
     @property
     def model(self) -> str | None:
         return self.response.get("model")
+
+    #: Which route answered, set by `RoutedDecider` only when a second route is configured.
+    route: str | None = None
 
 
 class Decider(Protocol):
@@ -83,6 +129,33 @@ class JevConfig:
     taint_threshold: float = 0.5
 
 
+def post_with_retries(
+    http: httpx.Client, path: str, data: bytes, headers: dict[str, str], retries: int
+) -> tuple[httpx.Response, float]:
+    """POST with retry and backoff on `RETRY_STATUSES`, timeouts and connection errors; returns the 2xx response
+    and its latency in ms, or raises the last `ApiError`."""
+    last: ApiError | None = None
+    for attempt in range(max(1, retries)):
+        t0 = time.perf_counter()
+        try:
+            r = http.post(path, content=data, headers=headers)
+        except httpx.TimeoutException as e:
+            last = ApiError(None, f"timeout: {e!r}")
+        except httpx.HTTPError as e:
+            last = ApiError(None, repr(e))
+        else:
+            latency = (time.perf_counter() - t0) * 1000
+            if r.status_code < 300:
+                return r, latency
+            last = ApiError(r.status_code, r.text)
+            if r.status_code not in RETRY_STATUSES:
+                raise last
+        if attempt < retries - 1:
+            time.sleep(min(10.0, 0.5 * 2**attempt + random.random() * 0.25))
+    assert last is not None
+    raise last
+
+
 class DecisionsClient:
     """Live HTTP client with retry and backoff."""
 
@@ -98,29 +171,13 @@ class DecisionsClient:
     def decide(self, body: dict[str, Any], *, repeat: int | None = None) -> DecisionResult:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = {REPEAT_HEADER: str(repeat)} if repeat else {}
-        last: ApiError | None = None
-        for attempt in range(max(1, self.config.retries)):
-            t0 = time.perf_counter()
-            try:
-                r = self._http.post(DECISIONS_PATH, content=data, headers=headers)
-            except httpx.TimeoutException as e:
-                last = ApiError(None, f"timeout: {e!r}")
-            except httpx.HTTPError as e:
-                last = ApiError(None, repr(e))
-            else:
-                latency = (time.perf_counter() - t0) * 1000
-                if r.status_code < 300:
-                    cache = r.headers.get("X-TestNest-Cache")
-                    return DecisionResult(
-                        r.json(), latency, cache_hit=None if cache is None else cache == "hit"
-                    )
-                last = ApiError(r.status_code, r.text)
-                if r.status_code not in RETRY_STATUSES:
-                    raise last
-            if attempt < self.config.retries - 1:
-                time.sleep(min(10.0, 0.5 * 2**attempt + random.random() * 0.25))
-        assert last is not None
-        raise last
+        r, latency = post_with_retries(
+            self._http, DECISIONS_PATH, data, headers, self.config.retries
+        )
+        cache = r.headers.get("X-TestNest-Cache")
+        return DecisionResult(
+            r.json(), latency, cache_hit=None if cache is None else cache == "hit"
+        )
 
     def close(self) -> None:
         self._http.close()
