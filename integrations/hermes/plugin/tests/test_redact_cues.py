@@ -41,6 +41,10 @@ def _random_value(n: int, seed: int) -> str:
 
 
 R14, R20, R32 = _random_value(14, 1), _random_value(20, 2), _random_value(32, 3)
+# Google Drive, Docs and Sheets ids: a leading 1, then letters, digits, `-` and `_` (33 long for a folder, 44 for a
+# document).
+FOLDER = "1" + _random_value(32, 4)
+DOC = "1" + _random_value(20, 5) + "-" + _random_value(11, 6) + "_" + _random_value(10, 7)
 # Invented values, split so they read as nothing in the source.
 GATE, ALARM, SIGNIN, COLLECT, YARD, CLIENT, CURLPIN, CURLCODE = (
     "86" + "1206",
@@ -89,6 +93,57 @@ MUST_REDACT = [
     ),
     ("curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644", "credential"),
     (f"collection PIN {COLLECT}, {CLIENT}", CLIENT, "credential"),
+    # A Drive id's shape alone is not enough: with nothing naming Google it is a random value like any other.
+    (f"value: {FOLDER}", FOLDER, "credential"),
+    (f'const PLAN = "{DOC}";\nawait run(PLAN);', DOC, "credential"),
+    (f"Ask my parents first.\nvalue: {DOC}", DOC, "credential"),
+    # With Google named, a value that is not a Drive id's shape still goes, and so does one under a credential key.
+    (f'const PLAN = "{R20}"; // documentId', R20, "credential"),
+    (
+        f"curl https://www.googleapis.com/drive/v3/files -H 'X-Desk: {FOLDER[:20]}+{R14}/='",
+        R14,
+        "credential",
+    ),
+    (f"api_key: {FOLDER}\n# then call googleapis", FOLDER, "credential"),
+    (f'curl -H "Authorization: Bearer {DOC}" https://docs.google.com/x', DOC, "credential"),
+    # With Google named, a Drive id's shape under a key that names a secret, or under a custom header, still goes.
+    (
+        f"SESSION_KEY={FOLDER}\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token",
+        FOLDER,
+        "credential",
+    ),
+    (f"signing_key: {DOC}\n# for googleapis", DOC, "credential"),
+    (f"curl https://www.googleapis.com/drive/v3/files -H 'X-Desk: {FOLDER}'", FOLDER, "credential"),
+    (f"sessionid={DOC}; docs.google.com", DOC, "credential"),
+    (
+        f"signature: {FOLDER}\nconst doc = await docs.documents.get({{ documentId: id }});",
+        FOLDER,
+        "credential",
+    ),
+    (f"hmac={DOC}\nauth={FOLDER}\nvia googleapis", FOLDER, "credential"),
+    # "parents" as a word, or assigned something other than a Drive id, does not name Google.
+    (
+        f'curl -H "Authorization: {FOLDER}" https://api.example.test/v1\n# via https://oauth2.googleapis.com/token',
+        FOLDER,
+        "credential",
+    ),
+    (
+        f'"password": "{DOC}"\nGOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token',
+        DOC,
+        "credential",
+    ),
+    (f"GITHUB_TOKEN2={FOLDER}\nconnect.sid={DOC}\nvia googleapis", FOLDER, "credential"),
+    (f"connect.sid={DOC}\nvia googleapis", DOC, "credential"),
+    (f"x_session: {DOC}\nvia googleapis", DOC, "credential"),
+    # The guard errs toward redacting: a document under a key with a secret stem in it is hidden too.
+    (
+        f'const sessionPlan = "{DOC}";\nawait tools.docs_get({{ id: sessionPlan }});',
+        DOC,
+        "credential",
+    ),
+    (f"__Secure-1PSID={FOLDER}; SAPISID={DOC}; via googleapis", FOLDER, "credential"),
+    (f"value: {FOLDER}\nthe kid in parents' care", FOLDER, "credential"),
+    (f"parents = []\nvalue: {DOC}", DOC, "credential"),
 ]
 
 MUST_STAY = [
@@ -137,6 +192,18 @@ MUST_STAY = [
     "error code=447100",
     "hsn_code: 847130",
     "ref_code=447100",
+    # A Drive, Docs or Sheets id stays where the same text names Google (a Google host or client library, a Drive or
+    # Docs API name, a Drive or Docs tool), so the scanner sees which document or folder a call works on.
+    f"parents='{FOLDER}' and mimeType='application/pdf'",
+    f"'{FOLDER}' in parents and trashed=false\ntarget={FOLDER}",
+    f'const PLAN = "{DOC}";\nconst doc = await docs.documents.get({{ documentId: PLAN }});',
+    f'const DOCS = {{ plan: "{DOC}", brief: "{FOLDER}" }};\n'
+    "const text = (p) => p.elements.map((e) => e.textRun?.content).join('');",
+    f'DOC_A1 = "{DOC}"\nfrom googleapiclient.discovery import build',
+    f'TARGET_A = "{FOLDER}"\ncurl -s "https://www.googleapis.com/drive/v3/files?q=x" -H "Authorization: Bearer $T"',
+    f'plan = "{DOC}"\nprint("https://docs.google.com/document/d/" + plan)',
+    f'plan = "{DOC}"\nd = gapi.getdoc(plan)',
+    f'const r = await tools.drive_files_list({{ q: "x" }});\nconst dest = "{FOLDER}";',
 ]
 
 MUST_REDACT_OBJECTS = [
@@ -147,6 +214,44 @@ MUST_REDACT_OBJECTS = [
     ({"passport_number": PASS1}, PASS1, "identifier"),
     ({"value": R32}, R32, "credential"),
     ({"pin": float(CURLPIN)}, CURLPIN, "credential"),
+    # A Drive id's shape under a key, with nothing beside it naming Google.
+    ({"parent": FOLDER}, FOLDER, "credential"),
+    ({"value": DOC, "note": "ask my parents"}, DOC, "credential"),
+    # With Google beside it, under a key that names a secret or a custom header.
+    ({"sessionid": FOLDER, "url": "https://www.googleapis.com/x"}, FOLDER, "credential"),
+    ({"X-Desk": DOC, "u": "googleapis"}, DOC, "credential"),
+    ({"cookie": FOLDER, "fileId": "x"}, FOLDER, "credential"),
+    ({"Authorization": DOC, "url": "https://www.googleapis.com/x"}, DOC, "credential"),
+    ({"Proxy-Authorization": FOLDER, "u": "googleapis"}, FOLDER, "credential"),
+    ({"auth.password": DOC, "u": "googleapis"}, DOC, "credential"),
+    ({"apiKey2": FOLDER, "u": "googleapis"}, FOLDER, "credential"),
+    *(
+        ({k: DOC, "u": "googleapis"}, DOC, "credential")
+        for k in [
+            "SAPISID",
+            "__Secure-1PSID",
+            "SIDCC",
+            "NID",
+            "SECRETS",
+            "TOKENS",
+            "bindpw",
+            "wpa_psk",
+            "recoveryCode",
+            "code_verifier",
+            "mnemonic",
+            "cf_clearance",
+            "AWSALB",
+            "keystore",
+            "sessionId1",
+            "client_assertion",
+            "connection_string",
+            "refresh",
+            "SLACK_WEBHOOK",
+            "ssh",
+            "api",
+            "activation",
+        ]
+    ),
 ]
 
 MUST_STAY_OBJECTS = [
@@ -161,6 +266,9 @@ MUST_STAY_OBJECTS = [
     {"userId": "aB3dE5fG7hJ9kL"},
     {"pin": True},
     {"to": R20, "bucket": R14},
+    # A Drive id under a key whose object names Google beside it.
+    {"parent": FOLDER, "url": "https://www.googleapis.com/upload/drive/v3/files"},
+    {"plan": DOC, "fields": "body.content(paragraph(elements(textRun)))"},
 ]
 
 
@@ -194,6 +302,59 @@ def test_values_in_objects_are_redacted(obj, value, kind):
 
 @pytest.mark.parametrize("obj", MUST_STAY_OBJECTS)
 def test_objects_stay(obj):
+    assert Redactor("standard", "test-salt").value(obj) == obj
+
+
+# Recipients and destinations the scanner needs to judge a send: (text, what must stay, the secret that must go).
+RECIPIENTS = [
+    (
+        "send the minutes to ops@example.test and cc lee@example.test",
+        ["ops@example.test", "lee@example.test"],
+        None,
+    ),
+    (
+        "curl https://api.telegram.org/bot$TG/sendMessage -d chat_id=-1001234567890 -d text=done",
+        ["https://api.telegram.org/bot$TG/sendMessage", "chat_id=-1001234567890"],
+        None,
+    ),
+    (
+        f"curl 'https://hooks.example.test/notify?token={R20}&to=ops'",
+        ["https://hooks.example.test/notify?token=", "&to=ops"],
+        R20,
+    ),
+    (
+        'openclaw message send --channel slack --target C08ABCD1EF2 "done"',
+        ["--target C08ABCD1EF2"],
+        None,
+    ),
+    ("post it to channel:1234567890123456789 on discord", ["channel:1234567890123456789"], None),
+    (f"room_id: !{R20}:matrix.example", [f"!{R20}:matrix.example"], None),
+]
+RECIPIENT_OBJECTS = [
+    {"to": "ops@example.test", "cc": ["lee@example.test"], "subject": "Minutes"},
+    {"action": "send", "channel": "discord", "target": "channel:1234567890123456789"},
+    {"target": "C08ABCD1EF2", "message": "done"},
+    {"channel_id": "k1x9q3m7p2w8z4r6t0y5u3v1ab"},
+    {"room_id": f"!{R20}:matrix.example"},
+    {"chat_id": -1001234567890, "text": "done"},
+]
+
+
+@pytest.mark.parametrize(("text", "kept", "secret"), RECIPIENTS)
+def test_recipients_and_destinations_stay(text, kept, secret):
+    """Redaction takes the secret out of a send and leaves who and where it goes to, plain and JSON-encoded."""
+    r = Redactor("standard", "test-salt")
+    out = r.string(text)
+    for part in kept:
+        assert part in out, (part, out)
+    if secret is not None:
+        assert secret not in out
+    for form in _forms(text)[1:]:
+        assert json.loads(r.string(form)) is not None
+
+
+@pytest.mark.parametrize("obj", RECIPIENT_OBJECTS)
+def test_recipient_objects_stay(obj):
     assert Redactor("standard", "test-salt").value(obj) == obj
 
 
@@ -261,6 +422,8 @@ def test_linear_time_on_adversarial_input():
         "gate code is" + " " * 20_000 + "x",
         "the gate code, it is" + " " * 20_000 + "x",
         "PIN is " * 20_000,
+        ("parents" + " " * 50 + "value: 1" + "aB3" * 10) * 2_000,
+        "in " * 50_000 + "value: 1" + "aB3" * 10,
     ):
         start = time.perf_counter()
         r.string(text)
@@ -286,7 +449,8 @@ def test_parity_with_the_openclaw_plugin():
     texts = [f for t, _, _ in MUST_REDACT for f in _forms(t)] + [
         f for t in MUST_STAY for f in _forms(t)
     ]
-    objects = [o for o, _, _ in MUST_REDACT_OBJECTS] + MUST_STAY_OBJECTS
+    texts += [f for t, _, _ in RECIPIENTS for f in _forms(t)]
+    objects = [o for o, _, _ in MUST_REDACT_OBJECTS] + MUST_STAY_OBJECTS + RECIPIENT_OBJECTS
     js = (
         f"import {{ createRedactor }} from {json.dumps(_REDACT_TS.as_uri())};"
         "const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));"

@@ -829,6 +829,34 @@ _NOT_SECRET_KEY = re.compile(
 _NOT_SECRET_CAMEL_KEY = re.compile(r"[a-z](?:Id|ID|Ids|Hash|Name|Url|Uri|Path|Version)$")
 # A provider's object id (`cus_…`, `pi_…`) and subresource-integrity hashes (`sha384-…`).
 _PREFIXED_OBJECT_ID = re.compile(r"[a-z]{1,8}_|(?i:sha(?:1|256|384|512))-")
+# A Google Drive, Docs or Sheets file or folder id: `0` or `1`, then 24 to 43 letters, digits, `-` and `_`. It looks
+# random, but where Google is named (`_GOOGLE_CONTEXT`) it is the document or folder a call works on, so it stays.
+_DRIVE_ID = re.compile(r"[01][A-Za-z0-9_-]{24,43}")
+# Stems that make a key's value a secret wherever they sit in it, compared with the key in lower case (`SIGNING_KEY`,
+# `Authorization`, `connect.sid`, `__Secure-1PSID`, `SECRETS`, `bindpw`, `recoveryCode`, `cf_clearance`), and short words
+# that do the same only as a whole word of the key (`pk`, `sk`): a Drive id's shape under such a key, or under a custom
+# `X-` header, is redacted even where Google is named. It errs toward redacting: a document kept under `sessionPlan` or
+# `pinned` is hidden too.
+_SECRET_KEY_STEMS = tuple(
+    "secret token pass pw sess sid nid auth cookie cred key sig hmac salt seed code pin psk verif mnemonic otp jwt "
+    "csrf xsrf cert priv bearer crypt access master licen vault kms clearance __cf awsalb magic serial backup "
+    "challenge cipher assertion conn grant hook invite nonce recover refresh unlock wallet wifi activat".split()
+)
+_SECRET_KEY_WORDS = frozenset(
+    "pk sk ak pat sas mfa rsa ssh ssl tls gpg pgp jwk jwks x5c dsn enc bot api apim".split()
+)
+# What names Google in a text, or among a parsed object's own keys and values: a Google host or client library, a
+# Drive, Docs or Sheets API name, a Drive query (`'<id>' in parents`, `parents='<id>'`), or a Drive or Docs tool
+# (`drive_files_list`, `docs_get`). The word alone ("my parents", "kid in parents", `parents = []`) does not.
+_GOOGLE_CONTEXT = re.compile(
+    r"googleapis|googleapiclient|google-apps|gspread|(?:drive|docs|sheets|slides|script)\.google\.com"
+    r"|[\"'][ \t]{1,8}in[ \t]{1,8}parents(?![A-Za-z0-9_])|"
+    + _CUE_START
+    + r"(?:(?:documentId|spreadsheetId|presentationId|fileId|folderId|driveId|textRun|batchUpdate)(?![A-Za-z0-9_])"
+    r"|gapi\.|parents\\{0,8}[\"']?[ \t]{0,8}=[ \t]{0,8}\\{0,8}[\"'][01][A-Za-z0-9_-]{24}"
+    r"|g?drive_(?:files?|folders?|permissions?)(?![A-Za-z0-9])"
+    r"|(?:g?docs|sheets|slides)_(?:get|create|append|update|batch|export|insert|replace|values))"
+)
 
 
 def _key_words(key: str) -> list[str]:
@@ -915,6 +943,33 @@ def _random_key(key: str, value: str, after_query: bool) -> bool:
     )
 
 
+def _secret_key(key: str) -> bool:
+    """A key whose value is a secret whatever it looks like: a custom `X-` header, a credential key
+    (`_CREDENTIAL_FIELD`), a key with a secret stem anywhere in it, or one with a short secret word."""
+    k = key.lower()
+    if (
+        k.startswith("x-")
+        or _CREDENTIAL_FIELD.search(key)
+        or any(s in k for s in _SECRET_KEY_STEMS)
+    ):
+        return True
+    return any(w in _SECRET_KEY_WORDS for part in key.split(".") for w in _key_words(part))
+
+
+def _google_id(key: str, value: str, google: bool) -> bool:
+    """A Drive, Docs or Sheets id where Google is named, under a key that does not name a secret: the document or
+    folder a call works on."""
+    return google and _DRIVE_ID.fullmatch(value) is not None and not _secret_key(key)
+
+
+def names_google(obj: dict[Any, Any]) -> bool:
+    """Whether a parsed object names Google among its own keys and string values (`_GOOGLE_CONTEXT`)."""
+    return any(
+        _GOOGLE_CONTEXT.search(str(k)) or (isinstance(v, str) and _GOOGLE_CONTEXT.search(v))
+        for k, v in obj.items()
+    )
+
+
 def _prev_word(text: str, start: int) -> str:
     """The word just before `start`, across spaces and tabs (`error` in `error code=`)."""
     m = re.search(
@@ -964,17 +1019,24 @@ def cue_spans(text: str) -> list[tuple[int, int, int, str]]:
         )
         if kind is not None:
             out.append((m.start(), m.start("v"), m.end("v"), kind))
+    google: bool | None = None  # read once, and only when a value has a Drive id's shape
     for m in _RANDOM_KEY.finditer(text):
         if m.group("sep") == ":" and not _starts_entry(text, m.start()):
             continue
         if _random_key(m.group("k"), m.group("v"), _after_query(text, m.start())):
+            if _DRIVE_ID.fullmatch(m.group("v")) and not _secret_key(m.group("k")):
+                if google is None:
+                    google = _GOOGLE_CONTEXT.search(text) is not None
+                if google:
+                    continue
             out.append((m.start(), m.start("v"), m.end("v"), RANDOM))
     return _with_lists(text, out)
 
 
-def object_kind(key: str, value: Any) -> str | None:
+def object_kind(key: str, value: Any, google: bool = False) -> str | None:
     """The kind of secret a parsed object's value is under its key, or None: a code, PIN or passport number under
-    its key (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`)."""
+    its key (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`) unless it
+    is a Drive, Docs or Sheets id and its object names Google (`google`, from `names_google`)."""
     if isinstance(value, float) and value.is_integer() and 0 <= value < 2**53:
         value = int(value)  # JSON `4471.0`, as the OpenClaw plugin reads it
     if isinstance(value, bool) or not isinstance(value, (str, int)):
@@ -984,7 +1046,12 @@ def object_kind(key: str, value: Any) -> str | None:
         kind = _key_kind(key, text, ":", False)
         if kind is not None:
             return kind
-    if isinstance(value, str) and _RANDOM_VALUE.fullmatch(value) and _random_key(key, value, False):
+    if (
+        isinstance(value, str)
+        and _RANDOM_VALUE.fullmatch(value)
+        and _random_key(key, value, False)
+        and not _google_id(key, value, google)
+    ):
         return RANDOM
     return None
 
@@ -1047,6 +1114,10 @@ class Redactor:
             return [self.value(v, depth + 1) for v in value]
         if isinstance(value, dict):
             out: dict[str, Any] = {}
+            # Read only when one of its values has a Drive id's shape.
+            google = any(
+                isinstance(v, str) and _DRIVE_ID.fullmatch(v) for v in value.values()
+            ) and names_google(value)
             for k, v in value.items():
                 if (
                     self.level != "off"
@@ -1059,7 +1130,7 @@ class Redactor:
                     and _key_value(v)
                 ):
                     out[str(k)] = self._placeholder("credential", v)
-                elif self.level != "off" and (kind := object_kind(str(k), v)) is not None:
+                elif self.level != "off" and (kind := object_kind(str(k), v, google)) is not None:
                     # A whole-number float is its digits, as the OpenClaw plugin reads JSON `4471.0`.
                     out[str(k)] = self._placeholder(
                         PLACEHOLDER_KIND[kind], str(int(v)) if isinstance(v, float) else str(v)
