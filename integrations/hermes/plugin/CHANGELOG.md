@@ -6,6 +6,11 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- `hermes sentrook verify` lists the channel bindings no message send in the traffic log would carry (a binding is sent
+  only with a send that shows its channel, so one written another way relieves nothing), and the setup report counts
+  them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
+  (`user:<id>`, `dm:<id>`). The setup skill says to write a binding with its platform, as `send_message` names the
+  target.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the

@@ -92,8 +92,9 @@ SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
 STRIP_HISTORY = frozenset({"request_id", "action_fingerprint", "risk", "tiers", "call_id"})
 #: `trusted_by` is the plugin's attestation, which preparation has already checked and acted on.
 STRIP_NEW_INPUT = frozenset({"call_id", "trusted_by"})
-#: `input_kind` is for the rule probe's parsing; the judge reads the call's own `code`.
-STRIP_PENDING_CALL = frozenset({"call_id", "host_call_id", "batch", "input_kind"})
+#: `input_kind` is for the rule probe's parsing; the judge reads the call's own `code`. `send_platform`
+#: is only for matching grants (`prepare.entities.send_platform`).
+STRIP_PENDING_CALL = frozenset({"call_id", "host_call_id", "batch", "input_kind", "send_platform"})
 
 EXPOSURE = "exposure"
 CALL = "call"

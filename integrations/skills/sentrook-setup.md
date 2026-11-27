@@ -100,7 +100,8 @@ approved.
 4. **Close with one line:** "If your regular work gets blocked later, ask me to help set up a grant for it."
 
 - For a channel binding, use the channel exactly as Sentrook saw it: the owner finds it under `entities` in
-  `{{cmd why}} <id>` for a scan of that job.
+  `{{cmd why}} <id>` for a scan of that job. {{binding_form}} If `{{cli verify}}` or the setup report says a binding
+  matches no message send in the log, it relieves nothing as written: suggest it again in the form above.
 - Afterwards, `{{cmd grants}}` lists every grant in force and `{{cmd revoke}} <id>` removes one.
 
 ## Trusted folders

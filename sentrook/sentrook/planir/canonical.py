@@ -152,6 +152,9 @@ class CanonicalCall:
     #: nothing from earlier calls that the program could reach without binding it itself: its code may then
     #: be read as code (`prepare.code_reach`). Set by preparation; False means read it as text.
     kernel_clear: bool = False
+    #: A message send whose arguments name no chat platform: the platform the host says it goes out on
+    #: (`pending_call.send_platform`), lower-cased. Read only by `prepare.entities.send_platform`.
+    host_platform: str | None = None
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.args.get(key, default)
@@ -568,6 +571,8 @@ def canonical_pending(platform: str, call: PendingCall) -> CanonicalCall:
         and call.tool_kind is ToolKind.EXEC
         and call.input_kind == CODE_CELL_INPUT
     )
+    if call.tool_kind is ToolKind.MESSAGE_SEND and isinstance(call.send_platform, str):
+        out.host_platform = call.send_platform.strip().lower() or None
     return out
 
 

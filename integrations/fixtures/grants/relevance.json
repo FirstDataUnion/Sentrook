@@ -557,6 +557,112 @@
       "identity": null,
       "arguments": { "action": "thread-reply", "channel": "discord", "threadId": "1000000000000000002", "message": "Workout today" },
       "sent": false
+    },
+    {
+      "case": "platform-named id binding on a channel:<id> send whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": true
+    },
+    {
+      "case": "platform-named channel:<id> binding on a send whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:channel:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": true
+    },
+    {
+      "case": "platform-named id binding on a bare-id send whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": true
+    },
+    {
+      "case": "platform-named #name binding on a send whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:#daily-brief", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "#daily-brief", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": true
+    },
+    {
+      "case": "platform-named id binding on a send whose platform nothing reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on a send the host reports on another platform",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "telegram",
+      "arguments": { "action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on a send whose own argument names another platform",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "channel": "telegram", "target": "channel:1519377377082216448", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on a direct message whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "user:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on a dm: target whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "dm:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on a direct message on the platform the send names",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "user:1519377377082216448", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on another channel whose platform the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "channel:1519377377082216449", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": false
+    },
+    {
+      "case": "platform-named id binding on a call that is not a send, whatever the host reports",
+      "grant": { "kind": "destination", "pattern": "discord:1519377377082216448", "scope": "persistent" },
+      "tool_kind": "other",
+      "identity": null,
+      "send_platform": "discord",
+      "arguments": { "action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call" },
+      "sent": false
     }
   ]
 }

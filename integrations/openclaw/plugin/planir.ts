@@ -456,29 +456,64 @@ const CHANNEL_PREFIXES = ["channel:", "group:", "thread:"];
 const BARE_ID = /^(?=.*\d)[a-z0-9_-]{3,}$/;
 
 /**
- * The chat platform a message send names in its own argument (`discord` for `{channel: discord, target: "#x"}`),
- * lower-cased; null for any other call.
+ * The chat platform of a message send, lower-cased: the one it names in its own argument (`discord` for
+ * `{channel: discord, target: "#x"}`), else `reported`, the one the host says it goes out on (`sendPlatformOf`).
+ * Null for any other call.
  */
-export function callPlatform(args: unknown, kind: string): string | null {
+export function callPlatform(args: unknown, kind: string, reported: string | null = null): string | null {
   if (kind !== "message_send" || !args || typeof args !== "object") return null;
   for (const k of PLATFORM_KEYS) {
     const v = (args as Record<string, unknown>)[k];
     if (typeof v === "string" && v.trim()) return v.trim().toLowerCase();
   }
-  return null;
+  return reported?.trim().toLowerCase() || null;
+}
+
+/** Chat platforms a send's account or session may name, as the scanner reads a send's platform. */
+const SEND_PLATFORMS = new Set([
+  ..."telegram discord slack whatsapp signal matrix mattermost msteams teams googlechat imessage irc".split(" "),
+  ..."line zulip rocketchat wechat feishu dingtalk sms".split(" "),
+]);
+
+/**
+ * For a message send that names no platform in its own argument (`{action: send, target: "channel:<id>",
+ * accountId: "ops-bot"}`): the chat platform the host sends it on. The account's, when the send names one OpenClaw
+ * has configured under exactly one platform (`channels.<platform>.accounts.<id>`); else, when it names no account or
+ * OpenClaw's implicit `default` one, the session's own chat platform. Null when the send names its platform, names
+ * another account the config does not place, or neither says.
+ */
+export function sendPlatformOf(args: unknown, kind: string, hostConfig: any, sessionChannel: unknown): string | null {
+  if (kind !== "message_send" || !args || typeof args !== "object" || callPlatform(args, kind)) return null;
+  const account = (args as Record<string, unknown>).accountId;
+  if (typeof account === "string" && account.trim()) {
+    const want = account.trim().toLowerCase();
+    const channels = hostConfig?.channels && typeof hostConfig.channels === "object" ? hostConfig.channels : {};
+    const found = Object.entries(channels as Record<string, any>)
+      .filter(([p, c]) => SEND_PLATFORMS.has(p.toLowerCase()) && c?.accounts && typeof c.accounts === "object")
+      .filter(([, c]) => Object.keys(c.accounts).some((id) => id.trim().toLowerCase() === want))
+      .map(([p]) => p.toLowerCase());
+    if (found.length || want !== "default") return found.length === 1 ? found[0]! : null;
+  }
+  const own = typeof sessionChannel === "string" ? sessionChannel.trim().toLowerCase() : "";
+  return SEND_PLATFORMS.has(own) ? own : null;
 }
 
 /**
  * The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner reads them, each
- * with whether it needs no minimum length: as written; without a `<platform>:` prefix when the send names that
- * platform in its own argument; a `#name` as the channel target `channel:name` (or `group:`, `thread:`); and a
+ * with whether it needs no minimum length: as written; without a `<platform>:` prefix when the send is on that
+ * platform (`callPlatform`), a bare id left that way only as a channel target or a whole argument (never inside a
+ * direct message's `user:<id>`); a `#name` as the channel target `channel:name` (or `group:`, `thread:`); and a
  * `channel:<id>` (or `group:`, `thread:`) or `#<id>` as the bare id, as a send writes it in `channelId`.
  */
 function destinationForms(pattern: string, platform: string | null): Array<[string, boolean]> {
   const forms: Array<[string, boolean]> = [[pattern, false]];
+  // A bare id once the platform is stripped: only as a channel target or a whole argument, added last.
+  let bareId: string | null = null;
   const colon = pattern.indexOf(":");
   if (platform && colon > 0 && colon < pattern.length - 1 && pattern.slice(0, colon) === platform) {
-    forms.push([pattern.slice(colon + 1), true]);
+    const rest = pattern.slice(colon + 1);
+    if (BARE_ID.test(rest)) bareId = rest;
+    else forms.push([rest, true]);
   }
   for (const [form, shortOk] of [...forms]) {
     const prefix = CHANNEL_PREFIXES.find((p) => form.startsWith(p));
@@ -489,6 +524,9 @@ function destinationForms(pattern: string, platform: string | null): Array<[stri
     if (!form.startsWith("#")) continue;
     forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + form.slice(1), shortOk]));
     if (BARE_ID.test(form.slice(1))) forms.push([form.slice(1), shortOk]);
+  }
+  if (bareId) {
+    forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + bareId, true]), [JSON.stringify(bareId), true]);
   }
   return forms;
 }
@@ -540,8 +578,8 @@ function credentialForms(pattern: string): Array<[string, boolean]> {
  * call's provider identity (a `remote:` pattern without its port, as the identity is), and a repo grant by its
  * owner and repository alone. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
  * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace. A destination is read the way the
- * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send names
- * `platform` (`callPlatform`). A credential grant (`NAME@host`) is sent on every exec call (`execCall`: the key and
+ * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send is on
+ * `platform` (`callPlatform`: the one it names, else the one the host reports). A credential grant (`NAME@host`) is sent on every exec call (`execCall`: the key and
  * the host may be only in a script the call runs, which Sentrook reads too), and on any other call that shows either
  * its name or its host. A destination grant Sentrook would ignore as too broad (`config.destinationOk`) is never sent.
  */
@@ -759,6 +797,9 @@ export function buildPlanir(b: BuildInput): Built {
     : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider));
   const kind = triggerKind(run, sessionKey);
   const chatKind = isSystemAgentTurn(run) ? "direct" : chatKindOfTurn(sessionKey, channel, b.hostConfig);
+  const sendPlatform = isSystemAgentTurn(run)
+    ? null
+    : sendPlatformOf(event.params, tk, b.hostConfig, ctx.requester?.channel ?? run.channel ?? run.messageProvider);
   const sender = senderOf(ctx.requester, run, cfg, chatKind, kind);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
@@ -811,6 +852,7 @@ export function buildPlanir(b: BuildInput): Built {
       ...(narration ? { agent_narration: redactor.string(String(narration)).slice(0, 4000) } : {}),
       arguments: capArgs(args, cfg.inputCapBytes),
       ...(inputKind ? { input_kind: inputKind } : {}),
+      ...(sendPlatform ? { send_platform: sendPlatform } : {}),
       batch: { siblings },
     },
     grants: relevantGrants(allGrants, JSON.stringify(event.params ?? {}), {
@@ -818,7 +860,7 @@ export function buildPlanir(b: BuildInput): Built {
       home: homedir(),
       workspace: run.workspaceDir,
       cwd: tk === "exec" ? callCwd(event.params) : null,
-      platform: callPlatform(event.params, tk),
+      platform: callPlatform(event.params, tk, sendPlatform),
       execCall: tk === "exec",
     }),
     options: { packs: cfg.packs, redaction: redactor.level },

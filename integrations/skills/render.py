@@ -174,6 +174,10 @@ HOSTS: dict[str, dict] = {
         ),
         "values": {
             "host": "Hermes",
+            "binding_form": (
+                "On Hermes, write it with its platform, as `send_message` names the target: `discord:#daily-brief` "
+                "or `discord:<channel id>`."
+            ),
             "restart_after_install": (
                 "After any install or update of the plugin, every Hermes process that was already running keeps "
                 "the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), "
@@ -288,6 +292,12 @@ HOSTS: dict[str, dict] = {
         ),
         "values": {
             "host": "OpenClaw",
+            "binding_form": (
+                "On OpenClaw, write it with its platform, `discord:<channel id>` or `discord:#daily-brief`: it then "
+                "applies to a send that names that platform, posts as an account the config has on it, or comes "
+                "from a session on it. If a job's sends name none of these, write it as the send's own target, "
+                "`channel:<channel id>`."
+            ),
             "restart_after_install": (
                 "After any install or update of the plugin, the running gateway keeps the old plugin until it "
                 "restarts: the owner restarts it."

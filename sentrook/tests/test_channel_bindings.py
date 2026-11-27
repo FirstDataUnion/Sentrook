@@ -254,3 +254,146 @@ def test_a_platform_named_binding_covers_the_sends_channel_targets_only(build, p
     """Must stay silent: whatever the platform-named pattern, it covers nothing but the send's own
     channel target."""
     assert granted(build([binding(pattern)])) <= {"#daily-brief"}
+
+
+# --------------------------------------------------------------------------- platform the host reports
+
+#: A Discord channel id, and another one.
+ROOM = "1519377377082216448"
+OTHER_ROOM = "1519377377082216449"
+
+
+def account_send(
+    target: str, grants: list[dict], send_platform: str | None = "discord", **arguments
+) -> dict:
+    """A scheduled send as OpenClaw's `message` tool often writes one: it names the account it posts as
+    (`accountId`) and no platform; the plugin reports the account's platform in `send_platform`."""
+    p = cron_send("discord", target, grants)
+    args = p["pending_call"]["arguments"]
+    del args["channel"]
+    args.update({"accountId": "sgt-johnson", **arguments})
+    if send_platform is not None:
+        p["pending_call"]["send_platform"] = send_platform
+    return p
+
+
+def delivery_grant() -> dict:
+    """The grant the OpenClaw plugin builds for a cron job's own delivery target."""
+    return binding(
+        f"discord:{ROOM}",
+        scope="session",
+        session_ref="s_cron_daily_brief",
+        grant_ref="cron_delivery",
+    )
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        pytest.param(delivery_grant(), id="cron-delivery"),
+        pytest.param(binding(f"discord:{ROOM}"), id="config-binding"),
+        pytest.param(binding(f"discord:channel:{ROOM}"), id="config-binding-as-sent"),
+    ],
+)
+@pytest.mark.parametrize("target", [f"channel:{ROOM}", ROOM])
+def test_a_platform_named_grant_covers_a_send_whose_platform_the_host_reports(grant, target):
+    """Must stay silent (relieved): a send that names only its account, whose platform the host reports
+    as the one the grant names, is covered as if it named that platform itself."""
+    unbound = scan(account_send(target, []))
+    resp = scan(account_send(target, [grant]))
+
+    assert "relief.destination_grant" in codes(resp)
+    assert resp.tree.suspicion.distrust is None
+    assert resp.risk < unbound.risk
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda g: account_send(f"channel:{ROOM}", g, None), id="nothing-reported"),
+        pytest.param(lambda g: account_send(f"channel:{ROOM}", g, "telegram"), id="other-platform"),
+        pytest.param(lambda g: account_send(f"channel:{ROOM}", g, "email"), id="not-a-chat"),
+        pytest.param(
+            lambda g: account_send(f"channel:{ROOM}", g, "discord", channel="telegram"),
+            id="own-argument-names-another-platform",
+        ),
+        pytest.param(lambda g: account_send(f"user:{ROOM}", g), id="direct-message"),
+        pytest.param(lambda g: account_send(f"dm:{ROOM}", g), id="dm"),
+        pytest.param(lambda g: account_send(f"channel:{OTHER_ROOM}", g), id="other-channel"),
+        pytest.param(
+            lambda g: account_send(f"slack:{ROOM}", g), id="target-names-another-platform"
+        ),
+        pytest.param(
+            lambda g: account_send("15551234567", g, "whatsapp"), id="phone-number-on-whatsapp"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "grant", [delivery_grant(), binding(f"discord:{ROOM}")], ids=["cron", "bind"]
+)
+def test_a_platform_named_grant_does_not_cover_other_sends_whatever_the_host_reports(build, grant):
+    """Must still fire: the reported platform only stands in for a platform the send does not name. A
+    send on another platform, to a person or to another channel scores as if there were no grant."""
+    unbound = scan(build([]))
+    resp = scan(build([grant]))
+
+    assert "relief.destination_grant" not in codes(resp)
+    assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_reported_platform_does_not_cover_a_batch_that_also_sends_on_another_platform():
+    """Must still fire: the pending send's platform is reported as Discord, a sibling send names Slack;
+    the binding cannot tell the two apart, so neither is relieved."""
+
+    def batch(grants: list[dict]) -> dict:
+        p = account_send(f"channel:{ROOM}", grants)
+        slack = {**p["pending_call"]["arguments"], "channel": "slack"}
+        p["pending_call"]["batch"]["siblings"] = [
+            {"call_id": "sib_1", "tool": "message", "tool_kind": "message_send", "arguments": slack}
+        ]
+        return p
+
+    unbound = scan(batch([]))
+    resp = scan(batch([binding(f"discord:{ROOM}")]))
+
+    assert "relief.destination_grant" not in codes(resp)
+    assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_reported_platform_on_a_call_that_is_not_a_send_covers_nothing():
+    """Must still fire: `send_platform` is read for a message send only."""
+    p = account_send(f"channel:{ROOM}", [binding(f"discord:{ROOM}")])
+    p["pending_call"]["tool"] = "web_fetch"
+    p["pending_call"]["tool_kind"] = "web_fetch"
+    p["pending_call"]["arguments"] = {"url": f"https://discord.example/channel:{ROOM}"}
+    assert not granted(p)
+
+
+@pytest.mark.parametrize("build", PLATFORM_FORM_LEAKS)
+@pytest.mark.parametrize("pattern", ["discord:*", "discord:*@*", "discord:#daily-brief"])
+def test_a_reported_platform_covers_the_sends_channel_targets_only(build, pattern):
+    """Must stay silent: with the platform reported instead of named, a platform-named pattern still
+    covers nothing but the send's own channel target."""
+    p = build([binding(pattern)])
+    p["pending_call"]["arguments"].pop("channel")
+    p["pending_call"]["send_platform"] = "discord"
+    assert granted(p) <= {"#daily-brief"}
+
+
+def test_the_reported_platform_is_not_in_the_judge_views():
+    """The judge's requests are unchanged: `send_platform` is only for matching grants."""
+    from sentrook.prepare.views import trim
+
+    assert "send_platform" not in trim(account_send(f"channel:{ROOM}", []))["pending_call"]
+
+
+@pytest.mark.parametrize("platform", ["whatsapp", "sms", "imessage"])
+@pytest.mark.parametrize("pattern", ["{p}:*", "{p}:1555*", "{p}:15551234567"])
+def test_a_reported_phone_platform_never_covers_a_phone_number(platform, pattern):
+    """Must still fire: on WhatsApp, SMS and iMessage a bare number is a person, whether the send names
+    the platform or the host reports it."""
+    grant = binding(pattern.format(p=platform))
+    reported = account_send("15551234567", [grant], platform)
+    named = cron_send(platform, "15551234567", [grant])
+    assert not granted(reported) and not granted(named)
+    assert "relief.destination_grant" not in codes(scan(reported))

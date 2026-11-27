@@ -49,13 +49,15 @@ from typing import Any
 
 from . import folders, grants, history, hold
 from .config import SHARED_SECOND_LEVEL, PluginConfig, destination_ok
-from .planir import binding_problem, server_identity
+from .planir import binding_problem, call_platform, relevant_grants, server_identity
 from .store import Store, file_lock, read_time
 
 #: Reviews the owner approved that an item needs before it counts as seen.
 EVIDENCE_MIN = 2
 #: How far back approved reviews count.
 EVIDENCE_WINDOW = timedelta(days=30)
+#: How many logged message sends a binding is checked against (`unreached_bindings`).
+MAX_SENDS = 2000
 #: How long the screen's code works.
 CODE_TTL = timedelta(minutes=15)
 #: How long an agent proposal waits for the owner.
@@ -175,6 +177,8 @@ class Evidence:
         self.exposed: set[str] = set()
         self.unsuggested: dict[str, dict[str, Any]] = {}
         self.own_service: dict[str, dict[str, Any]] = {}
+        #: The message sends in the window, as logged (at most `MAX_SENDS`, newest first): (arguments, platform).
+        self.sends: list[tuple[Any, str | None]] = []
         self.scans = 0
         self.oldest: datetime | None = None
 
@@ -218,6 +222,24 @@ def read_evidence(
             ev.exposed.add(sref)
         at = stamp
         planir = rec.get("planir")
+        pc = planir.get("pending_call") if isinstance(planir, dict) else None
+        if (
+            at is not None
+            and since <= at <= now
+            and isinstance(pc, dict)
+            and pc.get("tool_kind") == "message_send"
+            and len(ev.sends) < MAX_SENDS
+        ):
+            reported = pc.get("send_platform")
+            args = pc.get("arguments") or {}
+            ev.sends.append(
+                (
+                    args,
+                    call_platform(
+                        args, "message_send", reported if isinstance(reported, str) else None
+                    ),
+                )
+            )
         if (
             at is None
             or not since <= at <= now
@@ -496,6 +518,26 @@ def load_proposals(state_dir: Path, now: datetime) -> list[dict[str, Any]] | Non
 
 
 # ---- the rules each item is checked against --------------------------------------------------------------------
+
+
+def unreached_bindings(force: list[tuple[str, dict[str, Any]]], ev: Evidence) -> list[str]:
+    """The channel bindings in force (`in_force`) that no message send in the evidence would carry, as
+    written: the plugin sends a binding only with a send that shows its channel (`planir.relevant_grants`),
+    so one written another way than the host's sends write the channel never relieves anything. None when
+    the window holds no message send."""
+    if not ev.sends:
+        return []
+    out: list[str] = []
+    for label, g in force:
+        if label != "a channel binding" or g["pattern"] in out:
+            continue
+        grant = {"kind": "destination", "pattern": str(g["pattern"]), "scope": "persistent"}
+        if not any(
+            relevant_grants([grant], json.dumps(args, ensure_ascii=False), platform=platform)
+            for args, platform in ev.sends
+        ):
+            out.append(g["pattern"])
+    return out
 
 
 def in_force(

@@ -394,6 +394,13 @@ class PendingCall(_Model):
         "network only through nested tool calls the host hooks one by one). Absent for a shell `exec`. Only the "
         "plugin sets it, from the host's hook event, never from the call's arguments",
     )
+    send_platform: str | None = Field(
+        default=None,
+        description="For a message send whose arguments name no chat platform: the platform the host says it "
+        "goes out on (OpenClaw: the channel of the account the send names, else the session's own channel). "
+        "Read only so that a grant naming that platform (`discord:<id>`) covers the send's channel targets. Only "
+        "the plugin sets it, from the host's config and hook context, never from the call's arguments alone",
+    )
     batch: Batch | None = None
 
 
