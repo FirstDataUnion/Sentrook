@@ -7,6 +7,7 @@
                       (1 − taint_link)(1 − request_origin)(1 − retry_after_denial)
     consequence = max(sensitivity × reach, irreversibility × reach, self_modification)       [max]
                 | max(mean(sensitivity, reach, irreversibility), self_modification)           [mean]
+    impact      = consequence without self_modification (the session's escalation trend reads it)
     agreement   = 1 − disagreeing / shared, a disagreement being one explicit value above `high` and
                   another below `low` on the same signal from different probes (a signal only one
                   probe claims, such as the model-only overreach or the session-wide session_exposure,
@@ -41,6 +42,8 @@ class Tiers:
     taint_link: float
     disagreements: list[tuple[str, float, float]]  # (signal, low, high)
     risk: float  # 0–1
+    #: The consequence tier without self-modification: how far the call's own effects go.
+    impact: float = 0.0
 
 
 def _noisy_or(values: list[float]) -> float:
@@ -120,9 +123,10 @@ def compute(
         g("consequence.self_modification", 0.0),
     )
     if params.consequence == "mean":
-        consequence = max((sens + reach + irr) / 3.0, selfmod)
+        impact = (sens + reach + irr) / 3.0
     else:
-        consequence = max(sens * reach, irr * reach, selfmod)
+        impact = max(sens * reach, irr * reach)
+    consequence = max(impact, selfmod)
 
     agree, disagreements = agreement(merged, params)
     coverage = min(g("confidence.coverage", 1.0), probe_status_penalty(envelopes, params))
@@ -139,4 +143,5 @@ def compute(
         taint_link=round(taint_link, 6),
         disagreements=disagreements,
         risk=round(min(1.0, max(0.0, risk)), 6),
+        impact=round(impact, 6),
     )
