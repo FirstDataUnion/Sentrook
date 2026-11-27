@@ -121,7 +121,8 @@ approved.
 4. **Close with one line:** "If your regular work gets blocked later, ask me to help set up a grant for it."
 
 - For a channel binding, use the channel exactly as Sentrook saw it: the owner finds it under `entities` in
-  `/sentrook-why <id>` for a scan of that job.
+  `/sentrook-why <id>` for a scan of that job. On OpenClaw, write it with its platform, `discord:<channel id>` or `discord:#daily-brief`: it then applies to a send that names that platform, posts as an account the config has on it, or comes from a session on it. If a job's sends name none of these, write it as the send's own target, `channel:<channel id>`. If `openclaw sentrook verify` or the setup report says a binding
+  matches no message send in the log, it relieves nothing as written: suggest it again in the form above.
 - Afterwards, `/sentrook-grants` lists every grant in force and `/sentrook-revoke <id>` removes one.
 
 ## Trusted folders

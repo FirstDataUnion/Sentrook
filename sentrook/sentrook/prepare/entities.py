@@ -1451,11 +1451,18 @@ def _chat_send(call: CanonicalCall) -> tuple[bool, str | None]:
 
 
 def send_platform(call: CanonicalCall) -> str | None:
-    """The chat platform a message send names in its own argument (`discord` for OpenClaw's
-    `{channel: discord, target: "#x"}`), lower-cased; None for any other call."""
+    """The chat platform of a message send, lower-cased: the one it names in its own argument (`discord`
+    for OpenClaw's `{channel: discord, target: "#x"}`), else the chat platform the host reports for it
+    (`pending_call.send_platform`, for `{target: "channel:<id>", accountId: <a Discord account>}`). None
+    for any other call, a mail send, or a reported platform that is not a chat platform."""
     if call.tool_kind is not ToolKind.MESSAGE_SEND:
         return None
-    return _chat_send(call)[1] or None
+    chat, platform = _chat_send(call)
+    if platform:
+        return platform
+    if chat and call.host_platform in _CHAT_PLATFORMS:
+        return call.host_platform
+    return None
 
 
 #: A direct-message target, in any letter case and with an id of any length.
@@ -1468,15 +1475,22 @@ def platform_targets(call: CanonicalCall) -> set[tuple[EntityKind, str]]:
     number, an `@handle`) or a target that names a platform of its own."""
     if call.tool_kind is not ToolKind.MESSAGE_SEND:
         return set()
-    chat, platform = _chat_send(call)
+    chat, named = _chat_send(call)
+    platform = send_platform(call)
     if not chat or not platform:
         return set()
     out: set[tuple[EntityKind, str]] = set()
-    for f in _recipients_in(call.recipients, chat=chat, platform=platform):
-        named = _PLATFORM_TARGET_RE.fullmatch(f.value)
-        if _PERSON_PREFIX.match(f.value) or (named and named.group(1).lower() in _CHAT_PLATFORMS):
+    # Read the targets as entity extraction did (with the platform the send names, not one the host
+    # reports), so the (kind, value) pairs are the entities' own.
+    # A channel find is checked against the send's platform too: read without a reported one, a bare
+    # number on WhatsApp, SMS or iMessage is a phone number, a person.
+    for f in _recipients_in(call.recipients, chat=chat, platform=named):
+        prefixed = _PLATFORM_TARGET_RE.fullmatch(f.value)
+        if _PERSON_PREFIX.match(f.value) or (
+            prefixed and prefixed.group(1).lower() in _CHAT_PLATFORMS
+        ):
             continue
-        if f.kind is EntityKind.CHANNEL or (
+        if (f.kind is EntityKind.CHANNEL and not _is_address(f.value, platform)) or (
             f.kind is EntityKind.RECIPIENT
             and "@" not in f.value
             and not _is_address(f.display, platform)

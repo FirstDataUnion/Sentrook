@@ -6,6 +6,11 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- `hermes sentrook verify` lists the channel bindings no message send in the traffic log would carry (a binding is sent
+  only with a send that shows its channel, so one written another way relieves nothing), and the setup report counts
+  them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
+  (`user:<id>`, `dm:<id>`). The setup skill says to write a binding with its platform, as `send_message` names the
+  target.
 - Your own message in a group chat or server channel now counts as yours when you are listed individually in
   `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, as the OpenClaw plugin already does: routine work you ask for
   from a private channel is scored like a direct message instead of as someone else's request. Other members still

@@ -6,19 +6,32 @@
 
 import { shadowCheck } from "./agentSkills.ts";
 import { clearScanTokenCache, ConsentWithdrawnError, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
-import { configProblemsSummary, resolveConfig } from "./config.ts";
+import { configProblemsSummary, type PluginConfig, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
-import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
+import * as grants from "./grants.ts";
+import { bindingProblemsSummary, clean, unsentSummary } from "./grants.ts";
 import { NOTIFY_UNSET, targetText } from "./hold.ts";
 import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
 import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
+import * as setup from "./setup.ts";
 import { Store } from "./store.ts";
 
 export interface VerifyCheck {
   name: string;
   ok: boolean;
   detail: string;
+}
+
+/**
+ * The channel bindings in force (config and command) that no message send in the traffic log would carry
+ * (`setup.unreachedBindings`), e.g. `discord:123…`; "" with the log off, no send in it, or every binding carried.
+ */
+export function unreachedSummary(cfg: PluginConfig, now: Date): string {
+  if (!cfg.trafficLog.enabled) return "";
+  const ev = setup.readEvidence(cfg.trafficLog.path, cfg.reviewAt, now);
+  const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);
+  return setup.unreachedBindings(force, ev).map((p) => clean(p, 60)).join(", ");
 }
 
 export async function runVerify(
@@ -110,10 +123,13 @@ export async function runVerify(
   });
   // Reported, not failed: a binding that never applies only makes Sentrook stricter.
   const problems = bindingProblemsSummary(cfg);
+  const unreached = unreachedSummary(cfg, new Date());
   checks.push({
     name: "channel bindings",
     ok: true,
-    detail: `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}`,
+    detail:
+      `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}` +
+      (unreached ? `; no message send in the traffic log matches: ${unreached}` : ""),
   });
   // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
   const target = new Store(cfg.stateDir).loadNotify();

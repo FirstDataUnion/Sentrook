@@ -465,3 +465,43 @@ test("the setup skill calls the tool at check-in", () => {
   assert.ok(checkIn.includes(`\`${report.TOOL}\``));
   assert.ok(checkIn.includes(META.refusal));
 });
+
+// ---- channel bindings no send would carry ---------------------------------------------------------------------------
+
+/** A traffic log holding a scan of each logged pending call, an hour before `now`. */
+function sendLog(sends: unknown[], now = NOW): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-reach-"));
+  const at = new Date(now.getTime() - 3600_000).toISOString();
+  const lines = sends.map((pc, i) =>
+    JSON.stringify({ ts: at, kind: "scan", request_id: `rq-${i}`, session_ref: "s_reach", planir: { pending_call: pc }, response: {} }),
+  );
+  writeFileSync(path.join(dir, "traffic.jsonl"), `${lines.join("\n")}\n`);
+  return path.join(dir, "traffic.jsonl");
+}
+
+test("the channel bindings no logged message send would carry (shared with the Hermes plugin)", () => {
+  for (const c of RULES.unreached_bindings) {
+    const ev = setup.readEvidence(sendLog(c.sends), META.review_at, NOW, 14 * DAY);
+    const force = c.bindings.map((p: string): [string, any] => ["a channel binding", { kind: "destination", pattern: p }]);
+    assert.deepEqual(setup.unreachedBindings(force, ev), c.unreached, c.name);
+  }
+});
+
+test("the gap for bindings no send would carry (shared with the Hermes plugin)", () => {
+  for (const [count, lines] of RULES.binding_gaps) assert.deepEqual(report.bindingGaps(count), lines, String(count));
+});
+
+test("the report counts the bindings no send would carry, and verify names them", async () => {
+  const c = RULES.unreached_bindings[1];
+  const now = new Date(); // verify reads the log as of now
+  const log = sendLog(c.sends, now);
+  const state = path.join(path.dirname(log), "state");
+  const pluginConfig = { channelBindings: c.bindings, trafficLog: { path: log }, stateDir: state };
+  const cfg = resolveConfig(pluginConfig, { HOME: "/nowhere", OPENCLAW_STATE_DIR: state });
+  const t = report.render(STATE, setup.inForce(cfg, null, now), setup.readEvidence(log, 45, now), now, 14);
+  assert.ok(t.includes(report.bindingGaps(2)[0]!), t);
+  assert.ok(!t.includes(c.unreached[0]), "the report never lists bindings");
+  const checks = await runVerify(pluginConfig, { fetchImpl: (async () => new Response("{}", { status: 503 })) as any, home: "/nowhere" });
+  const detail = checks.find((x) => x.name === "channel bindings")!.detail;
+  assert.ok(detail.endsWith(`no message send in the traffic log matches: ${c.unreached.join(", ")}`), detail);
+});

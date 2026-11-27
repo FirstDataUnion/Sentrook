@@ -15,7 +15,8 @@ import { afterEach, beforeEach, test } from "node:test";
 import { clearScanTokenCache } from "./auth.ts";
 import { deliveryPattern, deliveryRef, readCronJob } from "./cronDelivery.ts";
 import plugin from "./index.ts";
-import { sessionRef } from "./planir.ts";
+import { callPlatform, relevantGrants, sendPlatformOf, sessionRef } from "./planir.ts";
+import * as setup from "./setup.ts";
 
 const JOB = "561a1f55-c5e9-41fb-930b-1ee7b8e31373";
 const RUN_SESSION = "ee5a6348-31d9-4614-9762-867dbceaeabe";
@@ -207,10 +208,10 @@ test("a send to a different channel carries no grant", async () => {
 
 test("a direct message to a user is not the job's channel; nor does a job that delivers to a person give a grant", async () => {
   storeJob({ delivery: DELIVERY }, LONG_AGO);
-  // The plugin errs towards sending a grant whose id the call shows; the grant names the channel, and the scanner
-  // never reads a channel grant as covering a person (sentrook/tests/test_cron_delivery_grant.py).
+  // A `<platform>:<id>` grant is sent for the id as a channel target only, never inside a person's `user:<id>`; the
+  // scanner never reads a channel grant as covering a person either (sentrook/tests/test_cron_delivery_grant.py).
   const [dm] = await cronRun([send("c1", `user:${CHANNEL}`)]);
-  assert.deepEqual(dm.map((g: any) => g.pattern), [`discord:${CHANNEL}`]);
+  assert.deepEqual(dm, []);
   for (const delivery of [
     { ...DELIVERY, to: `user:${CHANNEL}` },
     { ...DELIVERY, channel: "telegram", to: "5150123" },
@@ -310,6 +311,91 @@ test("a job target written as a #name is kept for a send to that channel by name
 test("a job the store does not hold carries no grant", async () => {
   storeJob({ delivery: DELIVERY }, LONG_AGO);
   assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)], { agentCtx: { jobId: "0000" } }))[0], []);
+});
+
+// ---- a send that names only its account --------------------------------------------------------------
+
+/** OpenClaw's config with the job's agent posting as a Discord account, and another agent on Telegram. */
+const ACCOUNTS = {
+  tools: { exec: { mode: "full" } },
+  channels: {
+    discord: { accounts: { "sgt-johnson": { token: "x" } } },
+    telegram: { accounts: { "drill-bot": { botToken: "x" } } },
+  },
+};
+
+test("a send naming only a Discord account carries the grant, and the scan is told the account's platform", async () => {
+  hostConfig = ACCOUNTS;
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  for (const target of [`channel:${CHANNEL}`, CHANNEL]) {
+    scans = [];
+    const [grants] = await cronRun([send("c1", target, null)]);
+    assert.deepEqual(grants, [EXPECTED], target);
+    assert.equal(scans[0].pending_call.send_platform, "discord");
+  }
+});
+
+test("a send naming no platform and no account is on the session's own chat platform", async () => {
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  const { accountId: _drop, ...noAccount } = send("c1", `channel:${CHANNEL}`, null).params;
+  const [grants] = await cronRun([{ ...send("c1", "", null), params: noAccount }]);
+  assert.deepEqual(grants, [EXPECTED]);
+  assert.equal(scans[0].pending_call.send_platform, "discord");
+});
+
+test("a send naming only its account: no grant to a person, another channel, or on another platform's account", async () => {
+  hostConfig = ACCOUNTS;
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  for (const target of [`user:${CHANNEL}`, `dm:${CHANNEL}`, "channel:1519377377082216449"]) {
+    scans = [];
+    assert.deepEqual((await cronRun([send("c1", target, null)]))[0], [], target);
+  }
+  scans = [];
+  const telegram = send("c1", `channel:${CHANNEL}`, null);
+  telegram.params.accountId = "drill-bot";
+  assert.deepEqual((await cronRun([telegram]))[0], []);
+  assert.equal(scans[0].pending_call.send_platform, "telegram");
+});
+
+test("an account the config does not place gives no platform, whatever the session's channel", async () => {
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  const [grants] = await cronRun([send("c1", `channel:${CHANNEL}`, null)]);
+  assert.deepEqual(grants, []);
+  assert.equal(scans[0].pending_call.send_platform, undefined);
+});
+
+test("a send that names its platform itself is not told one", async () => {
+  hostConfig = ACCOUNTS;
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  await cronRun([send("c1", `channel:${CHANNEL}`)]);
+  assert.equal(scans[0].pending_call.send_platform, undefined);
+});
+
+test("the binding setup proposes for a job's delivery is sent with the job's own sends", async () => {
+  hostConfig = ACCOUNTS;
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  const [[, pattern]] = setup.cronTargets(dir);
+  const params = send("c1", `channel:${CHANNEL}`, null).params;
+  const platform = callPlatform(params, "message_send", sendPlatformOf(params, "message_send", ACCOUNTS, "discord"));
+  assert.equal(relevantGrants([{ kind: "destination", pattern: pattern! }], JSON.stringify(params), { platform }).length, 1);
+});
+
+test("the platform of a send that names none", () => {
+  const params = (accountId?: string) => ({ action: "send", target: `channel:${CHANNEL}`, ...(accountId ? { accountId } : {}) });
+  const both = { channels: { discord: { accounts: { ops: {} } }, slack: { accounts: { OPS: {} } } } };
+  for (const [args, config, session, want] of [
+    [params("Sgt-Johnson"), ACCOUNTS, null, "discord"], // account ids compare without case
+    [params("drill-bot"), ACCOUNTS, "discord", "telegram"], // the account wins over the session
+    [params("nobody"), ACCOUNTS, "discord", null], // an account the config does not place
+    [params("ops"), both, "discord", null], // an account on two platforms
+    [params("default"), {}, "Discord", "discord"], // OpenClaw's implicit account: the session's platform
+    [params(), ACCOUNTS, "slack", "slack"],
+    [params(), ACCOUNTS, "webchat", null], // not a chat platform
+    [{ ...params("sgt-johnson"), channel: "slack" }, ACCOUNTS, null, null], // names its own
+  ] as const) {
+    assert.equal(sendPlatformOf(args, "message_send", config, session), want, JSON.stringify([args, session]));
+  }
+  assert.equal(sendPlatformOf(params("sgt-johnson"), "web_fetch", ACCOUNTS, "discord"), null);
 });
 
 // ---- pieces ------------------------------------------------------------------------------------------
