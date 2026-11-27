@@ -85,12 +85,10 @@ export function refusal(verb: string): string {
 /** The reply to the owner's command in a room, in a session a room shares, or in a chat Sentrook cannot tell from one. */
 export function roomRefusal(verb: string): string {
   return (
-    `/sentrook-${verb} only runs in your own direct message with the agent, in the Control UI (in a session no ` +
-    "group or channel shares), or as " +
-    `openclaw sentrook ${verb} on the machine. This chat is a group or a server channel (a private channel counts ` +
-    "too), shares its session with one, or is one Sentrook cannot tell from one: anyone there could see the reply, " +
-    `so Sentrook's security settings are never shown or changed there. Open a direct message with the agent and send /sentrook-${verb} there. ` +
-    "Nothing was shown or changed."
+    `/sentrook-${verb} only runs in your own direct message with the agent, the Control UI (in a session no room ` +
+    `shares) or as openclaw sentrook ${verb} on the machine. This chat is a group or server channel (private ones ` +
+    "too), shares a session with one, or Sentrook cannot tell, so anyone there could see the reply. Nothing was " +
+    "shown or changed."
   );
 }
 

@@ -246,7 +246,8 @@ def test_a_non_owner_a_group_chat_or_an_allow_all_dm_is_refused_and_audited(
         facts = who
     reply = from_chat(h, monkeypatch, raw, facts=facts)
     verb = raw.split()[0]
-    assert reply in refusals(verb)
+    group = isinstance(who, dict) and who.get("chat_type") == "group"
+    assert reply == refusals(verb)[1 if group else 0]
     assert not (h.dir / "sentrook" / "settings.json").exists()
     [rec] = records(h, "command")
     assert (rec["verb"], rec["outcome"]) == (verb, "refused")
