@@ -189,7 +189,10 @@ const CALLS = JSON.parse(readFileSync(fileURLToPath(new URL("../../fixtures/call
 
 for (const c of CALLS) {
   test(`a call renders as both plugins show it: ${c.name}`, () => {
-    assert.deepEqual(callLines(c.call, c.total ?? CHAT_CALL_TOTAL, c.header ?? WHY_CALL_HEADER), c.lines);
+    const lines = callLines(c.call, c.total ?? CHAT_CALL_TOTAL, c.header ?? WHY_CALL_HEADER);
+    assert.deepEqual(lines, c.lines);
+    // the budget holds whatever the call's shape: header, fences and one closing note on top
+    assert.ok([...lines.slice(2, -1).join("\n")].length <= (c.total ?? CHAT_CALL_TOTAL) + 60);
   });
 }
 

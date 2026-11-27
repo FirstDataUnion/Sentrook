@@ -59,6 +59,9 @@ afterEach(() => {
   }
 });
 
+/** The model with each scan's call taken out: the only place a call's arguments may appear. */
+const withoutCalls = (m: any) => ({ ...m, scans: m.scans.map(({ call: _call, ...rest }: any) => rest) });
+
 const cfg = () => resolveConfig({}, process.env);
 
 type Captured = { status: number; headers: Record<string, string>; body: string | undefined };
@@ -257,6 +260,7 @@ test("GET draws the page with the model embedded, a nonce CSP and no raw markup 
   assert.ok(nonce);
   assert.ok(res.body!.includes(`<script nonce="${nonce}">`));
   // a call's arguments reach the page only in a scan's call, which the owner can hide
+  assert.ok(!JSON.stringify(withoutCalls(embeddedModel(res.body!))).includes(RAW));
   const hidden = await call("GET", ROUTE, () => resolveConfig({ hideToolCalls: true }, process.env));
   assert.ok(!hidden.body!.includes(RAW));
   // The entity display string with a script tag stays inside the JSON, escaped.
@@ -305,9 +309,7 @@ test("a config that cannot be read gives a 500 without details", async () => {
     throw new Error(`${RAW} secret`);
   });
   assert.equal(res.status, 500);
-  // a call's arguments reach the page only in a scan's call, which the owner can hide
-  const hidden = await call("GET", ROUTE, () => resolveConfig({ hideToolCalls: true }, process.env));
-  assert.ok(!hidden.body!.includes(RAW));
+  assert.ok(!res.body!.includes(RAW));
 });
 
 test("scriptJson cannot close the script element", () => {
@@ -933,7 +935,7 @@ test("report: buildModel adds the asked-for scan's report panel only when asked,
   const found = report.find(logFile, (id) => id.startsWith("aaaa1b2c"))!;
   assert.deepStrictEqual(m.report, report.model(found, (v) => `/sentrook-${v}`));
   assert.deepStrictEqual(m.report.full_commands, ["/sentrook-report aaaa1b2c --save", "/sentrook-report aaaa1b2c --full"]);
-  assert.ok(!/PLANIR-BODY-MARKER|PRIVATE-PATH-MARKER/.test(JSON.stringify(m.report)));
+  assert.ok(!/PLANIR-BODY-MARKER|PRIVATE-PATH-MARKER/.test(JSON.stringify(withoutCalls(m))));
   assert.equal(m.report.summary, readFileSync(path.join(REPORT_FIXTURES, "summary-aaaa1b2c.txt"), "utf8").trimEnd());
   for (const ref of ["abcdef12", "last", "../etc"]) {
     assert.deepStrictEqual((await buildModel(cfg(), queryOf(new URLSearchParams("")), new Date(), ref)).report, { id: ref, missing: true }, ref);
@@ -945,8 +947,8 @@ test("report: GET with report= embeds the panel, never the full record", async (
   const body = (await call("GET", `${ROUTE}?n=10&report=aaaa1b2c`)).body!;
   const model = embeddedModel(body);
   assert.equal(model.report.id, "aaaa1b2c-0000-4000-8000-00000000000a");
-  const panel = JSON.stringify(model.report);
-  assert.ok(!panel.includes("PLANIR-BODY-MARKER") && !panel.includes("PRIVATE-PATH-MARKER"), "the scans may show calls; the panel never the full record");
+  const rest = JSON.stringify(withoutCalls(model));
+  assert.ok(!rest.includes("PLANIR-BODY-MARKER") && !rest.includes("PRIVATE-PATH-MARKER"), "only a scan's call shows its arguments");
   assert.equal("report" in embeddedModel((await call("GET", `${ROUTE}?n=10`)).body!), false);
 });
 

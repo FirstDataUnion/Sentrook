@@ -157,9 +157,20 @@ const FENCE = "```";
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
-/** `s` safe inside a chat code block: line ends kept, other control characters and code fences taken out. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * `s` safe inside a chat code block: line ends kept, other control characters, lone surrogates and code fences taken
+ * out.
+ */
 function shownText(s: string): string {
-  return s.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(CONTROL, " ").split(FENCE).join("'''");
+  return s
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(CONTROL, " ")
+    .replace(LONE_SURROGATE, "\uFFFD")
+    .split(FENCE)
+    .join("'''");
 }
 
 /** The call as the plugin sent it to the scanner (already redacted), or null. */
@@ -178,21 +189,38 @@ export function callLines(call: Rec | null, total = CHAT_CALL_TOTAL, header = WH
   let args: unknown = call.arguments;
   if (!args || typeof args !== "object" || Array.isArray(args)) args = args == null ? {} : { arguments: args };
   const obj = args as Rec;
+  // Every character of the rendered lines counts against `total`: the key, its ": ", the line break, the two spaces
+  // that indent a value's further lines, and the note on a cut value. So no call, however shaped, makes the message
+  // much longer than `total` (plus the header, the fences and one closing note).
   let left = total;
   const body: string[] = [];
   const keys = Object.keys(obj);
   for (let i = 0; i < keys.length; i++) {
-    if (left <= 0) {
+    const label = `${shownText(text(keys[i], 60))}: `;
+    const room = left - chars(label).length - 1;
+    if (room <= 0) {
       body.push(`… (${keys.length - i} more arguments)`);
       break;
     }
     const value = obj[keys[i]!];
-    const shown = chars(shownText(typeof value === "string" ? value : (JSON.stringify(value) ?? "null")));
-    const take = Math.min(shown.length, CHAT_CALL_VALUE, left);
-    left -= take;
-    const cutText = take < shown.length ? `${shown.slice(0, take).join("")}… (${shown.length - take} more characters)` : shown.join("");
-    const [first, ...rest] = cutText.split("\n");
-    body.push(`${shownText(text(keys[i], 60))}: ${first}`, ...rest.map((line) => `  ${line}`));
+    const all = chars(shownText(typeof value === "string" ? value : (JSON.stringify(value) ?? "null")));
+    let taken = 0;
+    let cost = 0;
+    for (const ch of all) {
+      const c = ch === "\n" ? 3 : 1;
+      if (taken >= CHAT_CALL_VALUE || cost + c > room) break;
+      taken += 1;
+      cost += c;
+    }
+    left -= chars(label).length + 1 + cost;
+    let out = all.slice(0, taken).join("");
+    if (taken < all.length) {
+      const note = `… (${all.length - taken} more characters)`;
+      out += note;
+      left -= chars(note).length;
+    }
+    const [first, ...rest] = out.split("\n");
+    body.push(label + first, ...rest.map((line) => `  ${line}`));
   }
   if (!body.length) body.push("(no arguments)");
   return [header, FENCE, ...body, FENCE];

@@ -312,10 +312,10 @@ def test_a_held_save_notice_shows_what_it_would_save_unless_calls_are_hidden(h, 
     lines = text.splitlines()
     at = lines.index(history.NOTICE_CALL_HEADER)
     assert lines[at - 1].startswith("Save: skill_manage:") and lines[at + 1] == "```"
-    call = rec["planir"]["pending_call"] if "planir" in rec else None
-    shown_lines = history.call_lines(call, history.NOTICE_CALL_TOTAL, history.NOTICE_CALL_HEADER)
-    assert call is None or lines[at : at + len(shown_lines)] == shown_lines
-    assert any(line.startswith("action: ") for line in lines[at + 2 :])
+    want = history.call_lines(
+        h.scans[-1]["pending_call"], history.NOTICE_CALL_TOTAL, history.NOTICE_CALL_HEADER
+    )
+    assert lines[at : at + len(want)] == want and len(want) > 3
 
 
 def test_a_held_save_notice_hides_the_call_when_the_owner_hid_calls(h, monkeypatch):

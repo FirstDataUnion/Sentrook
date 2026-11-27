@@ -135,7 +135,11 @@ CALLS = json.loads((FIXTURES.parent / "call-render" / "cases.json").read_text(en
 @pytest.mark.parametrize("case", CALLS, ids=[c["name"] for c in CALLS])
 def test_a_call_renders_as_both_plugins_show_it(case):
     kw = {k: case[k] for k in ("total", "header") if k in case}
-    assert history.call_lines(case["call"], **kw) == case["lines"]
+    lines = history.call_lines(case["call"], **kw)
+    assert lines == case["lines"]
+    # the budget holds whatever the call's shape: header, fences and one closing note on top
+    body = "\n".join(lines[2:-1])
+    assert len(body) <= kw.get("total", history.CHAT_CALL_TOTAL) + 60
 
 
 def test_a_report_summary_never_carries_the_call(log):

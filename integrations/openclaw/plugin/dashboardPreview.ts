@@ -7,8 +7,9 @@
  *   /        the page as the OpenClaw Control UI tab shows it (follows the system light or dark setting)
  *   /hermes  the view on Hermes's default dark theme (Hermes Teal), with the theme's colour variables
  * Example pending items (an open review, a held call) are added; PREVIEW_PENDING=0 leaves them out.
- * `?holds=N` shows N held calls, the extra ones offering no answer. `?report=<id>` adds that scan's report panel, as the plugins do. `?calls=1` shows each scan's call, as the
- * dashboardShowCalls setting does (SENTROOK_PREVIEW_LOG=.../dashboard/calls.jsonl has calls worth showing).
+ * `?holds=N` shows N held calls, the extra ones offering no answer. `?report=<id>` adds that scan's report panel, as the plugins do. Each scan shows its call, as the plugins
+ * do by default; `?calls=0` hides them as the hideToolCalls setting does (SENTROOK_PREVIEW_LOG=.../dashboard/calls.jsonl
+ * has calls worth showing).
  * Binds 127.0.0.1 only; PORT overrides the port.
  */
 
@@ -97,9 +98,9 @@ async function model(params: URLSearchParams, hermes: boolean): Promise<unknown>
     version: 1,
     log: "on",
     limit: q.limit,
-    ...(await queryScans(LOG, q, undefined, params.get("calls") === "1")),
-    show_calls: params.get("calls") === "1",
-    pending: await pending(params.get("calls") === "1", Number(params.get("holds") || 1)),
+    ...(await queryScans(LOG, q, undefined, params.get("calls") !== "0")),
+    show_calls: params.get("calls") !== "0",
+    pending: await pending(params.get("calls") !== "0", Number(params.get("holds") || 1)),
     commands: hermes ? HERMES_COMMANDS : COMMANDS,
     host: "preview",
     lines: { review_at: 45, block_at: 80 },

@@ -18,6 +18,7 @@ import math
 import os
 import re
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,7 @@ CHAT_CALL_VALUE = 600
 #: How much of a held save's call its notice shows.
 NOTICE_CALL_TOTAL = 600
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
 _FENCE = "```"
 
 
@@ -154,30 +156,59 @@ def _js_keys(d: dict[str, Any]) -> list[str]:
     return sorted(index, key=int) + [k for k in d if k not in index]
 
 
+def _js_number(v: float) -> str:
+    """A finite number as JavaScript writes it (Number.prototype.toString): the shortest digits that read back, in
+    fixed notation from 1e-7 up to 1e21 and exponent notation (`1e-7`, `1.5e+21`) outside that."""
+    if v == 0:
+        return "0"
+    sign = "-" if v < 0 else ""
+    _, digits, exp = Decimal(repr(abs(v))).normalize().as_tuple()
+    d = "".join(map(str, digits))
+    k = len(d)
+    n = exp + k  # the value is 0.d × 10^n
+    if k <= n <= 21:
+        out = d + "0" * (n - k)
+    elif 0 < n <= 21:
+        out = f"{d[:n]}.{d[n:]}"
+    elif -6 < n <= 0:
+        out = "0." + "0" * (-n) + d
+    else:
+        e = n - 1
+        out = (d if k == 1 else f"{d[0]}.{d[1:]}") + ("e+" if e >= 0 else "e-") + str(abs(e))
+    return sign + out
+
+
+def _js_string(s: str) -> str:
+    """`s` as JSON.stringify writes a string: lone surrogates escaped, nothing else outside ASCII."""
+    return _SURROGATE.sub(lambda m: f"\\u{ord(m[0]):04x}", json.dumps(s, ensure_ascii=False))
+
+
 def _json(v: Any) -> str:
     """`v` as JavaScript's JSON.stringify writes it after JSON.parse, so both plugins show the same text."""
     if isinstance(v, bool) or v is None:
         return json.dumps(v)
-    if isinstance(v, int) and abs(v) > 2**53:
-        v = float(v)
-    if isinstance(v, float):
-        if not math.isfinite(v):
+    if isinstance(v, int) and abs(v) <= 2**53:
+        return str(v)
+    if isinstance(v, (int, float)):
+        try:
+            f = float(v)
+        except OverflowError:
             return "null"
-        return str(int(v)) if v.is_integer() and abs(v) < 1e21 else repr(v)
-    if isinstance(v, (int, str)):
-        return json.dumps(v, ensure_ascii=False)
+        return _js_number(f) if math.isfinite(f) else "null"
+    if isinstance(v, str):
+        return _js_string(v)
     if isinstance(v, list):
         return "[" + ",".join(_json(x) for x in v) + "]"
     if isinstance(v, dict):
-        items = (f"{json.dumps(k, ensure_ascii=False)}:{_json(v[k])}" for k in _js_keys(v))
-        return "{" + ",".join(items) + "}"
+        return "{" + ",".join(f"{_js_string(k)}:{_json(v[k])}" for k in _js_keys(v)) + "}"
     return "null"
 
 
 def _shown(s: str) -> str:
-    """`s` safe inside a chat code block: line ends kept, other control characters and code fences taken out."""
+    """`s` safe inside a chat code block: line ends kept, other control characters, lone surrogates and code fences
+    taken out."""
     text = s.replace("\r\n", "\n").replace("\r", "\n")
-    return _CONTROL.sub(" ", text).replace(_FENCE, "'''")
+    return _SURROGATE.sub("�", _CONTROL.sub(" ", text)).replace(_FENCE, "'''")
 
 
 def pending_call(scan: dict[str, Any]) -> dict[str, Any] | None:
@@ -205,21 +236,35 @@ def call_lines(
     args = call.get("arguments")
     if not isinstance(args, dict):
         args = {} if args is None else {"arguments": args}
+    # Every character of the rendered lines counts against `total`: the key, its ": ", the line break, the two
+    # spaces that indent a value's further lines, and the note on a cut value. So no call, however shaped, makes the
+    # message much longer than `total` (plus the header, the fences and one closing note).
     left = total
     body: list[str] = []
     keys = _js_keys(args)
     for i, key in enumerate(keys):
-        if left <= 0:
+        label = _shown(_text(key, 60)) + ": "
+        room = left - len(label) - 1
+        if room <= 0:
             body.append(f"… ({len(keys) - i} more arguments)")
             break
         value = args[key]
         text = _shown(value if isinstance(value, str) else _json(value))
-        take = min(len(text), CHAT_CALL_VALUE, left)
-        left -= take
-        if take < len(text):
-            text = f"{text[:take]}… ({len(text) - take} more characters)"
-        first, *rest = text.split("\n")
-        body.append(f"{_shown(_text(key, 60))}: {first}")
+        taken = cost = 0
+        for ch in text:
+            c = 3 if ch == "\n" else 1
+            if taken >= CHAT_CALL_VALUE or cost + c > room:
+                break
+            taken += 1
+            cost += c
+        left -= len(label) + 1 + cost
+        out = text[:taken]
+        if taken < len(text):
+            note = f"… ({len(text) - taken} more characters)"
+            out += note
+            left -= len(note)
+        first, *rest = out.split("\n")
+        body.append(label + first)
         body += [f"  {line}" for line in rest]
     if not body:
         body = ["(no arguments)"]

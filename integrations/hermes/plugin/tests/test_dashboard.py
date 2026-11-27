@@ -278,7 +278,7 @@ def test_build_model_adds_the_report_panel_only_when_asked(tmp_path):
         "/sentrook report aaaa1b2c --full",
     ]
     assert not any(
-        marker in json.dumps(m["report"])
+        marker in json.dumps(_without_calls(m))
         for marker in ("PLANIR-BODY-MARKER", "PRIVATE-PATH-MARKER")
     )
     assert m["report"]["summary"] == (REPORT_FIXTURES / "summary-aaaa1b2c.txt").read_text().rstrip(
@@ -301,8 +301,8 @@ def test_api_serves_the_report_panel(api, tmp_path):
     request = types.SimpleNamespace(query_params={"n": "10", "report": "aaaa1b2c"})
     m = asyncio.run(api.router.routes["/model"](request))
     assert m["report"]["id"] == "aaaa1b2c-0000-4000-8000-00000000000a"
-    # the full record stays with the owner's commands
-    assert "PLANIR-BODY-MARKER" not in json.dumps(m["report"])
+    # the full record stays with the owner's commands; a scan's call is the only place its arguments show
+    assert "PLANIR-BODY-MARKER" not in json.dumps(_without_calls(m))
 
 
 # ---- Showing the call (on by default; hide_tool_calls hides it) ----
