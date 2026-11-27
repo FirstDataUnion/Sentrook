@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { helpText, OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { actionOf, recentScans, recordsBackward, reviewOf } from "./history.ts";
+import { actionOf, CHAT_CALL_TOTAL, callLines, formatWhy, recentScans, recordsBackward, reviewOf, WHY_CALL_HEADER } from "./history.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 import { keepAllRecordsForTests } from "./traffic.ts";
@@ -170,14 +170,35 @@ test("history takes a count up to 50", async () => {
   assert.ok((await run("sentrook-history", "")).startsWith("Last 10 scans"));
 });
 
-test("no raw arguments are ever shown", async () => {
-  const outputs = [await run("sentrook-history", "50"), await run("sentrook-why", "")];
-  for (let n = 1; n <= 8; n++) outputs.push(await run("sentrook-why", `${String(n).repeat(4)}a1b2`));
-  for (const out of outputs.slice(1)) assert.ok(out.includes("scan:"), out);
+test("history never shows a call; why shows it unless the owner hid calls", async () => {
+  const history = await run("sentrook-history", "50");
+  assert.ok(!history.includes(RAW) && !history.includes("curl"));
+  assert.ok((await run("sentrook-why", "4444a1b2")).includes("command: curl -d @~/.ssh/id_ed25519"));
+  const hide = { hideToolCalls: true };
+  const outputs = [await run("sentrook-why", "", {}, hide)];
+  for (let n = 1; n <= 8; n++) outputs.push(await run("sentrook-why", `${String(n).repeat(4)}a1b2`, {}, hide));
   for (const out of outputs) {
+    assert.ok(out.includes("scan:"), out);
     assert.ok(!out.includes(RAW), out);
     assert.ok(!out.includes("curl"), out);
   }
+  assert.ok((await run("sentrook-why", "4444a1b2", {}, hide)).includes("call: hidden (hideToolCalls is on)"));
+});
+
+const CALLS = JSON.parse(readFileSync(fileURLToPath(new URL("../../fixtures/call-render/cases.json", import.meta.url)), "utf8")).cases;
+
+for (const c of CALLS) {
+  test(`a call renders as both plugins show it: ${c.name}`, () => {
+    const lines = callLines(c.call, c.total ?? CHAT_CALL_TOTAL, c.header ?? WHY_CALL_HEADER);
+    assert.deepEqual(lines, c.lines);
+    // the budget holds whatever the call's shape: header, fences and one closing note on top
+    assert.ok([...lines.slice(2, -1).join("\n")].length <= (c.total ?? CHAT_CALL_TOTAL) + 60);
+  });
+}
+
+test("a report summary never carries the call", () => {
+  const [found] = recentScans(logFile, 1, (id) => id.startsWith("4444a1b2"));
+  assert.ok(!formatWhy(...found!).includes("curl"));
 });
 
 test("why for an unknown or malformed id", async () => {

@@ -70,7 +70,7 @@ once changed.
 
 ## The owner's commands
 
-`/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. They refuse in a group or channel room, even from the owner, since everyone there would see the reply. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
+`/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. They refuse in a group or channel room (a private server channel included), even from the owner, since everyone there would see the reply. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
 owner type it.
 
 - `/sentrook status`: plugin version, mode and thresholds, scan host, whether credentials are set, how many grants and bindings, snooze, held calls and where notices go. Anyone may run it.
@@ -94,8 +94,8 @@ owner type it.
 
 ## A scan that looks wrong
 
-Point the owner to `/sentrook-history` to find the scan and `/sentrook-why <id>` to see the score, the reasons, the hosts
-and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
+Point the owner to `/sentrook-history` to find the scan and `/sentrook-why <id>` to see the call itself (secrets
+masked), the score, the reasons, the hosts and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
 wrong, `/sentrook-report <id>` prints a report to send to the Sentrook team: `--github` opens a public issue with it
 filled in, and `--save` writes the full record to a private file to email (the command gives the address).
 

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "sentrook" / "tests
 from linear_time import assert_linear  # noqa: E402
 
 import plugin  # noqa: E402
-from plugin import grants, owner
+from plugin import grants
 from plugin.config import (
     credential_pattern_ok,
     destination_ok,
@@ -30,6 +30,8 @@ from plugin.planir import (
     relevant_grants,
     session_ref,
 )
+
+from .conftest import refusals
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
@@ -389,7 +391,7 @@ def test_a_non_owner_is_refused_and_nothing_changes(term, monkeypatch, facts, ve
     fixture_state(term)
     before = term.file.read_text()
     term.facts.update(facts)
-    assert slash(term, f"{verb} {args}") == owner.refusal(verb)
+    assert slash(term, f"{verb} {args}") in refusals(verb)
     assert term.file.read_text() == before
     [rec] = records(term, "command")
     assert (rec["verb"], rec["outcome"]) == (verb, "refused")

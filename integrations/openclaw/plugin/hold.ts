@@ -70,6 +70,7 @@ import path from "node:path";
 
 import { BLOCK_CATEGORIES, blockCategory, describe } from "./decision.ts";
 import { formatWhy, recentScans, recordsBackward } from "./history.ts";
+import { HIDE_SETTING } from "./config.ts";
 import * as grants from "./grants.ts";
 import { OwnerRefused } from "./owner.ts";
 import * as passes from "./passes.ts";
@@ -1152,7 +1153,13 @@ export const isId = (text: string) => ID.test(text);
 const showTime = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 /** `why <hold id>`: the held call's scan as `why` shows any scan, then the hold itself. */
-export function whyText(stateDir: string, log: string, id: string, cmd: grants.Cmd = (sub) => `/sentrook-${sub}`): string {
+export function whyText(
+  stateDir: string,
+  log: string,
+  id: string,
+  cmd: grants.Cmd = (sub) => `/sentrook-${sub}`,
+  showCall = true,
+): string {
   let rid: string | null = null;
   for (const r of recordsBackward(log)) {
     if (r.kind === "scan" && r.hold && typeof r.hold === "object" && (r.hold as Entry).id === id && typeof r.request_id === "string") {
@@ -1162,7 +1169,7 @@ export function whyText(stateDir: string, log: string, id: string, cmd: grants.C
   }
   const [found] = rid ? recentScans(log, 1, (x) => x === rid) : [];
   if (!found) return `No held call ${id} in the recent traffic log.`;
-  const lines = [formatWhy(...found)];
+  const lines = [formatWhy(...found, showCall, HIDE_SETTING)];
   const waiting = find(stateDir, id);
   if (waiting) {
     const at = readTime(waiting.expires_at);

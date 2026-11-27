@@ -2,10 +2,10 @@
 
 It holds only what the scanner returned (risk, the tier and leaf scores, floors, relief, reason codes and
 texts, entity display strings) plus the plugin's own labels for what it did. The PlanIR as sent, the call's
-arguments, `reasons[].detail` and failure details are never included, as with `/sentrook why`; a scan's report
-panel (`report_of`) holds only its summary, links and commands. One exception, off by default: with
-`dashboard_show_calls` the owner lets each scan carry its call (tool and arguments, as sent to the scanner and so
-redacted, bounded by `call_of`), knowing anyone who can open the dashboard can then read it. The OpenClaw plugin
+arguments, `reasons[].detail` and failure details are never included; a scan's report panel (`report_of`) holds
+only its summary, links and commands. One exception, on by default: each scan carries its call (tool and arguments,
+as sent to the scanner and so redacted, bounded by `call_of`), as `/sentrook why` shows it; anyone who can open the
+dashboard can read it, and the owner's `hide_tool_calls` leaves it out. The OpenClaw plugin
 builds the same model for the same log (fixtures/traffic-log/dashboard).
 
 `dashboard/plugin_api.py` serves it to the Hermes dashboard tab; the page cannot change anything.
@@ -532,7 +532,7 @@ def query_scans(
 COMMANDS = {
     "prefix": "/sentrook ",
     #: The setting that lets each scan show its call, as the owner sets it in this host's config.
-    "call_setting": "hermes config set plugins.entries.sentrook.settings.dashboard_show_calls true",
+    "call_setting": "hermes config set plugins.entries.sentrook.settings.hide_tool_calls false",
     "review_answer": [
         "Answer in the chat where it was asked, with Hermes's own commands:",
         "/approve",
@@ -683,7 +683,7 @@ def build_model(
     enabled = cfg.traffic_log_enabled
     budget = budget_for(cfg.traffic_log_max_bytes)
     if enabled:
-        page = query_scans(cfg.traffic_log_path, q, budget, cfg.dashboard_show_calls)
+        page = query_scans(cfg.traffic_log_path, q, budget, not cfg.hide_tool_calls)
     else:
         page = {
             "scans": [],
@@ -728,10 +728,10 @@ def build_model(
             now,
             review_window_s,
             budget,
-            cfg.dashboard_show_calls,
+            not cfg.hide_tool_calls,
         ),
         "commands": COMMANDS,
-        "show_calls": cfg.dashboard_show_calls,
+        "show_calls": not cfg.hide_tool_calls,
     }
     panel = report_of(cfg, report_ref, budget)
     if panel is not None:

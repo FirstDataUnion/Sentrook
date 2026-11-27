@@ -26,7 +26,11 @@ the files it writes from a sensitive or tainted file) is not applied when it is 
 decided whether the call runs. It is kept in `pending`, keyed to the call, and the next scan settles it from the
 call's decision in its history (`settle_pending`): applied once the call ran, dropped when it never did.
 
-A token without one of these sets (issued before it existed) reads as an empty one. The token is an HS256
+`impacts` keeps the last few scans' impact (the consequence tier without self-modification), oldest first, for the
+escalation trend (`probes.context`). It is null when the earlier impacts are not known: a token issued before it
+existed, or a session restarted from a lost token. Then the trend reads the history's consequence tiers instead.
+
+A token without one of the sets (issued before it existed) reads as an empty one. The token is an HS256
 JWT bound to its `session_ref` and the step it was issued at; it is accepted only when presented with
 the same `session_ref` at `session.step − 1`, so an older token cannot be replayed to shed a flag.
 
@@ -58,6 +62,8 @@ SKILL_NAMED_CAP = 32
 KERNEL_CAP = 64
 #: Calls whose own marks wait for their outcome; past it the oldest are dropped (they never showed as run).
 PENDING_CAP = 8
+#: Scan impacts kept for the escalation trend, oldest first.
+IMPACT_CAP = 8
 HASH_HEX = 12
 #: Seed prefix for a database table (`table:job_records`); everything else is guessed from its shape.
 TABLE_PREFIX = "table:"
@@ -130,6 +136,8 @@ class SessionState:
     kernel_unknown: bool = False
     #: Scanned calls whose own marks wait for their outcome, oldest first.
     pending: list[PendingMarks] = field(default_factory=list)
+    #: The last scans' impacts, oldest first; None when the earlier ones are not known.
+    impacts: list[float] | None = None
     max_input_seq: int | None = None
     deployment: str | None = None
     issued_step: int | None = None
@@ -216,6 +224,13 @@ class SessionState:
         self.add_kernel(marks.kernel)
         self.kernel_unknown = self.kernel_unknown or marks.kernel_unknown
 
+    def add_impact(self, value: float) -> None:
+        """Record this scan's impact; nothing is recorded once the earlier ones are not known."""
+        if self.impacts is None:
+            return
+        self.impacts.append(round(min(1.0, max(0.0, value)), 4))
+        del self.impacts[: max(0, len(self.impacts) - IMPACT_CAP)]
+
 
 def call_hash(salt: str, call_id: str) -> str:
     return entity_hash(salt, "call", call_id)
@@ -269,11 +284,13 @@ def entity_hash(salt: str, kind: str, value: str) -> str:
 def fresh_state(salt: str, status: TokenStatus, deployment: str | None = None) -> SessionState:
     """A new session state. Past the first step (a lost, stale or foreign token), what earlier code-tool calls
     left in the interpreter is not known, and it stays unknown for the rest of the session."""
+    first = status is TokenStatus.FIRST_STEP
     return SessionState(
         salt=salt,
         deployment=deployment,
         status=status,
-        kernel_unknown=status is not TokenStatus.FIRST_STEP,
+        kernel_unknown=not first,
+        impacts=[] if first else None,
     )
 
 
@@ -325,6 +342,7 @@ def decode_state(
         kernel=[str(h) for h in claims.get("krn", [])][:KERNEL_CAP],
         kernel_unknown=claims.get("kru") is True,
         pending=_decode_pending(claims.get("pnd")),
+        impacts=_decode_impacts(claims.get("imp")),
         max_input_seq=claims.get("seq"),
         deployment=claims.get("dep") or deployment,
         issued_step=claims["step"],
@@ -358,6 +376,8 @@ def encode_state(
         "kru": state.kernel_unknown,
         "pnd": [_encode_pending(p) for p in state.pending[-PENDING_CAP:]],
     }
+    if state.impacts is not None:
+        claims["imp"] = list(state.impacts[-IMPACT_CAP:])
     return jwt.encode(claims, key, algorithm=ALGORITHM)
 
 
@@ -402,6 +422,17 @@ def _decode_pending(raw: object) -> list[PendingMarks]:
             )
         )
     return out
+
+
+def _decode_impacts(raw: object) -> list[float] | None:
+    """The token's impacts; absent (an older token) is unknown, and an entry that is not a 0–1 number is skipped."""
+    if not isinstance(raw, list):
+        return None
+    return [
+        float(v)
+        for v in raw[-IMPACT_CAP:]
+        if isinstance(v, int | float) and not isinstance(v, bool) and 0.0 <= v <= 1.0
+    ]
 
 
 def _strings(raw: object) -> list[str]:

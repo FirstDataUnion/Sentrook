@@ -11,7 +11,7 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5 and 2026.11.8. Older releases refuse
+- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5 and 2026.11.10. Older releases refuse
   to install the plugin.
 - A shell on the machine that runs the OpenClaw gateway, as the user that runs it.
 - A FIDU account. It is free, and you can create one while signing in (step 3).
@@ -134,6 +134,39 @@ Each row is one scan: time, tool, risk score, the action Sentrook took, and the 
 it found (hosts, files, recipients, channels).
 
 If the history is empty, the agent has not made a tool call since the restart.
+
+### Approval cards in chat apps
+
+Do your first setup with the agent in the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`), not in
+a chat app. When Sentrook asks about a call, OpenClaw shows an approval card, and in Discord, Telegram, WhatsApp and
+Signal it does so only once the app is set up for it. Until then, a call Sentrook asks about there is refused, setup
+steps included. Slack shows the card in the same chat with nothing to set.
+
+Your approver is the account in `commands.ownerAllowFrom` (OpenClaw fills it when you approve the first pairing) or
+the app's own `execApprovals.approvers`. Discord also needs its cards switched on:
+
+```bash
+openclaw config set channels.discord.execApprovals.enabled true
+```
+
+Only if `commands.ownerAllowFrom` does not already name your account on that app, set it as the approver (Telegram's
+cards are on by default and need only this; use `discord` in place of `telegram` for Discord):
+
+```bash
+openclaw config set channels.telegram.execApprovals.approvers '["<your Telegram user id>"]'
+```
+
+WhatsApp and Signal need the cards forwarded to the chat the request came from (Signal also needs you in
+`channels.signal.allowFrom`):
+
+```bash
+openclaw config set approvals.plugin.enabled true
+openclaw config set approvals.plugin.mode session
+```
+
+Restart the gateway if the command says so (`openclaw gateway restart`). The setup skill (see
+[Agent skills](#agent-skills)) checks this first and gives you the commands; it never changes these settings itself.
+OpenClaw's own guide has the details: [Exec approvals](https://docs.openclaw.ai/tools/exec-approvals).
 
 ## 6. Tell Sentrook what is normal for you
 
@@ -376,7 +409,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls (and the one held most often), where notices go, passes and denials, OpenClaw's own saves by outcome, and any settings Sentrook cannot read |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
-| `/sentrook-why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
+| `/sentrook-why [request_id\|last]` | One scan in detail: the call itself (secrets masked, long text cut; unless `hideToolCalls` is on) and the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `/sentrook-report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
 | `/sentrook-grants` | Grants in force: from config (read-only) and set by command |
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
@@ -406,7 +439,8 @@ commands run only for the owner, from any of three places:
 - **The machine**: whoever can run `openclaw` there counts as the owner.
 
 OpenClaw decides who the owner is by the sender, not the room, and keeps a command and its reply in the room's
-transcript. So every dashed command refuses in a group or channel room, even from you, since its reply (recent scans,
+transcript. So every dashed command refuses in a group or channel room (a private server channel included), even
+from you, since its reply (recent scans,
 hosts, file paths, reasons, grants, setup codes) would be shown to everyone there; and in a chat it cannot tell from
 one: a chat channel with no session key, or the agent's main session when `session.groupScope` routes rooms into it.
 This includes a Control UI session that is a room's, and the Control UI on the main session when rooms share it, since
@@ -470,11 +504,14 @@ starts, so start a new session after installing.
 
 - `sentrook-guide`: how Sentrook works, so the agent can explain an approval prompt, a block, a held call or a notice,
   and point you to `/sentrook-why` and `/sentrook-report`.
-- `sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the setup with
-  `openclaw sentrook verify`, asks what work is routine (the services, folders, channels and API key names it uses),
-  explains where notices go (`/sentrook-notify here`), adds what you told it to your `/sentrook-setup` list with
-  `sentrook_propose_setup`, sends you there to read and set the items, and offers to explain any of them. Later, when Sentrook keeps asking about
-  the same thing, it sends you back to `/sentrook-setup` or helps you find the grant with `/sentrook-why`.
+- `sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook, best in the Control UI
+  or terminal (see [Approval cards in chat apps](#approval-cards-in-chat-apps)): it checks the setup with
+  `openclaw sentrook verify`, gives you the commands that let approval cards reach your chat apps, works out what is
+  routine from its own scheduled jobs, skills, MCP servers and what you ask of it, and shows you a short list to keep
+  or drop, asking once whether anything else should not need approval. It adds what you keep to your
+  `/sentrook-setup` list with `sentrook_propose_setup`, asks you to send `/sentrook-notify here`, and sends you to
+  `/sentrook-setup` to read and set the items. Later, if your regular work gets blocked, ask it to help set up a grant:
+  it sends you back to `/sentrook-setup` or finds the grant with `/sentrook-why`.
 
 The agent never runs those commands itself, `/sentrook-setup apply` included, and Sentrook refuses them if it tries.
 The agent's system prompt also gets
@@ -543,18 +580,17 @@ Anything waiting for you comes first: an approval prompt still open, or a call h
 The tab only reads. To change a grant or a snooze, use the commands above. It shows the same records as
 `/sentrook-history` and `/sentrook-why`, and nothing when the traffic log is off.
 
-By default the tab never shows what a call contained: an edit shows its tool and the files it touched, not the edit.
-To see the call itself, turn on `dashboardShowCalls`:
+Each scan has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them to
+the scanner, as `/sentrook-why` shows them. Secrets are masked; file contents, messages and commands are shown as the agent
+wrote them (an edit's old and new text side by side), and very long text is cut. Anyone with gateway access can open the tab, so hide them on a gateway you share.
+To hide calls everywhere (the tab, `/sentrook-why` and background-save notices):
 
 ```bash
-openclaw config set plugins.entries.sentrook.config.dashboardShowCalls true
+openclaw config set plugins.entries.sentrook.config.hideToolCalls true
 ```
 
-Each scan then has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them
-to the scanner. Secrets are masked; file contents, messages and commands are shown as the agent wrote them (an edit's
-old and new text side by side), and very long text is cut. Anyone with gateway access can open the tab, so leave it
-off on a gateway you share. Without it, `/sentrook-report <id> --save` writes a scan's full record to a file only you
-can read.
+While they are hidden, `/sentrook-report <id> --save` writes a scan's full record to a file only you can read. The old
+`dashboardShowCalls` setting is no longer needed and does nothing.
 
 Every scan has **Report this scan…**, which opens the report described in [Report a wrong scan](#report-a-wrong-scan):
 the summary to copy, a button for a public GitHub issue with it filled in, and the commands and email address for the
@@ -747,6 +783,10 @@ must be the skill's own `SKILL.md` under the agent's Skill Workshop folder, a re
 OpenClaw also refuses a background patch of a skill the run has not viewed first; the draft route does not check that,
 so such a change can still reach your drafts. Applying a draft does not check whether the skill changed since:
 OpenClaw replaces the skill with the draft and keeps the version it replaced in the skill's history.
+
+Each of these notices also shows the save itself as the agent wrote it, right after the line naming it: secrets
+masked, long text cut, and marked as data so the agent does not take it as instructions if the notice reaches its
+chat. `hideToolCalls` leaves it out.
 
 A held background save is not a [held call](#held-calls-in-cron-jobs-and-subagents) you can approve: approving could
 not make the save, so it gets no approve id and is not kept with the held calls (`status` counts it on its `skill
@@ -975,6 +1015,7 @@ at most every 6 hours while it stands. Running `openclaw doctor --fix` leaves Se
 | `onScanError` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `timeoutMs` | `30000` | How long to wait for a scan |
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
+| `hideToolCalls` | `false` | Hides the calls (secrets masked) that `/sentrook-why`, background-save notices and the dashboard show. Anyone who can read your chat or open the tab reads them, so turn this on where others can. `dashboardShowCalls` is replaced by this and does nothing |
 | `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it. Either way those saves are never asked about ([Background skill and memory saves](#background-skill-and-memory-saves)) |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |

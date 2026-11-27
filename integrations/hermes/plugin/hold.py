@@ -105,6 +105,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import grants, notice_retry, passes
+from .config import HIDE_SETTING
 from .decision import BLOCK_CATEGORIES, block_category, describe
 from .store import Store, file_lock, read_time
 
@@ -1319,7 +1320,12 @@ def is_id(text: str) -> bool:
 
 
 def why_text(
-    state_dir: Path, log: Path, hold_id: str, now: datetime, cmd: Cmd = "/sentrook {}".format
+    state_dir: Path,
+    log: Path,
+    hold_id: str,
+    now: datetime,
+    cmd: Cmd = "/sentrook {}".format,
+    show_call: bool = True,
 ) -> str:
     """`why <hold id>`: the held call's scan as `why` shows any scan, then the hold itself."""
     from .history import format_why, recent_scans, records_backward
@@ -1337,7 +1343,7 @@ def why_text(
     found = recent_scans(log, 1, lambda x: x == rid) if isinstance(rid, str) else []
     if not found:
         return f"No held call {hold_id} in the recent traffic log."
-    lines = [format_why(*found[0])]
+    lines = [format_why(*found[0], show_call=show_call, hidden_by=HIDE_SETTING)]
     waiting = find(state_dir, hold_id)
     if waiting is not None:
         at = read_time(waiting.get("expires_at"))

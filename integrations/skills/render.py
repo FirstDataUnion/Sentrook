@@ -174,6 +174,12 @@ HOSTS: dict[str, dict] = {
         ),
         "values": {
             "host": "Hermes",
+            "restart_after_install": (
+                "After any install or update of the plugin, every Hermes process that was already running keeps "
+                "the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), "
+                "the gateway and the dashboard. Until they do, `verify` fails its `running build` line and "
+                "`{{cmd status}}` says `restart needed`."
+            ),
             "guide_skill": "`sentrook:sentrook-guide`",
             "setup_skill": "`sentrook:sentrook-setup`",
             "settings_place": "`plugins.entries.sentrook` in Hermes's `config.yaml`",
@@ -204,9 +210,25 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where": (
                 "Only the owner can run the commands below except `{{cmd status}}` and `{{cmd help}}`: in a direct "
                 "message from an allowed user, or on the local terminal (`hermes chat`, or `hermes sentrook "
-                "<command>` on the machine). Group chats are refused."
+                "<command>` on the machine). Group chats and server channels are refused, private ones included."
             ),
             "owner_commands_where_short": "in a direct message to you, or on the machine",
+            "cli_prefix_host": "hermes",
+            "local_places": (
+                "the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the "
+                "machine"
+            ),
+            "chat_app_reason": (
+                "the owner commands setup ends with (such as `{{cmd setup}} apply`) are refused in group chats and "
+                "server channels, and a long setup is easier to follow there"
+            ),
+            "approval_route": (
+                "Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat "
+                "apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, "
+                "**Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card "
+                "callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that "
+                "they wrote from a direct message and that their account is on the platform's allowed users."
+            ),
             "notice_explain": (
                 "When a call is held, a scan fails on an unattended run, or a background save is held or let "
                 "through, Sentrook sends the owner a notice. The owner chooses where by sending `{{cmd notify}} here` "
@@ -266,6 +288,10 @@ HOSTS: dict[str, dict] = {
         ),
         "values": {
             "host": "OpenClaw",
+            "restart_after_install": (
+                "After any install or update of the plugin, the running gateway keeps the old plugin until it "
+                "restarts: the owner restarts it."
+            ),
             "guide_skill": "`sentrook-guide`",
             "setup_skill": "`sentrook-setup`",
             "settings_place": "`plugins.entries.sentrook` in `openclaw.json`",
@@ -295,10 +321,44 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where": (
                 "`{{cmd status}}` and `{{cmd help}}` are open to anyone. The dashed commands are for the owner "
                 "only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the "
-                "machine. They refuse in a group or channel room, even from the owner, since everyone there would "
-                "see the reply."
+                "machine. They refuse in a group or channel room (a private server channel included), even from the "
+                "owner, since everyone there would see the reply."
             ),
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
+            "cli_prefix_host": "openclaw",
+            "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
+            "chat_app_reason": (
+                "a step Sentrook checks needs an approval card, and until step 3 is done the card may not reach this "
+                "chat, so a blocked step could leave you both stuck"
+            ),
+            "approval_route": (
+                "OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app "
+                "is set up for them; until then, a call Sentrook asks about there is refused. Read what is set with "
+                "`openclaw config get commands.ownerAllowFrom`, `openclaw config get channels.<app>.execApprovals` "
+                "and `openclaw config get approvals.plugin`. The owner's approver account comes from "
+                "`commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or the app's "
+                "`execApprovals.approvers`. For each chat app the owner uses that is not set, give the owner the "
+                "commands, to run in a terminal on this machine:\n\n"
+                "   - Discord (off until enabled):\n\n"
+                "     ```\n"
+                "     openclaw config set channels.discord.execApprovals.enabled true\n"
+                "     ```\n\n"
+                "   - Discord or Telegram, only when `commands.ownerAllowFrom` does not already name the owner on that "
+                "app (Telegram's cards are on by default and need only this):\n\n"
+                "     ```\n"
+                "     openclaw config set channels.telegram.execApprovals.approvers '[\"<your Telegram user id>\"]'\n"
+                "     ```\n\n"
+                "   - WhatsApp or Signal: forward the cards to the chat the request came from (Signal also needs the "
+                "owner in `channels.signal.allowFrom`):\n\n"
+                "     ```\n"
+                "     openclaw config set approvals.plugin.enabled true\n"
+                "     openclaw config set approvals.plugin.mode session\n"
+                "     ```\n\n"
+                "   Slack needs nothing: the card shows in the same chat, for the accounts in Slack's `allowFrom`. If "
+                "a command prints that the gateway needs a restart, the owner runs `openclaw gateway restart`. The "
+                "approver is always the owner's own account, never anyone else's. In a group or channel room the "
+                "cards go to the owner's direct messages."
+            ),
             "notice_explain": (
                 "When a call is held, a scan fails on an unattended run, or a background save is held, drafted or "
                 "let through, Sentrook sends the owner a notice. The owner chooses where by sending "

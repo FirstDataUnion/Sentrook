@@ -18,7 +18,7 @@
  */
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
-import { configProblemsSummary, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
+import { configProblemsSummary, HIDE_SETTING, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
@@ -345,13 +345,13 @@ function historyText(ctx: CommandContext, rest: string): string {
 function whyText(ctx: CommandContext, rest: string): string {
   const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
   if (!cfg.trafficLog.enabled) return LOG_OFF;
-  if (hold.isId(rest)) return hold.whyText(cfg.stateDir, cfg.trafficLog.path, rest, CMD);
+  if (hold.isId(rest)) return hold.whyText(cfg.stateDir, cfg.trafficLog.path, rest, CMD, !cfg.hideToolCalls);
   const match = parseRef(rest);
   if (match === null) {
     return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history, or the id in a held-call notice";
   }
   const [found] = recentScans(cfg.trafficLog.path, 1, match);
-  if (found) return formatWhy(...found);
+  if (found) return formatWhy(...found, !cfg.hideToolCalls, HIDE_SETTING);
   return rest === "" || rest.toLowerCase() === "last" ? NO_SCANS : `No scan ${rest} in the recent traffic log.`;
 }
 

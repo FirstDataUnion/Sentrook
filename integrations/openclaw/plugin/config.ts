@@ -87,8 +87,11 @@ export interface PluginConfig {
   historyLimit: number;
   inputCapBytes: number;
   historyArgsCapBytes: number;
-  /** Each dashboard scan shows its call (redacted arguments). Off by default: anyone who can open the tab reads them. */
-  dashboardShowCalls: boolean;
+  /**
+   * Hide the calls (redacted arguments) that `/sentrook-why`, background-save notices and the dashboard show by
+   * default. Anyone who can open the tab or read the owner's chat reads them.
+   */
+  hideToolCalls: boolean;
   packs: string[];
   trustedSenders: string[];
   trustedRoles: string[];
@@ -439,7 +442,7 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     historyLimit: num(cfg.historyLimit, DEFAULT_HISTORY_LIMIT, 1, 200),
     inputCapBytes: num(cfg.inputCapBytes, DEFAULT_INPUT_CAP_BYTES, 1024),
     historyArgsCapBytes: num(cfg.historyArgsCapBytes, DEFAULT_HISTORY_ARGS_CAP_BYTES, 256),
-    dashboardShowCalls: bool(cfg.dashboardShowCalls ?? env.SENTROOK_DASHBOARD_SHOW_CALLS, false),
+    hideToolCalls: bool(cfg.hideToolCalls ?? env.SENTROOK_HIDE_TOOL_CALLS, false),
     packs: list(cfg.packs).length ? list(cfg.packs) : ["tier1"],
     trustedSenders: list(cfg.trustedSenders ?? env.SENTROOK_TRUSTED_SENDERS),
     trustedRoles: list(cfg.trustedRoles ?? env.SENTROOK_TRUSTED_ROLES),
@@ -563,6 +566,8 @@ const SETTINGS: Record<string, Spec> = {
   historyLimit: between(1, 200, DEFAULT_HISTORY_LIMIT),
   inputCapBytes: atLeast(1024, DEFAULT_INPUT_CAP_BYTES),
   historyArgsCapBytes: atLeast(256, DEFAULT_HISTORY_ARGS_CAP_BYTES),
+  hideToolCalls: { kind: "flag", fallback: false },
+  // replaced by hideToolCalls; still accepted, does nothing
   dashboardShowCalls: { kind: "flag", fallback: false },
   packs: NAMES,
   trustedSenders: NAMES,
@@ -574,6 +579,9 @@ const SETTINGS: Record<string, Spec> = {
 
 /** Every setting the plugin config may hold (the manifest documents exactly these). */
 export const SETTING_NAMES: readonly string[] = Object.keys(SETTINGS);
+
+/** The setting that hides calls from `/sentrook-why`, notices and the dashboard. */
+export const HIDE_SETTING = "hideToolCalls";
 
 /** Config text shown back to the owner: printable, no markup, short. */
 function plain(raw: string, cap: number): string {

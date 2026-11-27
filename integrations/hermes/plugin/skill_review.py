@@ -61,7 +61,7 @@ resolution says `decided_by: review_loop`, and history shows "auto-denied by the
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -210,12 +210,18 @@ def _details(details: str | None) -> list[str]:
 
 
 def let_through_text(
-    tool: str, shown: str, where: str, details: str | None, snoozed: bool = False
+    tool: str,
+    shown: str,
+    where: str,
+    details: str | None,
+    snoozed: bool = False,
+    call: Sequence[str] = (),
 ) -> str:
     """The owner's notice that a reviewed loop save ran without asking. Like the hold notice it may be copied into
-    the agent's own transcript, so it carries only the plugin's own words, the run (`hold.where_text`, already
-    inert), the tool and its description as a review prompt shows it, and the commands. `details` names where to
-    read more (None when the traffic log is off)."""
+    the agent's own transcript, so it carries the plugin's own words, the run (`hold.where_text`, already inert),
+    the tool and its description as a review prompt shows it, the commands and, unless the owner hid calls, the call
+    itself in a code block marked as data (`call`, from `history.call_lines`). `details` names where to read more
+    (None when the traffic log is off)."""
     because = " because a snooze is on" if snoozed else " without asking"
     return "\n".join(
         (
@@ -223,6 +229,7 @@ def let_through_text(
             "about a save like this.",
             f"Run: {where}",
             _save_line(tool, shown),
+            *call,
             *_details(details),
             f"More background saves let through in this session are not announced for {_quiet_hours()} hours.",
         )
@@ -230,7 +237,13 @@ def let_through_text(
 
 
 def stopped_text(
-    outcome: str, tool: str, shown: str, where: str, category: str, details: str | None
+    outcome: str,
+    tool: str,
+    shown: str,
+    where: str,
+    category: str,
+    details: str | None,
+    call: Sequence[str] = (),
 ) -> str:
     """The owner's notice that a loop save was blocked or held (`outcome`); `category` as the agent's block text
     names it. A held save offers no approval: approving could not make it. To keep it, the owner asks for it."""
@@ -246,6 +259,7 @@ def stopped_text(
             first,
             f"Run: {where}",
             _save_line(tool, shown),
+            *call,
             f"{'Blocked' if outcome == 'blocked' else 'Held'} because {category}.",
             *_details(details),
             f"{more} in this session are not announced for {_quiet_hours()} hours.",
@@ -253,7 +267,14 @@ def stopped_text(
     )
 
 
-def held_call_text(tool: str, shown: str, where: str, category: str, details: str | None) -> str:
+def held_call_text(
+    tool: str,
+    shown: str,
+    where: str,
+    category: str,
+    details: str | None,
+    call: Sequence[str] = (),
+) -> str:
     """The owner's notice that a call of the unattended review, not a save, was held. Built as the save notices
     are: the plugin's own words, the run, the tool and its description as a review prompt shows it."""
     from .hold import inert
@@ -264,6 +285,7 @@ def held_call_text(tool: str, shown: str, where: str, category: str, details: st
             "not to retry it. Nobody can answer a prompt there, so it was not asked about.",
             f"Run: {where}",
             f"Tool: {inert(tool, 80)}: {inert(shown, 160)}",
+            *call,
             f"Held because {category}.",
             "The review may have ended without saving what it learned; to keep something, ask the agent for it in "
             "a chat.",
@@ -303,11 +325,12 @@ def staged_text(
     pending_id: str,
     details: str | None,
     by_hermes: bool = False,
+    call: Sequence[str] = (),
 ) -> str:
     """The owner's notice that a loop save was held and staged in Hermes's pending store (`staging`), by the plugin or
     by Hermes's own gate (`by_hermes`). Like the other notices it carries only the plugin's own words, the run, the
-    tool and its description as a review prompt shows it, the pending id and the commands: never what the save
-    writes. `rule`: a Sentrook rule asked for the review."""
+    tool and its description as a review prompt shows it, the pending id, the commands and, unless the owner hid
+    calls, the call itself (`call`, from `history.call_lines`) marked as data. `rule`: a Sentrook rule asked for the review."""
     because = f"Held because {category}" + (
         " (a Sentrook rule asks for a review of this)." if rule else "."
     )
@@ -318,6 +341,7 @@ def staged_text(
             + " for you to approve, so it is not saved yet.",
             f"Run: {where}",
             _save_line(tool, shown),
+            *call,
             because,
             *_commands(store, pending_id, own_text=not by_hermes),
             *_details(details),
@@ -327,7 +351,9 @@ def staged_text(
     )
 
 
-def unstaged_text(tool: str, shown: str, where: str, details: str | None, saved: bool) -> str:
+def unstaged_text(
+    tool: str, shown: str, where: str, details: str | None, saved: bool, call: Sequence[str] = ()
+) -> str:
     """The owner's notice that a destructive memory change Sentrook left to Hermes's own gate was not staged by it:
     Hermes saved it (`saved`), or its result did not say."""
     what_happened = (
@@ -341,6 +367,7 @@ def unstaged_text(tool: str, shown: str, where: str, details: str | None, saved:
             + what_happened,
             f"Run: {where}",
             _save_line(tool, shown),
+            *call,
             *_details(details),
             f"More such changes in this session are not announced for {_quiet_hours()} hours.",
         )

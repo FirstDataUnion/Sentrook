@@ -501,6 +501,7 @@ def converge(
     own_flags = {f for f in flags if f in OWN_READ_FLAGS} - state.flags
     state.flags = flags - own_flags
     state.max_input_seq = prepared.scanned_max_seq
+    state.add_impact(tiers.impact)
     pending = _mint_session_sets(prepared, envelopes, own_flags)
     token = encode_state(
         state,

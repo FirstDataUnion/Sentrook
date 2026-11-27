@@ -4,10 +4,10 @@
  * `buildModel` turns the tail of the traffic log into the JSON the page draws. It holds only what the scanner
  * returned (risk, the tier and leaf scores, floors, relief, reason codes and texts, entity display strings) plus
  * the plugin's own labels for what it did. The PlanIR as sent, the call's arguments, `reasons[].detail` and
- * failure details are never included, as with `/sentrook-why`; a scan's report panel (`reportOf`) holds only its
- * summary, links and commands. One exception, off by default: with `dashboardShowCalls` the owner lets each scan
- * carry its call (tool and arguments, as sent to the scanner and so redacted, bounded by `callOf`), knowing anyone
- * who can open the tab can then read it. The Hermes plugin builds the same model for the same log
+ * failure details are never included; a scan's report panel (`reportOf`) holds only its summary, links and commands.
+ * One exception, on by default: each scan carries its call (tool and arguments, as sent to the scanner and so
+ * redacted, bounded by `callOf`), as `/sentrook-why` shows it; anyone who can open the tab can read it, and the
+ * owner's `hideToolCalls` leaves it out. The Hermes plugin builds the same model for the same log
  * (fixtures/traffic-log/dashboard).
  *
  * The page is served on a Gateway route with `auth: "gateway"`. Inside the Control UI tab the browser holds a
@@ -515,7 +515,7 @@ export function reportOf(cfg: PluginConfig, ref: string | null | undefined, budg
 export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Date(), reportRef: string | null = null): Promise<Rec> {
   const enabled = cfg.trafficLog.enabled;
   const budget = budgetFor(cfg.trafficLog.maxBytes);
-  const calls = cfg.dashboardShowCalls;
+  const calls = !cfg.hideToolCalls;
   const page = enabled ? await queryScans(cfg.trafficLog.path, q, budget, calls) : { scans: [], totals: totalsOf([]), query: queryEcho(q), page: { more: false, next: null, read_bytes: 0, budget_hit: false, cursor_lost: false, reached_start: true } };
   let passesText: string;
   try {
@@ -556,8 +556,8 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
 /** How the page names this host's commands: the plugin's own (prefix + verb) and the host's approval answers. */
 export const COMMANDS = {
   prefix: "/sentrook-",
-  /** The setting that lets each scan show its call, as the owner writes it in this host's config. */
-  call_setting: "openclaw config set plugins.entries.sentrook.config.dashboardShowCalls true",
+  /** The setting that shows calls again once the owner hid them, as the owner writes it in this host's config. */
+  call_setting: "openclaw config set plugins.entries.sentrook.config.hideToolCalls false",
   review_answer: [
     "Answer on the approval card in the chat where it was asked, or with OpenClaw's own command and the id the prompt shows:",
     "/approve <approval id> allow-once",

@@ -2,7 +2,8 @@
 
 One read-only route, `GET /model`, returns the dashboard model (`dashboard.py`) built from this profile's
 traffic log, for the page's search (`n`, `before`, `from`, `to`, `tool`, `outcome`, `risk`, `session`), and with
-`report=<request id>` the report panel for that scan (`report.py`). Hermes loads this file on its own, outside the plugin package, so it loads the plugin's modules
+`report=<request id>` the report panel for that scan (`report.py`). Its first request in a profile also records the plugin
+build this process loaded (`build.py`). Hermes loads this file on its own, outside the plugin package, so it loads the plugin's modules
 by path under a private package name without running the plugin's `__init__.py` (which hooks into the agent).
 Everything is resolved per request: Hermes scopes the dashboard to a profile per request, and
 `hermes config set` changes apply without a restart.
@@ -93,11 +94,28 @@ def _env() -> dict[str, str]:
 PARAMS = ("n", "before", "from", "to", "tool", "outcome", "risk", "session")
 
 
+#: The state folders this dashboard process has recorded its plugin build in.
+_recorded: set[str] = set()
+
+
+def _record_build(state_dir: Path) -> None:
+    """Records the plugin build this dashboard process loaded (once per state folder), so `hermes sentrook verify`
+    and `status` can say when it needs a restart after a reinstall (see `build.py`)."""
+    if str(state_dir) in _recorded:
+        return
+    try:
+        _module("build").record_self(state_dir)
+    except OSError:
+        return
+    _recorded.add(str(state_dir))
+
+
 def build(params: dict[str, str | None], report_ref: str | None = None) -> dict[str, Any]:
     config = _module("config")
     dashboard = _module("dashboard")
     data = _hermes_config()
     cfg = config.resolve_config(_settings(data), _env())
+    _record_build(cfg.state_dir)
     window = _review_window_s(data, dashboard.DEFAULT_REVIEW_WINDOW_S)
     return dashboard.build_model(
         cfg, dashboard.query_of(params), review_window_s=window, report_ref=report_ref

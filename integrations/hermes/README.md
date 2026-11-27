@@ -96,6 +96,7 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 | `token mint` | The credentials were revoked or are wrong: run `hermes sentrook login` again, then restart Hermes. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
+| `running build` | A Hermes process that was running when you installed or updated the plugin still runs the old plugin (the line names it). Restart it: hermes-serve (the desktop app's backend), the gateway and the dashboard. See [Updating](#updating). |
 
 If Hermes answers `'sentrook' is not a hermes command`, the plugin is not enabled: run
 `hermes plugins enable sentrook` and restart. With `plugins.isolation: host` Hermes has no `hermes sentrook`
@@ -343,9 +344,9 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
-| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, where notices go, attended platforms, held calls (and the one held most often), passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
+| `status` | Plugin version and running build (and `restart needed` when a Hermes process still runs an older one), mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, where notices go, attended platforms, held calls (and the one held most often), passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
-| `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
+| `why [request_id\|last]` | One scan in detail: the call itself (secrets masked, long text cut; unless `hide_tool_calls` is on) and the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
 | `grants` | Grants in force: from config (read-only) and set by command |
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file`, `provider`, `repo`, `credential` or `folder`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats; `credential` and `folder` default to persistent), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--follow origin/main` (folder in a git repository only), `--expires 12h` |
@@ -363,8 +364,9 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 **Owner only.** `status` and `help` are open to anyone the gateway admits. Every other command runs only for the
 owner: a direct message from a sender listed individually in `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`,
-or the local terminal (`hermes chat` or `hermes sentrook …`). Group and channel messages are refused, and so is a
-direct message admitted only because the gateway allows all users. Every attempt, allowed or refused, is recorded in
+or the local terminal (`hermes chat`, the desktop app or `hermes sentrook …`). Group chats and server channels are
+refused, private ones included, even from you: anyone there could see or change your security settings. Open a direct
+message with the bot instead. A direct message admitted only because the gateway allows all users is refused too. Every attempt, allowed or refused, is recorded in
 the traffic log (unless you turned it off). Hermes's own `allow_admin_from` is not used.
 
 If Sentrook blocks your own setup work, snooze for the duration: while a snooze is on, a block in a chat you attend
@@ -420,11 +422,14 @@ into `~/.hermes/skills`):
 
 - `sentrook:sentrook-guide`: how Sentrook works, so the agent can explain an approval prompt, a block, a held call or
   a notice, and point you to `/sentrook why` and `/sentrook report`.
-- `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the
-  setup with `hermes sentrook verify`, asks what work is routine (the services, folders, channels and API key names
-  it uses), explains where notices go, adds what you told it to your `/sentrook setup` list with
-  `sentrook_propose_setup`, sends you there to read and set the items, and offers to explain any of them. Later, when Sentrook keeps asking about the same thing,
-  it sends you back to `/sentrook setup` or helps you find the grant with `/sentrook why`.
+- `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook, best in the
+  terminal (`hermes chat`), the TUI or the desktop app rather than a chat app, so a step Sentrook asks about cannot
+  leave you stuck: it checks the setup with `hermes sentrook verify`, works out what is routine from its own scheduled
+  jobs, skills, MCP servers and what you ask of it, and shows you a short list to keep or drop, asking once whether
+  anything else should not need approval. It adds what you keep to your `/sentrook setup` list with
+  `sentrook_propose_setup`, asks you to send `/sentrook notify here`, and sends you to `/sentrook setup` to read and
+  set the items. Later, if your regular work gets blocked, ask it to help set up a grant: it sends you back to
+  `/sentrook setup` or finds the grant with `/sentrook why`.
 
 The agent never runs those commands itself, `/sentrook setup apply` included, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
 short section with the rules the agent follows whether or not it opens a skill: never run the commands that change
@@ -479,18 +484,17 @@ The tab only reads. To change a grant or a snooze, use the commands above. It sh
 `/sentrook history` and `/sentrook why`, and nothing when the traffic log is off. It reads the traffic log of the
 profile the dashboard is showing.
 
-By default the tab never shows what a call contained: an edit shows its tool and the files it touched, not the edit.
-To see the call itself, turn on `dashboard_show_calls`:
+Each scan has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them to
+the scanner, as `/sentrook why` shows them. Secrets are masked; file contents, messages and commands are shown as the agent
+wrote them (a patch's old and new text side by side), and very long text is cut. Anyone who can open the dashboard can read them, so hide them where others can.
+To hide calls everywhere (the tab, `/sentrook why` and background-save notices):
 
 ```bash
-hermes config set plugins.entries.sentrook.settings.dashboard_show_calls true
+hermes config set plugins.entries.sentrook.settings.hide_tool_calls true
 ```
 
-Each scan then has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them
-to the scanner. Secrets are masked; file contents, messages and commands are shown as the agent wrote them (a patch's
-old and new text side by side), and very long text is cut. Anyone who can open the dashboard can read them, so leave
-it off where others can. Without it, `/sentrook report <id> --save` writes a scan's full record to a file only you can
-read.
+While they are hidden, `/sentrook report <id> --save` writes a scan's full record to a file only you can read. The old
+`dashboard_show_calls` setting is no longer needed and does nothing.
 
 Every scan has **Report this scan…**, which opens the report described in [Report a wrong scan](#report-a-wrong-scan):
 the summary to copy, a button for a public GitHub issue with it filled in, and the commands and email address for the
@@ -760,7 +764,9 @@ instead:
 | The scan failed | As on an unattended run: with `on_scan_error` `review` or `deny` it is not saved, with `allow` it is (see [When the scan service fails](#when-the-scan-service-fails)). | The scan-failure notice when it is not saved. |
 
 The notices go where you set them (see [Where notices go](#where-notices-go)). They say whether it was a skill or a memory
-save and what it saved, as a review would describe it, and point to `/sentrook why <id>` and `/sentrook history`.
+save and what it saved, as a review would describe it, then the save itself as the agent wrote it (secrets masked,
+long text cut, marked as data so the agent does not take it as instructions; hidden with `hide_tool_calls`), and
+point to `/sentrook why <id>` and `/sentrook history`.
 You get at most one notice of each kind (let through, held, staged, blocked) per session every 6 hours; history has
 every save, and shows a held one as "not saved" and a staged one as "pending in Hermes".
 Without a notice target (for example when you use Hermes only on the local terminal) the saves are handled the same
@@ -913,7 +919,8 @@ Data Union Ltd:
 - **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
   last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `history_limit` changes the
   number).
-- **Your operating system, home and workspace folder paths, and the plugin version.** Folder paths can identify you.
+- **Your operating system, home and workspace folder paths, and the plugin version and build.** Folder paths can
+  identify you. The build is a hash of the plugin's files, with the Git revision Hermes installed when it recorded one.
   Also the platform, and whether Hermes's approvals and secret redaction are on.
 - **Hashed session IDs, and any grants you have set that could apply**: the grants and channel bindings whose
   pattern fits the call's arguments or the MCP server it calls (a `#name` also fits `channel:name`, and a
@@ -1001,6 +1008,7 @@ settings (see [step 2](#2-sign-in)).
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server`. `/sentrook attended add` adds more without editing the config (see [Attended platforms](#attended-platforms)) |
 | `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. `/sentrook notify here` sets a chat instead and wins over this (see [Where notices go](#where-notices-go)). No notice is sent until one of them is set |
+| `hide_tool_calls` | `false` | Hides the calls (secrets masked) that `/sentrook why`, background-save notices and the dashboard show. Anyone who can read your chat or open the dashboard reads them, so turn this on where others can. `dashboard_show_calls` is replaced by this and does nothing |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Either way they never ask (see [Background skill and memory saves](#background-skill-and-memory-saves)). A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
@@ -1013,6 +1021,13 @@ settings (see [step 2](#2-sign-in)).
 ```bash
 hermes plugins update sentrook && hermes gateway restart
 ```
+
+A Hermes process keeps the plugin it loaded when it started, so after any install or update of the plugin restart
+every Hermes process that was running, not just the gateway: hermes-serve (the desktop app's backend), the dashboard
+and any `hermes chat` still open. If you run them as services, restart all of them. Until then, `hermes sentrook
+verify` fails its `running build` line and `/sentrook status` says `restart needed`, naming each process still on
+the old plugin; such a process also logs a warning on its next scan. `/sentrook status` shows the running process's
+`plugin build`, and each scan in the traffic log carries it as `host.plugin_build`.
 
 After a Hermes update, check that `hermes plugins list` still shows `sentrook` as enabled.
 

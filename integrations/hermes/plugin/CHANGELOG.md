@@ -6,6 +6,31 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
+  MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
+  should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the
+  terminal, TUI or desktop app, keeps its messages short with commands on their own lines, and ends with how to get
+  help when regular work is blocked later.
+- `/sentrook why` now shows the call itself (the tool's arguments as sent to the scanner: secrets masked, long text
+  cut), and a background-save notice shows the save it is about, so you can judge it without opening the dashboard.
+  The dashboard shows each scan's call by default too. One new setting, `hide_tool_calls`, hides calls in all three
+  places; `dashboard_show_calls` is no longer needed and does nothing. A report's summary never carries the call.
+- A held change to the agent's own skills or memory no longer reads "Changes the agent's or host's configuration a
+  destination" when it names no destination.
+- Each scan names the plugin build that ran, as `host.plugin_build` in the traffic log: a hash of the plugin's files
+  (with the Git revision Hermes installed, when it recorded one), taken when the process started. The version label
+  stays the same across many changes, so it could not tell builds apart. `/sentrook status` shows it as
+  `plugin build`.
+- After an install or update of the plugin, a Hermes process that was already running keeps the old plugin until it
+  restarts. `hermes sentrook verify` now fails a `running build` line, and `/sentrook status` says `restart needed`,
+  naming each process (hermes-serve, the gateway, the dashboard) still on another build; such a process also logs a
+  warning on its scans (the files are read at most once a minute). Each process records its build in
+  `~/.hermes/sentrook/processes/` while it runs. The guide's "Updating" section and the setup skill say to restart all
+  of them.
+- An owner command sent in a group chat or a server channel, a private one included, now says why it was refused:
+  the chat, not your account, since anyone there could see or change your security settings. It tells you to open a
+  direct message with the bot or use the machine (`hermes chat`, the desktop app or `hermes sentrook <command>`). A
+  refusal for someone not on the platform's allowed users says the same places plainly.
 - Trusted folders: `/sentrook grant folder <dir>` trusts a folder you write and maintain, such as the repository your
   jobs' instructions live in. A file the agent reads from it with `read_file`, unchanged since you set the grant, is
   sent with `trusted_by`, and Sentrook reads it as your own words: it no longer makes the chat count as exposed to

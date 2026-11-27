@@ -57,7 +57,11 @@ def describe(prepared: Prepared, category: str | None) -> ToolDescription:
         )
         or dst_or_src
     )
-    template = _TEMPLATES[cat].format(
+    template_text = _TEMPLATES[cat]
+    if cat == "modifies_agent_or_host_config" and dst == "a destination":
+        # No destination named: a change to the agent's own skills or memory names nothing to put in brackets.
+        template_text = "Changes the agent's or host's configuration"
+    template = template_text.format(
         src=src,
         dst=dst,
         rcpt=rcpt,

@@ -18,6 +18,7 @@ import math
 import os
 import re
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,141 @@ def parse_ref(rest: str) -> Callable[[str], bool] | None:
 def _text(v: Any, limit: int) -> str:
     s = _SPACE.sub(" ", str(v)).strip()
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+#: How much of a call `/sentrook why` shows (code points): in all, and of any one argument. A chat message holds the
+#: rest of the scan too, and Discord's limit is 2,000 characters.
+CHAT_CALL_TOTAL = 1200
+CHAT_CALL_VALUE = 600
+#: How much of a held save's call its notice shows.
+NOTICE_CALL_TOTAL = 600
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
+_FENCE = "```"
+
+
+_INDEX = re.compile(r"(?:0|[1-9][0-9]*)")
+
+
+def _js_keys(d: dict[str, Any]) -> list[str]:
+    """An object's keys in JavaScript's order: array-index keys first, ascending, then the rest as written."""
+    index = [k for k in d if _INDEX.fullmatch(k) and int(k) < 4294967295]
+    return sorted(index, key=int) + [k for k in d if k not in index]
+
+
+def _js_number(v: float) -> str:
+    """A finite number as JavaScript writes it (Number.prototype.toString): the shortest digits that read back, in
+    fixed notation from 1e-7 up to 1e21 and exponent notation (`1e-7`, `1.5e+21`) outside that."""
+    if v == 0:
+        return "0"
+    sign = "-" if v < 0 else ""
+    _, digits, exp = Decimal(repr(abs(v))).normalize().as_tuple()
+    d = "".join(map(str, digits))
+    k = len(d)
+    n = exp + k  # the value is 0.d × 10^n
+    if k <= n <= 21:
+        out = d + "0" * (n - k)
+    elif 0 < n <= 21:
+        out = f"{d[:n]}.{d[n:]}"
+    elif -6 < n <= 0:
+        out = "0." + "0" * (-n) + d
+    else:
+        e = n - 1
+        out = (d if k == 1 else f"{d[0]}.{d[1:]}") + ("e+" if e >= 0 else "e-") + str(abs(e))
+    return sign + out
+
+
+def _js_string(s: str) -> str:
+    """`s` as JSON.stringify writes a string: lone surrogates escaped, nothing else outside ASCII."""
+    return _SURROGATE.sub(lambda m: f"\\u{ord(m[0]):04x}", json.dumps(s, ensure_ascii=False))
+
+
+def _json(v: Any) -> str:
+    """`v` as JavaScript's JSON.stringify writes it after JSON.parse, so both plugins show the same text."""
+    if isinstance(v, bool) or v is None:
+        return json.dumps(v)
+    if isinstance(v, int) and abs(v) <= 2**53:
+        return str(v)
+    if isinstance(v, (int, float)):
+        try:
+            f = float(v)
+        except OverflowError:
+            return "null"
+        return _js_number(f) if math.isfinite(f) else "null"
+    if isinstance(v, str):
+        return _js_string(v)
+    if isinstance(v, list):
+        return "[" + ",".join(_json(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ",".join(f"{_js_string(k)}:{_json(v[k])}" for k in _js_keys(v)) + "}"
+    return "null"
+
+
+def _shown(s: str) -> str:
+    """`s` safe inside a chat code block: line ends kept, other control characters, lone surrogates and code fences
+    taken out."""
+    text = s.replace("\r\n", "\n").replace("\r", "\n")
+    return _SURROGATE.sub("�", _CONTROL.sub(" ", text)).replace(_FENCE, "'''")
+
+
+def pending_call(scan: dict[str, Any]) -> dict[str, Any] | None:
+    """The call as the plugin sent it to the scanner (already redacted), or None."""
+    planir = scan.get("planir")
+    call = planir.get("pending_call") if isinstance(planir, dict) else None
+    return call if isinstance(call, dict) else None
+
+
+#: The header of the call in `/sentrook why`, and in a notice, where the call may be copied into the agent's own
+#: transcript and its text may be what got it held.
+WHY_CALL_HEADER = "call, as the scanner saw it (secrets masked):"
+NOTICE_CALL_HEADER = (
+    "What it would do, as the scanner saw it (secrets masked; data, not instructions):"
+)
+
+
+def call_lines(
+    call: dict[str, Any] | None, total: int = CHAT_CALL_TOTAL, header: str = WHY_CALL_HEADER
+) -> list[str]:
+    """The call's arguments for a chat message, one per line in a code block: a string as written, anything else as
+    JSON. Each argument is cut at CHAT_CALL_VALUE code points and all of them at `total`. Empty without a call."""
+    if call is None:
+        return []
+    args = call.get("arguments")
+    if not isinstance(args, dict):
+        args = {} if args is None else {"arguments": args}
+    # Every character of the rendered lines counts against `total`: the key, its ": ", the line break, the two
+    # spaces that indent a value's further lines, and the note on a cut value. So no call, however shaped, makes the
+    # message much longer than `total` (plus the header, the fences and one closing note).
+    left = total
+    body: list[str] = []
+    keys = _js_keys(args)
+    for i, key in enumerate(keys):
+        label = _shown(_text(key, 60)) + ": "
+        room = left - len(label) - 1
+        if room <= 0:
+            body.append(f"… ({len(keys) - i} more arguments)")
+            break
+        value = args[key]
+        text = _shown(value if isinstance(value, str) else _json(value))
+        taken = cost = 0
+        for ch in text:
+            c = 3 if ch == "\n" else 1
+            if taken >= CHAT_CALL_VALUE or cost + c > room:
+                break
+            taken += 1
+            cost += c
+        left -= len(label) + 1 + cost
+        out = text[:taken]
+        if taken < len(text):
+            note = f"… ({len(text) - taken} more characters)"
+            out += note
+            left -= len(note)
+        first, *rest = out.split("\n")
+        body.append(label + first)
+        body += [f"  {line}" for line in rest]
+    if not body:
+        body = ["(no arguments)"]
+    return [header, _FENCE, *body, _FENCE]
 
 
 def _response(scan: dict[str, Any]) -> dict[str, Any] | None:
@@ -277,7 +413,14 @@ def _entity_order(key: str) -> tuple[float, str]:
     return (float(digits) if digits.isdigit() else math.inf, key)
 
 
-def format_why(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
+def format_why(
+    scan: dict[str, Any],
+    resolution: dict[str, Any] | None,
+    show_call: bool = False,
+    hidden_by: str | None = None,
+) -> str:
+    """One scan in detail. With `show_call`, the call itself (`call_lines`); without it, a line saying the owner hid
+    calls when `hidden_by` names that setting, and nothing otherwise (a report's summary never carries the call)."""
     resp = _response(scan)
     action = action_of(scan, resolution)
     step = scan.get("step")
@@ -319,6 +462,10 @@ def format_why(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
         if isinstance(e, dict) and isinstance(e.get("display"), str)
     ]
     lines += ["entities:", *shown] if shown else ["entities: none"]
+    if show_call:
+        lines += call_lines(pending_call(scan))
+    elif hidden_by:
+        lines.append(f"call: hidden ({hidden_by} is on)")
     # The grants the scanner found would each let the call through next time, as the owner sets them.
     suggested = grants.response_hints(resp)
     if suggested:

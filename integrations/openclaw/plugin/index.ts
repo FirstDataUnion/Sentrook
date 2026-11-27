@@ -33,6 +33,7 @@ import * as dashboard from "./dashboard.ts";
 import * as folders from "./folders.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
+import * as history from "./history.ts";
 import * as hold from "./hold.ts";
 import * as passes from "./passes.ts";
 import * as runNow from "./runNow.ts";
@@ -1705,11 +1706,18 @@ const plugin = {
       const out = quietNotice(
         cfg,
         bg.quietKey(retry ? "held_retry" : outcome, jobId, sref, bg.patchDraftNotice(outcome, tool, action), nth),
-        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry, action, drafts),
+        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry, action, drafts, noticeCall(cfg, built)),
         "background-save",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);
       return out;
+    }
+
+    /** The call as a background notice shows it: none when the owner hid calls. */
+    function noticeCall(cfg: PluginConfig, built: { planir: any }): string[] {
+      if (cfg.hideToolCalls) return [];
+      const call = built.planir?.pending_call;
+      return history.callLines(call && typeof call === "object" ? call : null, history.NOTICE_CALL_TOTAL, history.NOTICE_CALL_HEADER);
     }
 
     /**
@@ -1731,7 +1739,7 @@ const plugin = {
       const out = quietNotice(
         cfg,
         bg.quietKey("held_call", jobId, sref),
-        () => bg.heldCallText(resp, tool, where, rid, jobId !== null),
+        () => bg.heldCallText(resp, tool, where, rid, jobId !== null, noticeCall(cfg, built)),
         "background-call",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background run call held but sent no notice: ${String(out.reason)}`);
