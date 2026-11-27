@@ -325,8 +325,9 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 **Owner only.** `status` and `help` are open to anyone the gateway admits. Every other command runs only for the
 owner: a direct message from a sender listed individually in `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`,
-or the local terminal (`hermes chat` or `hermes sentrook …`). Group and channel messages are refused, and so is a
-direct message admitted only because the gateway allows all users. Every attempt, allowed or refused, is recorded in
+or the local terminal (`hermes chat`, the desktop app or `hermes sentrook …`). Group chats and server channels are
+refused, private ones included, even from you: anyone there could see or change your security settings. Open a direct
+message with the bot instead. A direct message admitted only because the gateway allows all users is refused too. Every attempt, allowed or refused, is recorded in
 the traffic log (unless you turned it off). Hermes's own `allow_admin_from` is not used.
 
 If Sentrook blocks your own setup work, snooze for the duration: while a snooze is on, a block in a chat you attend

@@ -312,3 +312,7 @@ test("ownerGate refuses a room and a chat it cannot tell from one; its writes th
     ],
   );
 });
+
+test("a sender refusal says a private server channel never runs an owner command", () => {
+  assert.match(refusal("grant"), /even a private one, never runs it\.$/);
+});

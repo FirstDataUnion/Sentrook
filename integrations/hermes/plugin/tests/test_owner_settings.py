@@ -16,6 +16,7 @@ import plugin
 from plugin import cli, commands, hold, owner_settings, planir
 
 from . import test_hold
+from .conftest import refusals
 from .test_hold import _cron, send, slash, turn
 from .test_plugin import call, without_generated_ids
 from .test_plugin import turn as chat_turn
@@ -245,7 +246,8 @@ def test_a_non_owner_a_group_chat_or_an_allow_all_dm_is_refused_and_audited(
         facts = who
     reply = from_chat(h, monkeypatch, raw, facts=facts)
     verb = raw.split()[0]
-    assert reply.startswith(f"Only the owner can run /sentrook {verb}")
+    group = isinstance(who, dict) and who.get("chat_type") == "group"
+    assert reply == refusals(verb)[1 if group else 0]
     assert not (h.dir / "sentrook" / "settings.json").exists()
     [rec] = records(h, "command")
     assert (rec["verb"], rec["outcome"]) == (verb, "refused")

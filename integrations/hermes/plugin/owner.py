@@ -90,8 +90,20 @@ def gate(
     return {**check, "sender_ref": ref}
 
 
-def refusal(verb: str) -> str:
+def refusal(verb: str, basis: list[str] | None = None) -> str:
+    """The reply to a refused owner command. `basis` is the owner check's: a group chat or server
+    channel gets its own reply, since the owner may be the one asking there."""
+    local = f"`hermes chat`, the desktop app, or `hermes sentrook {verb}` on the machine"
+    if basis == ["group_chat"]:
+        return (
+            f"/sentrook {verb} only runs in a direct message with the bot, or on this machine ({local}). "
+            "This chat is a group or a server channel, and a private channel counts too: anyone who can "
+            "read or post here could see or change Sentrook's security settings. Open a direct message "
+            f"with the bot and send /sentrook {verb} there. Nothing was changed."
+        )
     return (
-        f"Only the owner can run /sentrook {verb}: send it in a direct message from an account on "
-        "the platform's allowed users, or from the local terminal."
+        f"Only the owner can run /sentrook {verb}: send it in a direct message with the bot from an "
+        "account on Hermes's allowed users for that platform (such as `TELEGRAM_ALLOWED_USERS`), or run "
+        f"it on this machine ({local}). Group chats and server channels, private ones included, are "
+        "refused. Nothing was changed."
     )

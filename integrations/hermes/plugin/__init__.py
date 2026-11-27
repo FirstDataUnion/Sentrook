@@ -328,7 +328,7 @@ def owner_command(
             )
             return owner.refusal(verb)
         if not check["owner"]:
-            return owner.refusal(verb)
+            return owner.refusal(verb, check["basis"])
         who = {k: check[k] for k in ("basis", "platform", "sender_ref")}
         # The chat the check judged, for a command that stores it (`notify here`); taken off `who` before `who`
         # is recorded anywhere (`commands.dispatch`).
