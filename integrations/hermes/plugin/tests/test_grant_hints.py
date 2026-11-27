@@ -197,15 +197,16 @@ def test_a_stranger_in_a_dm_sees_no_hint_and_always_sets_nothing(owner, monkeypa
     assert _file_grants(h) == []
 
 
-def test_a_group_chat_sees_no_hint(owner, monkeypatch):
-    """Hermes counts every group message as someone else's, the owner's included: no hint there."""
+def test_the_owner_in_a_group_chat_sees_the_hint_but_approving_never_sets_it(owner, monkeypatch):
+    """The owner's own message in a group is the owner's, so the hint's command is shown; but anyone admitted to
+    the group may answer the prompt, so approving always sets nothing."""
     h = owner
     facts = {"chat_type": "group", "user_id": "u1", "key": "agent:main:telegram:group:9"}
     monkeypatch.setattr(plugin, "session_facts", lambda: facts)
     _turn(h)
     out = _call(h, "c1")
-    assert h.scans[0]["trigger"]["sender"]["relation"] != "owner"
-    assert "grant" not in out["message"]
+    assert h.scans[0]["trigger"]["sender"] == {"relation": "owner", "basis": ["group_chat"]}
+    assert "/sentrook grant" in out["message"]
     _answer(h, out, "always")
     assert _file_grants(h) == []
 

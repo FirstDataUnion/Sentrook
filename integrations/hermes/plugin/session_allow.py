@@ -6,10 +6,14 @@ So, on the owner's own turn, the answer is also kept in the session's state as a
 review was about (the entities its reasons name and the ones the card's description of the call names), the risk it
 was answered at and the warnings it carried (every reason code but the scanner's scoring and wording notes). A later
 review in the same session is let through without asking when it is a call of the same tool about exactly the same
-parties, scores no higher, carries no warning the answered review did not (`warnings`), and the scanner neither
-enforced it nor applied a floor. Anything else asks: another party (or one more), a higher risk, a new warning,
-another tool, another chat, a block. A review whose reasons and description name no party keeps Hermes's exact key only: an allowance about
-nothing would cover every call of that tool. An allowance lasts `MAX_AGE`.
+parties, scores at most `MARGIN` points above the answer and below the block line, carries no warning the answered
+review did not (`warnings`, less `ALLOWANCE_NOTES`), and the scanner neither enforced it nor applied a floor. The
+judge's score moves a few points between near-identical calls of one job, and the session's consequence trend rises
+as the job goes on, so neither alone asks again. Anything else asks: another party (or one more), a score more than
+`MARGIN` higher or at the block line, a new warning, another tool, another chat, a block. The margin counts from the
+answer: a call an allowance covered never raises it. A review whose reasons and description name no party keeps
+Hermes's exact key only: an allowance about nothing would cover every call of that tool. An allowance lasts
+`MAX_AGE`.
 
 Where the Session answer also sets the review's suggested grant, no allowance is kept: the grant goes to the scanner,
 which scores later calls with it, and a later review despite the grant is one with something new in it.
@@ -31,14 +35,21 @@ from .store import read_time
 MAX_PER_SESSION = 50
 #: How long an allowance lets later reviews through.
 MAX_AGE = timedelta(hours=12)
+#: How many points above the answered risk an allowance still covers (never at or above the block line: `covering`).
+MARGIN = 10.0
+#: Warnings that do not ask again under an allowance, though they do everywhere else (the per-job passes of held
+#: calls): the session's consequence trend, which rises as a job goes on and refers to no call of its own. Its lift is
+#: in the score, which `MARGIN` bounds. A retry code is not one: it points at a call that was denied, blocked or left
+#: unanswered, never at one the owner approved or an allowance covered.
+ALLOWANCE_NOTES = frozenset({"escalation.consequence_rising"})
 #: Reason codes that are the scanner's scoring and wording notes, not warnings: the judge's own reasons (`jev.*`,
 #: `call.*`), relief and caps, coverage and probe agreement, the trigger, a plain send, a party new to the library as
 #: a place to send to or a recipient, an origin that names nobody hostile, and the background of what the session has
 #: been reading (content that had instructions or claimed authority, or steered earlier: these change at every step
-#: of a job that reads documents, and still raise the score, which must stay no higher). Content that tried to change
-#: the task, and a call that uses content that tried to steer the agent, are warnings. Every other code is a warning: a later
-#: review carrying one the answered review did not always asks, whatever its score, so a code the scanner adds later
-#: asks too.
+#: of a job that reads documents, and still raise the score, which must stay within `MARGIN`). Content that tried to
+#: change the task, and a call that uses content that tried to steer the agent, are warnings. Every other code is a
+#: warning: a later review carrying one the answered review did not always asks, whatever its score, so a code the
+#: scanner adds later asks too.
 NOTE_PREFIXES = ("jev.", "call.", "relief.", "cap.", "coverage.", "agreement.", "trigger.")
 NOTES = frozenset(
     {
@@ -125,19 +136,24 @@ def eligible(resp: dict[str, Any]) -> bool:
 
 
 def fits(risk: Any, seen: Any, resp: dict[str, Any]) -> bool:
-    """Whether an answer given at `risk` with the warnings `seen` covers this scan: it scores no higher and carries
-    no warning the answer did not. Shared with the per-job passes of held calls (`passes`)."""
+    """Whether a Session answer given at `risk` with the warnings `seen` covers this scan: it scores at most `MARGIN`
+    higher and carries no warning the answer did not, other than `ALLOWANCE_NOTES`. The block line is checked apart
+    (`covering`). The per-job passes of held calls keep the stricter rule (`passes.covers`)."""
     now_risk = risk_of(resp)
     if now_risk is None or not isinstance(risk, (int, float)) or isinstance(risk, bool):
         return False
-    return now_risk <= float(risk) and not set(warnings(resp)) - set(seen or [])
+    return (
+        now_risk <= float(risk) + MARGIN
+        and not set(warnings(resp)) - set(seen or []) - ALLOWANCE_NOTES
+    )
 
 
 def covering(
-    sess: dict[str, Any], k: str | None, resp: dict[str, Any], now: datetime
+    sess: dict[str, Any], k: str | None, resp: dict[str, Any], now: datetime, block_at: float
 ) -> dict[str, Any] | None:
-    """The allowance in `sess` that lets this review through, or None."""
-    if k is None or not eligible(resp):
+    """The allowance in `sess` that lets this review through, or None. Never one at or above `block_at`."""
+    now_risk = risk_of(resp)
+    if k is None or not eligible(resp) or now_risk is None or now_risk >= block_at:
         return None
     for a in sess.get("session_allows") or []:
         if not isinstance(a, dict) or a.get("key") != k:
