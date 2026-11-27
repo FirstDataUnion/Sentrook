@@ -21,7 +21,9 @@ a short list of options and every URL written out (no `git push`, `rsync`, `scp`
 background job, process or command substitution, proxy, redirect following or address from a variable or config file),
 and Python must aim every request at a URL written in the code. Nor is it covered when the call, a sibling, a written
 file or any earlier step of the session sets a proxy (`https_proxy=`, `ProxyHandler`, `proxies=`) or names curl's
-config file: HTTP clients read both, so a send written out to a granted host may still go through somewhere else.
+config file, or a shell step loads variables with `source` / `.`: HTTP clients read both, so a send written out to a
+granted host may still go through somewhere else. This reads the session history the plugin sends (a recent window
+of steps, arguments capped); a proxy set before that window is not seen.
 
 **Gate.** No floor fired; concealment is below `concealment_below` and the new content's exposure below
 `exposure_below`; the session is not tainted (before or in this scan). A session that holds sensitive data passes
@@ -189,27 +191,41 @@ def _shell_routes_known(command: str) -> bool:
     return True
 
 
-#: A proxy variable set, or curl's config file named: HTTP clients (curl, Python's urllib and requests) read both,
-#: so a send written out to a granted host may still go through somewhere else.
+#: A proxy variable named, or curl's config file: HTTP clients (curl, Python's urllib and requests) read both, so a send
+#: written out to a granted host may still go through somewhere else. Read after quotes and backslashes are removed,
+#: as the shell would (`'https_pro''xy'`, `.cur\lrc`), and a bare name counts (`read https_proxy`, `export
+#: https_proxy`).
 _PROXY_SETTING = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(?:https?|all|ftp|socks|no)_proxy\s*=|curlrc|CURL_HOME|ProxyHandler|proxies\s*="
+    r"(?i)(?<![a-z0-9])(?:https?|all|ftp|socks\d?|no)_proxy(?![a-z0-9])|curlrc|curl_home|proxyhandler|proxies\s*="
 )
+_QUOTING = re.compile(r"[\"'\\]")
+#: Shell commands that load variables from a file the arguments do not show.
+_SOURCING_HEADS = frozenset({"source", "."})
+
+
+def _sources_a_file(text: str) -> bool:
+    return any(tokens and tokens[0] in _SOURCING_HEADS for tokens in shell_segments(text))
 
 
 def _proxy_configured(prepared: Prepared) -> bool:
-    """The call, its siblings, a file it writes or any earlier step of the session sets a proxy variable, a proxy in
-    code, or names curl's config file."""
+    """The call, its siblings, a file it writes or any earlier step of the session names a proxy variable or curl's
+    config file, sets a proxy in code, or (for a shell step) loads variables from a file with `source` or `.`."""
     from ..probes.aira import written_file_call
 
-    texts = [
-        json.dumps(c.raw, default=str)
-        for c in (prepared.pending, *prepared.siblings, *prepared.resolved)
-    ]
+    calls = [prepared.pending, *prepared.siblings, *prepared.resolved]
+    texts = [json.dumps(c.raw, default=str) for c in calls]
+    shell = [c.command or "" for c in calls if c.tool_kind is ToolKind.EXEC and not is_code_call(c)]
     written = written_file_call(prepared)
     if written is not None:
         texts.append(written.command or "")
-    texts += [json.dumps(h.arguments, default=str) for h in prepared.planir.history]
-    return any(_PROXY_SETTING.search(t) for t in texts)
+    for h in prepared.planir.history:
+        texts.append(json.dumps(h.arguments, default=str))
+        cmd = h.arguments.get("command") if isinstance(h.arguments, dict) else None
+        if h.tool_kind is ToolKind.EXEC and isinstance(cmd, str):
+            shell.append(cmd)
+    if any(_PROXY_SETTING.search(_QUOTING.sub("", t)) for t in texts):
+        return True
+    return any(_sources_a_file(t) for t in shell)
 
 
 def _routes_known(prepared: Prepared) -> bool:

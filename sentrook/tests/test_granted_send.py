@@ -534,8 +534,25 @@ CURL = f"curl -d @notes.md https://{HOME_HOST}/v1/pages"
         "export HTTPS_PROXY=http://p.othersite.invalid:3128",
         "echo 'proxy = p.othersite.invalid:3128' >> ~/.curlrc",
         "export CURL_HOME=/tmp/c",
+        "export 'https_pro''xy=http://p.othersite.invalid:3128'",
+        "export https_pro\\xy=http://p.othersite.invalid:3128",
+        "read https_proxy <<< http://p.othersite.invalid:3128; export https_proxy",
+        "cp cfg ~/.cur''lrc",
+        "source ./vars",
+        ". ./vars",
     ],
-    ids=["https_proxy", "HTTPS_PROXY", "curlrc", "CURL_HOME"],
+    ids=[
+        "https_proxy",
+        "HTTPS_PROXY",
+        "curlrc",
+        "CURL_HOME",
+        "quoted",
+        "backslash",
+        "read",
+        "quoted-curlrc",
+        "source",
+        "dot",
+    ],
 )
 def test_a_proxy_or_curl_config_set_earlier_in_the_session_closes_coverage(earlier):
     raw = _shell(CURL)
