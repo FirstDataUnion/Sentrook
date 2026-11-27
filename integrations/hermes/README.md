@@ -383,11 +383,14 @@ into `~/.hermes/skills`):
 
 - `sentrook:sentrook-guide`: how Sentrook works, so the agent can explain an approval prompt, a block, a held call or
   a notice, and point you to `/sentrook why` and `/sentrook report`.
-- `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the
-  setup with `hermes sentrook verify`, asks what work is routine (the services, folders, channels and API key names
-  it uses), explains where notices go, adds what you told it to your `/sentrook setup` list with
-  `sentrook_propose_setup`, sends you there to read and set the items, and offers to explain any of them. Later, when Sentrook keeps asking about the same thing,
-  it sends you back to `/sentrook setup` or helps you find the grant with `/sentrook why`.
+- `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook, best in the
+  terminal (`hermes chat`), the TUI or the desktop app rather than a chat app, so a step Sentrook asks about cannot
+  leave you stuck: it checks the setup with `hermes sentrook verify`, works out what is routine from its own scheduled
+  jobs, skills, MCP servers and what you ask of it, and shows you a short list to keep or drop, asking once whether
+  anything else should not need approval. It adds what you keep to your `/sentrook setup` list with
+  `sentrook_propose_setup`, asks you to send `/sentrook notify here`, and sends you to `/sentrook setup` to read and
+  set the items. Later, if your regular work gets blocked, ask it to help set up a grant: it sends you back to
+  `/sentrook setup` or finds the grant with `/sentrook why`.
 
 The agent never runs those commands itself, `/sentrook setup apply` included, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
 short section with the rules the agent follows whether or not it opens a skill: never run the commands that change

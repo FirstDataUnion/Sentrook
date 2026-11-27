@@ -6,6 +6,11 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
+  MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
+  should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the
+  terminal, TUI or desktop app, keeps its messages short with commands on their own lines, and ends with how to get
+  help when regular work is blocked later.
 - `/sentrook why` now shows the call itself (the tool's arguments as sent to the scanner: secrets masked, long text
   cut), and a background-save notice shows the save it is about, so you can judge it without opening the dashboard.
   The dashboard shows each scan's call by default too. One new setting, `hide_tool_calls`, hides calls in all three

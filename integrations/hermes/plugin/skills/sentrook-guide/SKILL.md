@@ -61,7 +61,7 @@ still blocked whatever is granted.
 
 ## The owner's commands
 
-Only the owner can run the commands below except `/sentrook status` and `/sentrook help`: in a direct message from an allowed user, or on the local terminal (`hermes chat`, or `hermes sentrook <command>` on the machine). Group chats are refused. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
+Only the owner can run the commands below except `/sentrook status` and `/sentrook help`: in a direct message from an allowed user, or on the local terminal (`hermes chat`, or `hermes sentrook <command>` on the machine). Group chats and server channels are refused, private ones included. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
 owner type it.
 
 - `/sentrook status`: plugin version, mode and thresholds, scan host, whether credentials are set, how many grants and bindings, snooze, held calls and where notices go. Anyone may run it.
