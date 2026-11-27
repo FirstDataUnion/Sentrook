@@ -30,6 +30,8 @@ import plugin
 from plugin import cli, commands, history, hold
 from plugin.scan_error_policy import ScanFailure
 
+from .conftest import without_call
+
 SID = {"session_id": "S1", "task_id": "S1"}
 SKILL = ("skill_manage", {"action": "create", "name": "tidy", "content": "# Tidy\nSteps."})
 MEMORY = ("memory", {"action": "add", "target": "memory", "content": "Prefers short replies."})
@@ -255,7 +257,7 @@ def test_the_let_through_notice(h, monkeypatch):
     _, rec = run(h, monkeypatch, "fork-memory", "telegram")
     (text,) = notices(h)
     rid = rec["request_id"][:8]
-    assert text.splitlines() == [
+    assert without_call(text) == [
         "Sentrook let a background memory save through without asking, though it would normally ask "
         "about a save like this.",
         f"Run: background save, session {rec['session_ref']}",
@@ -270,14 +272,14 @@ def test_the_block_notice(h, monkeypatch):
     h.reply.update(risk=92, reasons=[{"code": "selfmod.plugin"}])
     _, rec = run(h, monkeypatch, "curator", "api_server")
     (text,) = notices(h)
-    assert text.splitlines()[:4] == [
+    assert without_call(text)[:4] == [
         "Sentrook blocked a background skill save, so it was not saved.",
         f"Run: background save, session {rec['session_ref']}",
         "Save: skill_manage: Saves a skill",
         "Blocked because it changes the agent's own setup, such as its configuration, memory, plugins, "
         "skills or scheduled jobs.",
     ]
-    assert text.splitlines()[-1] == (
+    assert without_call(text)[-1] == (
         "More blocked background saves in this session are not announced for 6 hours."
     )
 
@@ -288,7 +290,7 @@ def test_the_held_notice_offers_no_approval(h, monkeypatch):
     _, rec = run(h, monkeypatch, "fork-skill", "cli")
     (text,) = notices(h)
     rid = rec["request_id"][:8]
-    assert text.splitlines() == [
+    assert without_call(text) == [
         "Sentrook held a background skill save for you, so it was not saved. To keep it, ask the agent for it "
         "in a chat.",
         f"Run: background save, session {rec['session_ref']}",
@@ -299,6 +301,29 @@ def test_the_held_notice_offers_no_approval(h, monkeypatch):
         "More background saves held in this session are not announced for 6 hours.",
     ]
     assert "approve" not in text
+
+
+def test_a_held_save_notice_shows_what_it_would_save_unless_calls_are_hidden(h, monkeypatch):
+    """The owner can only judge a held save by what it would have written: the notice shows the call, marked as
+    data, after the Save line; with hide_tool_calls it does not."""
+    h.reply.update(risk=55)
+    _, rec = run(h, monkeypatch, "fork-skill", "cli")
+    (text,) = notices(h)
+    lines = text.splitlines()
+    at = lines.index(history.NOTICE_CALL_HEADER)
+    assert lines[at - 1].startswith("Save: skill_manage:") and lines[at + 1] == "```"
+    want = history.call_lines(
+        h.scans[-1]["pending_call"], history.NOTICE_CALL_TOTAL, history.NOTICE_CALL_HEADER
+    )
+    assert lines[at : at + len(want)] == want and len(want) > 3
+
+
+def test_a_held_save_notice_hides_the_call_when_the_owner_hid_calls(h, monkeypatch):
+    h.ctx.settings["hide_tool_calls"] = True
+    h.reply.update(risk=55)
+    run(h, monkeypatch, "fork-skill", "cli")
+    (text,) = notices(h)
+    assert history.NOTICE_CALL_HEADER not in text and "```" not in text
 
 
 def test_history_says_a_held_background_save_was_not_saved(h, monkeypatch):
@@ -722,7 +747,7 @@ def test_the_held_call_notice(h, monkeypatch):
     _, rec = other(h, monkeypatch)
     (text,) = notices(h)
     rid = rec["request_id"][:8]
-    assert text.splitlines() == [
+    assert without_call(text) == [
         "Sentrook held a tool call in Hermes's background review, so it did not run, and the review was told not "
         "to retry it. Nobody can answer a prompt there, so it was not asked about.",
         f"Run: background review, session {rec['session_ref']}",

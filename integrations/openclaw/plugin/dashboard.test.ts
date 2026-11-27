@@ -38,7 +38,7 @@ const HERMES_VIEW = fileURLToPath(new URL("../../hermes/plugin/dashboard/view.js
 const BRAND_MARK = fileURLToPath(new URL("../../../brand/sentrook-mark.svg", import.meta.url));
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED", "SENTROOK_DASHBOARD_SHOW_CALLS"];
+const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED", "SENTROOK_HIDE_TOOL_CALLS"];
 const savedEnv: Record<string, string | undefined> = {};
 let stateDir = "";
 let logFile = "";
@@ -58,6 +58,9 @@ afterEach(() => {
     else process.env[k] = savedEnv[k];
   }
 });
+
+/** The model with each scan's call taken out: the only place a call's arguments may appear. */
+const withoutCalls = (m: any) => ({ ...m, scans: m.scans.map(({ call: _call, ...rest }: any) => rest) });
 
 const cfg = () => resolveConfig({}, process.env);
 
@@ -256,7 +259,10 @@ test("GET draws the page with the model embedded, a nonce CSP and no raw markup 
   const nonce = /script-src 'nonce-([^']+)'/.exec(res.headers["content-security-policy"]!)?.[1];
   assert.ok(nonce);
   assert.ok(res.body!.includes(`<script nonce="${nonce}">`));
-  assert.ok(!res.body!.includes(RAW));
+  // a call's arguments reach the page only in a scan's call, which the owner can hide
+  assert.ok(!JSON.stringify(withoutCalls(embeddedModel(res.body!))).includes(RAW));
+  const hidden = await call("GET", ROUTE, () => resolveConfig({ hideToolCalls: true }, process.env));
+  assert.ok(!hidden.body!.includes(RAW));
   // The entity display string with a script tag stays inside the JSON, escaped.
   assert.ok(!res.body!.includes("<script>alert(1)"));
   const model = embeddedModel(res.body!);
@@ -929,7 +935,7 @@ test("report: buildModel adds the asked-for scan's report panel only when asked,
   const found = report.find(logFile, (id) => id.startsWith("aaaa1b2c"))!;
   assert.deepStrictEqual(m.report, report.model(found, (v) => `/sentrook-${v}`));
   assert.deepStrictEqual(m.report.full_commands, ["/sentrook-report aaaa1b2c --save", "/sentrook-report aaaa1b2c --full"]);
-  assert.ok(!/PLANIR-BODY-MARKER|PRIVATE-PATH-MARKER/.test(JSON.stringify(m)));
+  assert.ok(!/PLANIR-BODY-MARKER|PRIVATE-PATH-MARKER/.test(JSON.stringify(withoutCalls(m))));
   assert.equal(m.report.summary, readFileSync(path.join(REPORT_FIXTURES, "summary-aaaa1b2c.txt"), "utf8").trimEnd());
   for (const ref of ["abcdef12", "last", "../etc"]) {
     assert.deepStrictEqual((await buildModel(cfg(), queryOf(new URLSearchParams("")), new Date(), ref)).report, { id: ref, missing: true }, ref);
@@ -941,7 +947,8 @@ test("report: GET with report= embeds the panel, never the full record", async (
   const body = (await call("GET", `${ROUTE}?n=10&report=aaaa1b2c`)).body!;
   const model = embeddedModel(body);
   assert.equal(model.report.id, "aaaa1b2c-0000-4000-8000-00000000000a");
-  assert.ok(!body.includes("PLANIR-BODY-MARKER") && !body.includes("PRIVATE-PATH-MARKER"));
+  const rest = JSON.stringify(withoutCalls(model));
+  assert.ok(!rest.includes("PLANIR-BODY-MARKER") && !rest.includes("PRIVATE-PATH-MARKER"), "only a scan's call shows its arguments");
   assert.equal("report" in embeddedModel((await call("GET", `${ROUTE}?n=10`)).body!), false);
 });
 
@@ -993,7 +1000,7 @@ test("report: a scan no longer in the log says so", () => {
   assert.equal(box.all().filter((n) => n.tag === "textarea").length, 0);
 });
 
-// ---- Showing the call (dashboardShowCalls, off by default) ----
+// ---- Showing the call (on by default; hideToolCalls hides it) ----
 
 const CALLS_LOG = path.join(DASH, "calls.jsonl");
 /** Strings in the calls fixture that sit outside the pending call's tool and arguments. */
@@ -1020,26 +1027,28 @@ test("callOf bounds each call as the shared fixture has it (the Hermes plugin bu
   assert.equal(got[2]!.arguments.background, false);
 });
 
-test("the setting is off by default; config or env turns it on", () => {
-  assert.equal(resolveConfig({}, {}).dashboardShowCalls, false);
-  assert.equal(resolveConfig({ dashboardShowCalls: true }, {}).dashboardShowCalls, true);
-  assert.equal(resolveConfig({}, { SENTROOK_DASHBOARD_SHOW_CALLS: "1" }).dashboardShowCalls, true);
-  assert.equal(resolveConfig({ dashboardShowCalls: false }, { SENTROOK_DASHBOARD_SHOW_CALLS: "1" }).dashboardShowCalls, false);
+test("calls are shown unless hidden; config or env hides them; the old dashboard setting does nothing", () => {
+  assert.equal(resolveConfig({}, {}).hideToolCalls, false);
+  assert.equal(resolveConfig({ hideToolCalls: true }, {}).hideToolCalls, true);
+  assert.equal(resolveConfig({}, { SENTROOK_HIDE_TOOL_CALLS: "1" }).hideToolCalls, true);
+  assert.equal(resolveConfig({ hideToolCalls: false }, { SENTROOK_HIDE_TOOL_CALLS: "1" }).hideToolCalls, false);
+  assert.equal(resolveConfig({ dashboardShowCalls: false }, {}).hideToolCalls, false);
 });
 
-test("must stay silent: with the setting off, neither the model nor the page holds any part of a call", async () => {
+test("must stay silent: with calls hidden, neither the model nor the page holds any part of a call", async () => {
   useCallsLog();
-  const m = await buildModel(cfg(), queryOf(new URLSearchParams("n=50")));
+  const hidden = () => resolveConfig({ hideToolCalls: true }, process.env);
+  const m = await buildModel(hidden(), queryOf(new URLSearchParams("n=50")));
   assert.equal(m.show_calls, false);
   assert.equal(m.scans.length, 13);
   for (const s of m.scans) assert.ok(!("call" in s));
-  const page = (await call("GET", ROUTE + "?n=50")).body!;
+  const page = (await call("GET", ROUTE + "?n=50", hidden)).body!;
   for (const marker of [...NOT_THE_CALL, "notes/todo.md", "git status", "#général"]) assert.ok(!page.includes(marker), marker);
 });
 
-test("must fire: with the setting on, each scan carries its call and nothing else from the PlanIR", async () => {
+test("must fire: by default each scan carries its call and nothing else from the PlanIR", async () => {
   useCallsLog();
-  const on = () => resolveConfig({ dashboardShowCalls: true }, process.env);
+  const on = () => resolveConfig({}, process.env);
   const m = await buildModel(on(), queryOf(new URLSearchParams("n=50")));
   assert.equal(m.show_calls, true);
   const byTool = (t: string) => m.scans.filter((s: any) => s.tool === t);
@@ -1055,16 +1064,16 @@ test("must fire: with the setting on, each scan carries its call and nothing els
   assert.ok(!page.includes("<script>alert(1)"), "the call is embedded as JSON, never as markup");
 });
 
-test("the view: with calls off, Show the call says how to turn it on; with calls on, it draws the arguments as text", async () => {
+test("the view: with calls hidden, Show the call says how to show them; by default it draws the arguments as text", async () => {
   useCallsLog();
-  const off = drawView(await buildModel(cfg(), queryOf(new URLSearchParams("n=50"))));
+  const off = drawView(await buildModel(resolveConfig({ hideToolCalls: true }, process.env), queryOf(new URLSearchParams("n=50"))));
   const section = off.byClass("srk-call")[0]!;
   assert.equal(section.tag, "details");
   assert.equal(section.getAttribute("open"), null, "collapsed");
-  assert.match(section.textContent, /openclaw config set plugins\.entries\.sentrook\.config\.dashboardShowCalls true/);
+  assert.match(section.textContent, /openclaw config set plugins\.entries\.sentrook\.config\.hideToolCalls false/);
   assert.match(section.textContent, /\/sentrook-report ca110013 --save/);
 
-  const model = await buildModel(resolveConfig({ dashboardShowCalls: true }, process.env), queryOf(new URLSearchParams("n=50&tool=edit")));
+  const model = await buildModel(resolveConfig({}, process.env), queryOf(new URLSearchParams("n=50&tool=edit")));
   const root = drawView(model);
   const opened = root.byClass("srk-scan")[0]!;
   const text = opened.byClass("srk-call")[0]!.textContent;

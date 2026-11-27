@@ -37,7 +37,7 @@ There are two entry points:
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `hermes sentrook login` in a terminal on this machine; never run it yourself (Sentrook
-   blocks it).
+   blocks it). After any install or update of the plugin, every Hermes process that was already running keeps the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), the gateway and the dashboard. Until they do, `verify` fails its `running build` line and `/sentrook status` says `restart needed`.
 3. **Make sure approval cards reach the owner.** Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, **Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that they wrote from a direct message and that their account is on the platform's allowed users.
 4. **Work out what is routine yourself.** Look, do not ask:
    - your scheduled jobs: `hermes cron list` (what they do, where they post);

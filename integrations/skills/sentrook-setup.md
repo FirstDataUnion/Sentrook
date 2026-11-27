@@ -37,7 +37,7 @@ There are two entry points:
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `{{cli login}}` in a terminal on this machine; never run it yourself (Sentrook
-   blocks it).
+   blocks it). {{restart_after_install}}
 3. **Make sure approval cards reach the owner.** {{approval_route}}
 4. **Work out what is routine yourself.** Look, do not ask:
    - your scheduled jobs: `{{cli_prefix_host}} cron list` (what they do, where they post);

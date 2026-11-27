@@ -37,7 +37,7 @@ There are two entry points:
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `openclaw sentrook login` in a terminal on this machine; never run it yourself (Sentrook
-   blocks it).
+   blocks it). After any install or update of the plugin, the running gateway keeps the old plugin until it restarts: the owner restarts it.
 3. **Make sure approval cards reach the owner.** OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app is set up for them; until then, a call Sentrook asks about there is refused. Read what is set with `openclaw config get commands.ownerAllowFrom`, `openclaw config get channels.<app>.execApprovals` and `openclaw config get approvals.plugin`. The owner's approver account comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or the app's `execApprovals.approvers`. For each chat app the owner uses that is not set, give the owner the commands, to run in a terminal on this machine:
 
    - Discord (off until enabled):

@@ -175,6 +175,11 @@ def destination_ok(pattern: str) -> bool:
     return _host_glob_ok(rest)
 
 
+#: The setting that hides calls from `why`, notices and the dashboard. `dashboard_show_calls`, which only turned the
+#: dashboard's on, is still accepted and does nothing: calls are shown unless this is set.
+HIDE_SETTING = "hide_tool_calls"
+
+
 @dataclass(frozen=True)
 class Endpoint:
     ok: bool
@@ -222,9 +227,9 @@ class PluginConfig:
     #: The platform whose home channel gets the notice of a held call ("" for the only platform with a
     #: home channel); see `hold`.
     owner_channel: str = ""
-    #: Each dashboard scan shows its call (redacted arguments). Off by default: anyone who can open the
-    #: dashboard reads them.
-    dashboard_show_calls: bool = False
+    #: Hide the calls (redacted arguments) that `/sentrook why`, held-save notices and the dashboard show by
+    #: default. Anyone who can open the dashboard or read the owner's chat reads them.
+    hide_tool_calls: bool = False
 
 
 def hermes_home(env: dict[str, str]) -> Path:
@@ -462,7 +467,5 @@ def resolve_config(
         owner_channel=(
             _str(cfg.get("owner_channel")) or _str(env.get("SENTROOK_OWNER_CHANNEL")) or ""
         ).lower(),
-        dashboard_show_calls=_bool(
-            cfg.get("dashboard_show_calls", env.get("SENTROOK_DASHBOARD_SHOW_CALLS")), False
-        ),
+        hide_tool_calls=_bool(cfg.get(HIDE_SETTING, env.get("SENTROOK_HIDE_TOOL_CALLS")), False),
     )

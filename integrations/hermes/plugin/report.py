@@ -124,6 +124,7 @@ def host_of(scan: dict[str, Any]) -> dict[str, str]:
         "platform": field("platform"),
         "platform_version": field("platform_version"),
         "plugin_version": field("plugin_version"),
+        "plugin_build": field("plugin_build"),
         "os": field("os"),
     }
 
@@ -141,7 +142,9 @@ def _version_lines(scan: dict[str, Any]) -> list[str]:
     meta = _obj(_obj(_response(scan)).get("metadata"))
     scanner = meta.get("scanner_version")
     lines = [
-        f"host: {h['platform']} {h['platform_version']}, plugin {h['plugin_version']}, {h['os']}",
+        f"host: {h['platform']} {h['platform_version']}, plugin {h['plugin_version']}"
+        + (f" (build {h['plugin_build']})" if h["plugin_build"] != "?" else "")
+        + f", {h['os']}",
         f"mode: {_text(scan['mode'], 20) if isinstance(scan.get('mode'), str) and scan['mode'] else '?'}",
         f"scanner: {_text(scanner, 60) if isinstance(scanner, str) and scanner else '?'}",
     ]

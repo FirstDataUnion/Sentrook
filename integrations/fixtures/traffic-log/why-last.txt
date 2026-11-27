@@ -7,3 +7,7 @@ review: no answer
 scores: suspicion 50, consequence 50, confidence 80
 reasons: egress.new_host
 entities: none
+call, as the scanner saw it (secrets masked):
+```
+command: echo RAW-ARG-MARKER
+```

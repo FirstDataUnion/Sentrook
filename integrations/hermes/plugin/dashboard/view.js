@@ -584,8 +584,8 @@
   }
 
   /**
-   * The call itself, collapsed under the scan's details. Only when the owner turned calls on (`show_calls`):
-   * otherwise the page holds no call content and says how to see it.
+   * The call itself, collapsed under the scan's details. Unless the owner hid calls (`show_calls` false), when
+   * the page holds no call content and says how to see it.
    */
   function callSection(scan, model, opts) {
     var cmd = cmdOf(model);
@@ -606,12 +606,12 @@
       if (opts.noCommands) return null;
       body.push(el("p", {
         class: "srk-call-head",
-        text: "This page does not show what a call contained unless you turn that on. Anyone who can open this page can then read it (secrets are masked).",
+        text: "Calls are hidden by your setting, so this page does not show what a call contained. Showing them lets anyone who can open this page read them (secrets are masked).",
       }));
       var cmds = [];
       var setting = model.commands && model.commands.call_setting;
-      if (setting) cmds.push(command(setting, "Turns it on; reload this page once the setting is in effect."));
-      cmds.push(command(cmd("report") + " " + scan.id.slice(0, 8) + " --save", "Or, without turning it on: saves this scan's full record to a file only you can read."));
+      if (setting) cmds.push(command(setting, "Shows them again; reload this page once the setting is in effect."));
+      cmds.push(command(cmd("report") + " " + scan.id.slice(0, 8) + " --save", "Or, while they are hidden: saves this scan's full record to a file only you can read."));
       body.push(el("div", { class: "srk-cmds" }, cmds));
     }
     return el("details", { class: "srk-call" }, [el("summary", { text: "Show the call" })].concat(body));
