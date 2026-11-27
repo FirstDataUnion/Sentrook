@@ -281,7 +281,8 @@ def without_call(text):
     start = lines.index(history.NOTICE_CALL_HEADER)
     end = lines.index("```", start + 2)
     return lines[:start] + lines[end + 1 :]
-  
+
+
 def refusals(verb):
     """The replies an owner command may be refused with: from someone not the owner, or in a group chat or server
     channel."""
