@@ -262,8 +262,7 @@ def test_reading_helper_calls_grows_linearly():
     head = "import requests\ndef send(u, b):\n    return requests.post(u, json=b)\n"
     unit = "send('https://a{i}.example.net/v1/' + str({i}), {{'t': 'https://b{i}.example.net'}})\n"
     texts = {d: head + "".join(unit.format(i=i) for i in range(2000 // d)) for d in (1, FACTOR)}
-    _, large = assert_linear(lambda d: python_reach(texts[d]), unit)
-    assert large < 2.0
+    assert_linear(lambda d: python_reach(texts[d]), unit, bound=2.0)
 
 
 # ------------------------------------------------------------------ the credential-home check, through a scan
@@ -833,8 +832,7 @@ def test_an_unpacked_call_reads_linearly():
 
     texts = {d: program(d) for d in (1, FACTOR)}
     assert python_reach(texts[1]).targets == frozenset({API})
-    _, large = assert_linear(lambda d: python_reach(texts[d]), "wide call")
-    assert large < 3.0
+    assert_linear(lambda d: python_reach(texts[d]), "wide call", bound=3.0)
 
 
 def test_deeply_nested_helper_calls_read_linearly():
@@ -852,8 +850,7 @@ def test_deeply_nested_helper_calls_read_linearly():
     texts = {d: program(d) for d in (1, FACTOR)}
     assert len(texts[1]) > 150_000
     assert python_reach(texts[1]).targets == frozenset({API})
-    _, large = assert_linear(lambda d: python_reach(texts[d]), "nested calls")
-    assert large < 5.0
+    assert_linear(lambda d: python_reach(texts[d]), "nested calls", bound=5.0)
 
 
 # ------------------------------------------------------------------ the plain link shape
@@ -924,8 +921,7 @@ def test_the_plain_link_reading_grows_linearly():
 
     texts = {d: program(d) for d in (1, FACTOR)}
     assert _plain_link_hosts(texts[1], hosts) == hosts
-    _, large = assert_linear(lambda d: _plain_link_hosts(texts[d], hosts), "plain links")
-    assert large < 1.0
+    assert_linear(lambda d: _plain_link_hosts(texts[d], hosts), "plain links", bound=1.0)
 
 
 def test_a_scan_with_many_service_domain_links_stays_fast():

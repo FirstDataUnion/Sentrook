@@ -138,8 +138,7 @@ def test_pattern_checks_take_linear_time_on_long_runs():
             grant_matches("destination", p, host)
             host_pattern_ok(p)
 
-    _, full = assert_linear(run, "destination pattern checks")
-    assert full < 10.0
+    assert_linear(run, "destination pattern checks", bound=10.0)
 
 
 @pytest.mark.parametrize("c", DESTINATION_PATTERNS["cases"], ids=lambda c: c["typed"])

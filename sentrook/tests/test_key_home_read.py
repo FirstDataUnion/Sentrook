@@ -405,10 +405,11 @@ def test_the_write_check_grows_linearly_with_the_call(unit):
         prepared=None, lists=load_lists(), packs=frozenset({detectors.PACK_TIER1})
     )
     texts = {d: "".join(unit.format(i=i) for i in range(1200 // d)) for d in (1, FACTOR)}
-    _, large = assert_linear(
-        lambda d: detectors._visible_write(SimpleNamespace(scan_text=texts[d]), ctx), unit
+    assert_linear(
+        lambda d: detectors._visible_write(SimpleNamespace(scan_text=texts[d]), ctx),
+        unit,
+        bound=2.0,
     )
-    assert large < 2.0
 
 
 def test_lower_case_x_is_not_a_method_option():
