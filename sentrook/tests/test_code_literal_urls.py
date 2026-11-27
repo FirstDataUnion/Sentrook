@@ -467,8 +467,7 @@ def test_reading_grows_linearly_with_the_program(unit):
     """Four times the program takes about four times as long to read (see linear_time.py)."""
     head = "import requests\nR = {}\n"
     texts = {d: head + "".join(unit.format(i=i) for i in range(2000 // d)) for d in (1, FACTOR)}
-    _, large = assert_linear(lambda d: python_reach(texts[d]), unit)
-    assert large < 2.0
+    assert_linear(lambda d: python_reach(texts[d]), unit, bound=2.0)
 
 
 # ------------------------------------------------------------------ where local code may write
@@ -699,8 +698,7 @@ def test_interpreter_tracking_grows_linearly_with_the_program():
 
     texts = {d: program(d) for d in (1, FACTOR)}
     assert "n:print" in kernel_effects(texts[FACTOR]).names
-    _, large = assert_linear(lambda d: kernel_effects(texts[d]), "alias chain")
-    assert large < 2.0
+    assert_linear(lambda d: kernel_effects(texts[d]), "alias chain", bound=2.0)
 
 
 @pytest.mark.parametrize(
