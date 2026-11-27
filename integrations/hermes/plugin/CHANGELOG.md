@@ -6,6 +6,13 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- Your own message in a group chat or server channel now counts as yours when you are listed individually in
+  `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, as the OpenClaw plugin already does: routine work you ask for
+  from a private channel is scored like a direct message instead of as someone else's request. Other members still
+  count as someone else, and the recent channel messages Hermes puts in front of your message are sent as content the
+  agent read, never as your words. Reviews there still ask in the channel; because anyone the bot admits can answer
+  there, a snooze, remembered Session answers, grants set by approving and a subagent's prompts stay for a direct
+  message or the terminal, and owner commands are still refused in channels.
 - **Session** on a review now also covers a later call of the same tool about the same parties that scores up to 10
   points higher than the call you answered (never at or above the block line), and one that newly carries only the
   session's rising consequence trend. A score moves a few points between near-identical calls of one job, so the

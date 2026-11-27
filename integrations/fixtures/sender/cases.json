@@ -1,0 +1,9 @@
+{
+  "_comment": "Who sent a chat message, as both plugins put it in trigger.sender. `chat` is a direct message or a group (any group chat, server channel or thread); `owner` says the sender is the host's owner (OpenClaw's owner flag; on Hermes, individually on <PLATFORM>_ALLOWED_USERS or GATEWAY_ALLOWED_USERS). Both plugins must give the same `relation` and the same answer to whether the basis carries `group_chat`. The owner in a group stays the owner, with basis group_chat; everyone else there is other.",
+  "cases": [
+    {"name": "owner-direct", "chat": "direct", "owner": true, "relation": "owner", "group_chat": false},
+    {"name": "owner-group", "chat": "group", "owner": true, "relation": "owner", "group_chat": true},
+    {"name": "member-group", "chat": "group", "owner": false, "relation": "other", "group_chat": true},
+    {"name": "stranger-direct", "chat": "direct", "owner": false, "relation": "other", "group_chat": false}
+  ]
+}

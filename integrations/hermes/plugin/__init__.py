@@ -23,6 +23,7 @@ from . import (
     agent_skills,
     build,
     card,
+    channel_context,
     cli,
     commands,
     consent,
@@ -358,19 +359,26 @@ def on_pre_llm_call(**kw: Any) -> None:
         # event notice is not a request either, and its text goes as an untrusted input.
         host = None if background else host_turns.classify(kw.get("user_message"))
         own, content = host_turns.parts(host, kw.get("user_message")) if host else (None, None)
-        # A message Hermes built around skills (a skill's slash command, a cron job with skills): the request
-        # is the owner's words; what is neither theirs nor an installed skill's own text is untrusted content.
-        skill = (
+        # In a group or channel, the history Hermes puts in front of the message is other people's words: never
+        # the request, and sent as an untrusted input (`channel_context`).
+        rest = host_turns.strip_notes(kw.get("user_message"))
+        channel = (
             None
             if background or host is not None
-            else _skill_turn(host_turns.strip_notes(kw.get("user_message")), kw, env)
+            else channel_context.split(
+                rest, group=(session_facts().get("chat_type") or "dm").lower() != "dm"
+            )
         )
+        if channel is not None:
+            rest = channel[1] or channel_context.NO_REQUEST
+        # A message Hermes built around skills (a skill's slash command, a cron job with skills): the request
+        # is the owner's words; what is neither theirs nor an installed skill's own text is untrusted content.
+        skill = None if background or host is not None else _skill_turn(rest, kw, env)
         if skill is not None:
             own, content = skill.request, skill.content
         elif host is None:
-            # An ordinary message behind host notes: the request is the message without them.
-            rest = host_turns.strip_notes(kw.get("user_message"))
-            if rest != host_turns.message_text(kw.get("user_message")):
+            # An ordinary message behind host notes or channel history: the request is the message without them.
+            if channel is not None or rest != host_turns.message_text(kw.get("user_message")):
                 own = rest
         # The turn is a request (an owner's message, or a standing instruction's own words) unless the host's
         # text is only content.
@@ -416,6 +424,8 @@ def on_pre_llm_call(**kw: Any) -> None:
                     s["last_request_turn_id"] = turn_id
                 if turn_id and turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
+                if channel is not None:
+                    _buffer_host_text(cfg, store, s, channel[0], "other")
                 if host is not None and content is not None:
                     _buffer_host_text(cfg, store, s, content, host.input_kind or "other")
                 elif skill is not None and content is not None:
@@ -427,17 +437,25 @@ def on_pre_llm_call(**kw: Any) -> None:
                 sender = conversation_sender_of(platform, facts, kw.get("sender_id"), env)
                 if host is not None and sender["relation"] == "owner":
                     sender = dict(host_turns.SENDER, basis=list(host_turns.SENDER["basis"]))
-                _record(
-                    store,
-                    sid,
-                    conversation.user_entry(
-                        _turn_no(s, turn_id),
-                        sender,
-                        kw.get("user_message"),
-                        Redactor("standard", store.salt()),
-                        turn_id,
-                    ),
-                )
+                entries: list[tuple[dict[str, Any], Any]] = [(sender, kw.get("user_message"))]
+                if channel is not None:
+                    # The channel history is other people's; the sender wrote only the new message.
+                    entries = [
+                        ({"relation": "other", "basis": ["group_chat"]}, channel[0]),
+                        (sender, channel[1]),
+                    ]
+                for who, text in entries:
+                    _record(
+                        store,
+                        sid,
+                        conversation.user_entry(
+                            _turn_no(s, turn_id),
+                            who,
+                            text,
+                            Redactor("standard", store.salt()),
+                            turn_id,
+                        ),
+                    )
     except Exception as exc:  # noqa: BLE001
         logger.warning("pre_llm_call failed: %s", exc)
 
@@ -677,6 +695,7 @@ def _scan_one(
                 built["platform"],
                 env,
                 sender_relation=sender.get("relation"),
+                sender_basis=sender.get("basis"),
                 attended_platforms=attendance["attended_platforms"],
             )
         ),
