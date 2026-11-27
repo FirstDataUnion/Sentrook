@@ -16,8 +16,9 @@ owner granted every place the call sends to, this relief also:
 **Coverage.** The call sends off the host and names at least one host, recipient or channel in a sending role; every
 such entity (in the call, a sibling, a file the call writes, or a later run's roles) is covered by a matched
 `destination` grant (a `credential` grant alone ties a key to a host, not what else is sent there). Not covered: a call,
-sibling or written file that sends by a route whose destination need not be written as a host (`git push origin`,
-`rsync`, `aws s3 cp`, a socket opened in code), or builds an address at run time.
+sibling or written file whose sends are not all written out: a shell command must be local commands and `curl` /
+`wget` with literal URLs (no `git push`, `rsync`, `scp`, `docker push`, interpreter, command substitution or address
+from a variable or config file), and Python must aim every request at a URL written in the code.
 
 **Gate.** No floor fired; concealment is below `concealment_below` and the new content's exposure below
 `exposure_below`; the session is not tainted (before or in this scan). A session that holds sensitive data passes
@@ -29,13 +30,22 @@ Grants sanction where data goes; this never clears session flags and never lower
 
 from __future__ import annotations
 
+import posixpath
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
-from ..planir.models import Decision
+from ..planir.models import Decision, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Origin, Role
+from ..prepare.entities import (
+    EntityKind,
+    Origin,
+    Role,
+    call_code_reach,
+    is_code_call,
+    shell_segments,
+)
 from ..prepare.grants import sends_off_host
 from ..probes.base import Envelope
 from .merge import Claim, Merged
@@ -71,7 +81,7 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
     ]
     if not sends or not sends_off_host(prepared.pending, prepared.entities.pending()):
         return None
-    if _unwritten_route(prepared):
+    if not _routes_known(prepared):
         return None
     kinds = {g.grant_ref: g.kind for g in prepared.planir.grants}
     by_entity: dict[str, list[str]] = {}
@@ -88,26 +98,61 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
     return refs
 
 
-def _unwritten_route(prepared: Prepared) -> bool:
-    """The call, a sibling or a file the call writes sends by a route whose destination need not be written as a host,
-    or builds an address at run time: its entities may not show every place it reaches."""
-    from ..prepare.credential_home import _BUILT_ADDRESS_RE, _code_sends_by_unwritten_route
-    from ..prepare.grants import sends_by_unwritten_route
+#: Shell commands that act on local data only; with `curl` and `wget` (literal URLs only) the only heads a covered
+#: command may run. Interpreters, `sed` and `awk` (which can run commands or open sockets), `xargs`, `find` and every
+#: other tool are left out: their destinations need not be written as a host.
+_LOCAL_HEADS = frozenset(
+    "cat echo printf jq grep egrep fgrep head tail wc sort uniq cut tr date ls pwd cd test [ true false mkdir touch "
+    "tee cp mv base64 sha256sum md5sum basename dirname realpath sleep".split()
+)
+_FETCH_HEADS = frozenset({"curl", "wget"})
+#: Options that take the address from somewhere other than the command line.
+_INDIRECT_OPTIONS = ("-K", "--config", "-i", "--input-file", "--next")
+
+
+def _shell_routes_known(command: str) -> bool:
+    """Every simple command is a local one, or a `curl` / `wget` whose URLs are written out: no command substitution,
+    no address from a variable or a config file, no socket path."""
+    if "$(" in command or "`" in command or re.search(r"/dev/(?:tcp|udp)/|/inet/", command):
+        return False
+    segments = shell_segments(command)
+    if not segments:
+        return False
+    for tokens in segments:
+        head = posixpath.basename(tokens[0]).lower()
+        if head in _LOCAL_HEADS:
+            continue
+        if head not in _FETCH_HEADS:
+            return False
+        args = tokens[1:]
+        if any(a.startswith(_INDIRECT_OPTIONS) for a in args):
+            return False
+        urls = [a for a in args if re.match(r"(?i)https?://", a)]
+        if not urls or any("$" in u or "{" in u for u in urls):
+            return False
+    return True
+
+
+def _routes_known(prepared: Prepared) -> bool:
+    """Every place the call, its siblings and a file it writes can send to is written out, so the entities show
+    them all: a tool's own destination arguments, a shell command of local commands and literal `curl` / `wget`
+    URLs (`_shell_routes_known`), or Python whose every request is aimed at a URL written in the code."""
     from ..probes.aira import written_file_call
 
-    calls = [prepared.pending, *prepared.resolved]
+    calls = [prepared.pending, *prepared.siblings, *prepared.resolved]
     written = written_file_call(prepared)
     if written is not None:
         calls.append(written)
     for call in calls:
-        text = call.command or ""
-        if text and (
-            sends_by_unwritten_route(text)
-            or _code_sends_by_unwritten_route(text)
-            or _BUILT_ADDRESS_RE.search(text)
-        ):
-            return True
-    return False
+        if call.tool_kind is not ToolKind.EXEC:
+            continue
+        if is_code_call(call):
+            reach = call_code_reach(call, local=True)
+            if reach is None or (reach.network and reach.targets is None):
+                return False
+        elif not _shell_routes_known(call.command or ""):
+            return False
+    return True
 
 
 def _flags(prepared: Prepared, envelopes: Iterable[Envelope]) -> set[SessionFlag]:
