@@ -616,3 +616,15 @@ def test_with_no_party_the_card_says_session_covers_this_action(owner):
     _turn(h)
     out = _code(h, "c1")
     assert '"Session" covers only this exact action.' in out["message"]
+
+
+def test_covering_never_lets_a_score_at_the_block_line_through():
+    """The block line is checked in `covering` itself, whatever key the caller passes."""
+    from plugin import session_allow
+
+    now = datetime.now(UTC)
+    sess = {}
+    session_allow.add(sess, "k1", 75.0, [], "r1", now)
+    resp = {"risk": 79.9, "status": "ok", "reasons": []}
+    assert session_allow.covering(sess, "k1", resp, now, 80.0) is not None
+    assert session_allow.covering(sess, "k1", {**resp, "risk": 80.0}, now, 80.0) is None
