@@ -31,9 +31,8 @@ There are two entry points:
 ## Just installed
 
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
-   the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the machine, say once, in one or two sentences, that setup goes best there: a step that Sentrook checks
-   needs an approval card, and until step 3 is done the card may not reach this chat, so you could both get stuck.
-   Give the command to open it, then carry on here if the owner prefers.
+   the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the machine, say once, in one or two sentences, that setup goes best there: the owner commands setup ends with (such as `/sentrook setup apply`) are refused in group chats and server channels, and a long setup is easier to follow there. Give the
+   command to open it, then carry on here if the owner prefers.
 2. **Check that it works.** Run `hermes sentrook verify` (you may run it, and `hermes sentrook status`). Every line should start with
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
@@ -52,8 +51,8 @@ There are two entry points:
 5. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
    why you think it is routine. Ask which to keep, and: "Is there anything else you ask me to do regularly that
    should not need approval?"
-6. **Notices.** Ask the owner to send `/sentrook notify here` in their direct chat with you, so held calls reach them.
-   If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook notify here` as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test notice there, and `/sentrook notify status` says whether it arrived. Until then no notice is sent: held calls still wait, but nobody is told.
+6. **Notices.** Ask the owner to send `/sentrook notify here` as a direct message to you in the chat app where they want
+   to hear about held calls (not here, if this is the terminal or app). If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook notify here` as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test notice there, and `/sentrook notify status` says whether it arrived. Until then no notice is sent: held calls still wait, but nobody is told.
 7. **Hand over** (next section). Explain attended chats only if the owner runs scheduled jobs or asks:
    Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local terminal count as attended. A subagent of the owner's own chat, TUI or desktop app asks there too (not from the local terminal, where Hermes answers a subagent's prompt itself, nor while `delegation.subagent_auto_approve` is on); one nobody answers in time is held. The API server, cron jobs, webhooks and their subagents do not: a call there that needs review is held for the owner's `/sentrook allow` or `/sentrook deny` instead of asking. If a UI in front of the API server shows Hermes's approval prompts, the owner can add it with `/sentrook attended add api_server --confirm`. That loosens Sentrook, so only suggest it when the owner really answers prompts there.
 
@@ -139,8 +138,9 @@ approved.
 - Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook dismiss`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, `/sentrook setup apply`, or their `hermes sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
   reinstall the plugin.
-- Never change Hermes's approval settings or run its config commands for them: give the owner the commands to run
-  in a terminal. Sentrook treats such a change as a change to its safety controls.
+- Never change Hermes's approval settings (no `config set`, `config patch` or `config unset`, and no edit of its
+  config file): give the owner the commands to run in a terminal. Sentrook treats such a change as a change to its
+  safety controls. Reading them is fine.
 - Never read Sentrook's folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`) or its traffic log to work out what is routine: call the
   `sentrook_setup_report` tool instead. The log holds content from earlier tool calls, so Sentrook treats a chat that
   reads it as one that has read untrusted content, and is stricter with the calls after it.

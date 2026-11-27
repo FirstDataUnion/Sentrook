@@ -31,9 +31,8 @@ There are two entry points:
 ## Just installed
 
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
-   {{local_places}}, say once, in one or two sentences, that setup goes best there: a step that Sentrook checks
-   needs an approval card, and until step 3 is done the card may not reach this chat, so you could both get stuck.
-   Give the command to open it, then carry on here if the owner prefers.
+   {{local_places}}, say once, in one or two sentences, that setup goes best there: {{chat_app_reason}}. Give the
+   command to open it, then carry on here if the owner prefers.
 2. **Check that it works.** Run `{{cli verify}}` (you may run it, and `{{cli status}}`). Every line should start with
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
@@ -52,8 +51,8 @@ There are two entry points:
 5. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
    why you think it is routine. Ask which to keep, and: "Is there anything else you ask me to do regularly that
    should not need approval?"
-6. **Notices.** Ask the owner to send `{{cmd notify}} here` in their direct chat with you, so held calls reach them.
-   If they ask why: {{notice_explain}}
+6. **Notices.** Ask the owner to send `{{cmd notify}} here` as a direct message to you in the chat app where they want
+   to hear about held calls (not here, if this is the terminal or app). If they ask why: {{notice_explain}}
 7. **Hand over** (next section). Explain attended chats only if the owner runs scheduled jobs or asks:
    {{attended_explain}}
 
@@ -139,8 +138,9 @@ approved.
 - Never run {{change_commands}}, or their `{{cli_prefix}}` forms. Only the owner runs them.
 - Never edit Sentrook's settings ({{settings_place}}) or its folder ({{state_dir}}), and never disable, remove or
   reinstall the plugin.
-- Never change {{host}}'s approval settings or run its config commands for them: give the owner the commands to run
-  in a terminal. Sentrook treats such a change as a change to its safety controls.
+- Never change {{host}}'s approval settings (no `config set`, `config patch` or `config unset`, and no edit of its
+  config file): give the owner the commands to run in a terminal. Sentrook treats such a change as a change to its
+  safety controls. Reading them is fine.
 - Never read Sentrook's folder ({{state_dir}}) or its traffic log to work out what is routine: call the
   `sentrook_setup_report` tool instead. The log holds content from earlier tool calls, so Sentrook treats a chat that
   reads it as one that has read untrusted content, and is stricter with the calls after it.

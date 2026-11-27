@@ -138,30 +138,30 @@ If the history is empty, the agent has not made a tool call since the restart.
 ### Approval cards in chat apps
 
 Do your first setup with the agent in the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`), not in
-a chat app. When Sentrook asks about a call, OpenClaw shows an approval card, and it sends that card to a chat app
-only when the app has you as its approver. Until then, a call Sentrook asks about in that app is refused, setup
-steps included.
+a chat app. When Sentrook asks about a call, OpenClaw shows an approval card, and in Discord, Telegram, WhatsApp and
+Signal it does so only once the app is set up for it. Until then, a call Sentrook asks about there is refused, setup
+steps included. Slack shows the card in the same chat with nothing to set.
 
 Your approver is the account in `commands.ownerAllowFrom` (OpenClaw fills it when you approve the first pairing) or
-the app's own `execApprovals.approvers`. Discord and Slack also need their approval cards switched on:
+the app's own `execApprovals.approvers`. Discord also needs its cards switched on:
 
 ```bash
 openclaw config set channels.discord.execApprovals.enabled true
 ```
 
-Only if `commands.ownerAllowFrom` does not already name your account on that app, set it as the approver:
+Only if `commands.ownerAllowFrom` does not already name your account on that app, set it as the approver (Telegram's
+cards are on by default and need only this; use `discord` in place of `telegram` for Discord):
 
 ```bash
-openclaw config set channels.discord.execApprovals.approvers '["<your Discord user id>"]'
+openclaw config set channels.telegram.execApprovals.approvers '["<your Telegram user id>"]'
 ```
 
-Use `slack` or `telegram` in place of `discord` for those apps (Telegram's cards are on by default, so it needs only
-the approver). WhatsApp, Signal and other apps without their own approval setting need the cards forwarded:
+WhatsApp and Signal need the cards forwarded to the chat the request came from (Signal also needs you in
+`channels.signal.allowFrom`):
 
 ```bash
 openclaw config set approvals.plugin.enabled true
-openclaw config set approvals.plugin.mode targets
-openclaw config set approvals.plugin.targets '[{"channel": "whatsapp", "to": "<your number>"}]'
+openclaw config set approvals.plugin.mode session
 ```
 
 Restart the gateway if the command says so (`openclaw gateway restart`). The setup skill (see

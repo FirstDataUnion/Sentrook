@@ -212,6 +212,10 @@ HOSTS: dict[str, dict] = {
                 "the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the "
                 "machine"
             ),
+            "chat_app_reason": (
+                "the owner commands setup ends with (such as `{{cmd setup}} apply`) are refused in group chats and "
+                "server channels, and a long setup is easier to follow there"
+            ),
             "approval_route": (
                 "Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat "
                 "apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, "
@@ -313,36 +317,37 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
             "cli_prefix_host": "openclaw",
             "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
+            "chat_app_reason": (
+                "a step Sentrook checks needs an approval card, and until step 3 is done the card may not reach this "
+                "chat, so a blocked step could leave you both stuck"
+            ),
             "approval_route": (
-                "OpenClaw sends Sentrook's approval cards to a chat app only when that app has the owner as its "
-                "approver; without one, a call Sentrook asks about is simply refused in that chat. Find the chat apps "
-                "the owner uses and what is set, with `openclaw config get commands.ownerAllowFrom` and "
-                "`openclaw config get channels.<app>.execApprovals` (read only these keys: other config holds "
-                "tokens). The approver comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner "
-                "approves the first pairing) or from the app's `execApprovals.approvers`. For each app that is not "
-                "set, give the owner the commands, to run in a terminal on this machine:\n\n"
-                "   - Discord or Slack (both off until enabled):\n\n"
+                "OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app "
+                "is set up for them; until then, a call Sentrook asks about there is refused. Read what is set with "
+                "`openclaw config get commands.ownerAllowFrom`, `openclaw config get channels.<app>.execApprovals` "
+                "and `openclaw config get approvals.plugin`. The owner's approver account comes from "
+                "`commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or the app's "
+                "`execApprovals.approvers`. For each chat app the owner uses that is not set, give the owner the "
+                "commands, to run in a terminal on this machine:\n\n"
+                "   - Discord (off until enabled):\n\n"
                 "     ```\n"
                 "     openclaw config set channels.discord.execApprovals.enabled true\n"
-                "     openclaw config set channels.discord.execApprovals.approvers '[\"<your Discord user id>\"]'\n"
                 "     ```\n\n"
-                "     (`slack` in place of `discord` for Slack; the second line only when "
-                "`commands.ownerAllowFrom` does not already name them on that app.)\n"
-                "   - Telegram (on by default): only the approver, when `commands.ownerAllowFrom` does not name them:\n\n"
+                "   - Discord or Telegram, only when `commands.ownerAllowFrom` does not already name the owner on that "
+                "app (Telegram's cards are on by default and need only this):\n\n"
                 "     ```\n"
                 "     openclaw config set channels.telegram.execApprovals.approvers '[\"<your Telegram user id>\"]'\n"
                 "     ```\n\n"
-                "   - WhatsApp, Signal and other apps without their own approval setting: forward the cards to the "
-                "owner's own chat there:\n\n"
+                "   - WhatsApp or Signal: forward the cards to the chat the request came from (Signal also needs the "
+                "owner in `channels.signal.allowFrom`):\n\n"
                 "     ```\n"
                 "     openclaw config set approvals.plugin.enabled true\n"
-                "     openclaw config set approvals.plugin.mode targets\n"
-                "     openclaw config set approvals.plugin.targets "
-                '\'[{"channel": "whatsapp", "to": "<your number>"}]\'\n'
+                "     openclaw config set approvals.plugin.mode session\n"
                 "     ```\n\n"
-                "   If a command prints that the gateway needs a restart, the owner runs `openclaw gateway restart`. "
-                "The approver is always the owner's own account, never anyone else's. In a group or channel room "
-                "the cards go to the owner's direct messages."
+                "   Slack needs nothing: the card shows in the same chat, for the accounts in Slack's `allowFrom`. If "
+                "a command prints that the gateway needs a restart, the owner runs `openclaw gateway restart`. The "
+                "approver is always the owner's own account, never anyone else's. In a group or channel room the "
+                "cards go to the owner's direct messages."
             ),
             "notice_explain": (
                 "When a call is held, a scan fails on an unattended run, or a background save is held, drafted or "

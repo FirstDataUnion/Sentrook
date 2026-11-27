@@ -31,39 +31,35 @@ There are two entry points:
 ## Just installed
 
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
-   the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine, say once, in one or two sentences, that setup goes best there: a step that Sentrook checks
-   needs an approval card, and until step 3 is done the card may not reach this chat, so you could both get stuck.
-   Give the command to open it, then carry on here if the owner prefers.
+   the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine, say once, in one or two sentences, that setup goes best there: a step Sentrook checks needs an approval card, and until step 3 is done the card may not reach this chat, so a blocked step could leave you both stuck. Give the
+   command to open it, then carry on here if the owner prefers.
 2. **Check that it works.** Run `openclaw sentrook verify` (you may run it, and `openclaw sentrook status`). Every line should start with
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `openclaw sentrook login` in a terminal on this machine; never run it yourself (Sentrook
    blocks it).
-3. **Make sure approval cards reach the owner.** OpenClaw sends Sentrook's approval cards to a chat app only when that app has the owner as its approver; without one, a call Sentrook asks about is simply refused in that chat. Find the chat apps the owner uses and what is set, with `openclaw config get commands.ownerAllowFrom` and `openclaw config get channels.<app>.execApprovals` (read only these keys: other config holds tokens). The approver comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or from the app's `execApprovals.approvers`. For each app that is not set, give the owner the commands, to run in a terminal on this machine:
+3. **Make sure approval cards reach the owner.** OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app is set up for them; until then, a call Sentrook asks about there is refused. Read what is set with `openclaw config get commands.ownerAllowFrom`, `openclaw config get channels.<app>.execApprovals` and `openclaw config get approvals.plugin`. The owner's approver account comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or the app's `execApprovals.approvers`. For each chat app the owner uses that is not set, give the owner the commands, to run in a terminal on this machine:
 
-   - Discord or Slack (both off until enabled):
+   - Discord (off until enabled):
 
      ```
      openclaw config set channels.discord.execApprovals.enabled true
-     openclaw config set channels.discord.execApprovals.approvers '["<your Discord user id>"]'
      ```
 
-     (`slack` in place of `discord` for Slack; the second line only when `commands.ownerAllowFrom` does not already name them on that app.)
-   - Telegram (on by default): only the approver, when `commands.ownerAllowFrom` does not name them:
+   - Discord or Telegram, only when `commands.ownerAllowFrom` does not already name the owner on that app (Telegram's cards are on by default and need only this):
 
      ```
      openclaw config set channels.telegram.execApprovals.approvers '["<your Telegram user id>"]'
      ```
 
-   - WhatsApp, Signal and other apps without their own approval setting: forward the cards to the owner's own chat there:
+   - WhatsApp or Signal: forward the cards to the chat the request came from (Signal also needs the owner in `channels.signal.allowFrom`):
 
      ```
      openclaw config set approvals.plugin.enabled true
-     openclaw config set approvals.plugin.mode targets
-     openclaw config set approvals.plugin.targets '[{"channel": "whatsapp", "to": "<your number>"}]'
+     openclaw config set approvals.plugin.mode session
      ```
 
-   If a command prints that the gateway needs a restart, the owner runs `openclaw gateway restart`. The approver is always the owner's own account, never anyone else's. In a group or channel room the cards go to the owner's direct messages.
+   Slack needs nothing: the card shows in the same chat, for the accounts in Slack's `allowFrom`. If a command prints that the gateway needs a restart, the owner runs `openclaw gateway restart`. The approver is always the owner's own account, never anyone else's. In a group or channel room the cards go to the owner's direct messages.
 4. **Work out what is routine yourself.** Look, do not ask:
    - your scheduled jobs: `openclaw cron list` (what they do, where they post);
    - your skills and MCP servers: `openclaw skills list`, `openclaw mcp list`;
@@ -76,8 +72,8 @@ There are two entry points:
 5. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
    why you think it is routine. Ask which to keep, and: "Is there anything else you ask me to do regularly that
    should not need approval?"
-6. **Notices.** Ask the owner to send `/sentrook-notify here` in their direct chat with you, so held calls reach them.
-   If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held, drafted or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook-notify here` as a direct message to you on the chat where they want them (not in a group or channel). Until then no notice is sent: held calls still wait, but nobody is told.
+6. **Notices.** Ask the owner to send `/sentrook-notify here` as a direct message to you in the chat app where they want
+   to hear about held calls (not here, if this is the terminal or app). If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held, drafted or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook-notify here` as a direct message to you on the chat where they want them (not in a group or channel). Until then no notice is sent: held calls still wait, but nobody is told.
 7. **Hand over** (next section). Explain attended chats only if the owner runs scheduled jobs or asks:
    Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, heartbeat or subagent holds the call for the owner's `/sentrook-allow` or `/sentrook-deny` instead of asking. That includes a subagent the owner's own chat started: OpenClaw cannot show a subagent's prompt, so its hold is bound to that chat. Which runs hold is set by Sentrook's `approval.scheduledIntentKinds` setting.
 
@@ -163,8 +159,9 @@ approved.
 - Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-dismiss`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
-- Never change OpenClaw's approval settings or run its config commands for them: give the owner the commands to run
-  in a terminal. Sentrook treats such a change as a change to its safety controls.
+- Never change OpenClaw's approval settings (no `config set`, `config patch` or `config unset`, and no edit of its
+  config file): give the owner the commands to run in a terminal. Sentrook treats such a change as a change to its
+  safety controls. Reading them is fine.
 - Never read Sentrook's folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`) or its traffic log to work out what is routine: call the
   `sentrook_setup_report` tool instead. The log holds content from earlier tool calls, so Sentrook treats a chat that
   reads it as one that has read untrusted content, and is stricter with the calls after it.
