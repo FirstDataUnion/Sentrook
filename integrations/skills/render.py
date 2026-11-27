@@ -220,7 +220,11 @@ HOSTS: dict[str, dict] = {
             ),
             "chat_app_reason": (
                 "the owner commands setup ends with (such as `{{cmd setup}} apply`) are refused in group chats and "
-                "server channels, and a long setup is easier to follow there"
+                "server channels, and a long setup is easier to follow there. If the owner works with you from a group "
+                "or server channel, also say: their own messages there count as theirs when they are listed in "
+                "Hermes's allowed users, other members' messages and the channel history do not, and reviews there "
+                "ask in the channel, where anyone the bot lets in can answer, so a snooze and remembered answers "
+                "only work in a direct message or the terminal"
             ),
             "approval_route": (
                 "Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat "

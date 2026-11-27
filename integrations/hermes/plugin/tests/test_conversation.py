@@ -194,13 +194,13 @@ def test_group_chat_owner_member_dm_and_api_senders(h):
         OWNER_DM,
         NO_SENDER,
     ]
-    # The trigger mapping is unchanged: every group message is "other".
+    # The trigger names the same sender: the owner in a group is the owner, with basis group_chat.
     h.facts = {"platform": "telegram", "chat_type": "group", "user_id": "u-owner"}
     user(h, "t5", "owner again in the group")
     h.ctx.hooks["pre_tool_call"](
         tool_name="terminal", args={"command": "ls"}, tool_call_id="c1", turn_id="t5", **SID
     )
-    assert h.scans[-1]["trigger"]["sender"] == {"relation": "other", "basis": ["group_chat"]}
+    assert h.scans[-1]["trigger"]["sender"] == {"relation": "owner", "basis": ["group_chat"]}
 
 
 @pytest.mark.parametrize(

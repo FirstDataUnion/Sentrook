@@ -304,8 +304,8 @@ SENDER_PLATFORM = {"owner_email": "email"}
 WANT_SENDER = {
     "owner": {"relation": "owner", "basis": ["host_allowlist_dm"]},
     "other": {"relation": "other", "basis": ["host_open_access"]},
-    # this harness reads the sender in a group as someone else: a group room is what keeps the block either way
-    "owner_in_group": {"relation": "other", "basis": ["group_chat"]},
+    # the owner in a group is the owner, as on OpenClaw: the group room is what keeps the block
+    "owner_in_group": {"relation": "owner", "basis": ["group_chat"]},
     "owner_email": {"relation": "owner", "basis": ["host_allowlist_dm"]},
 }
 

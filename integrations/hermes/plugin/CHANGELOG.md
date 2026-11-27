@@ -6,6 +6,13 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- Your own message in a group chat or server channel now counts as yours when you are listed individually in
+  `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, as the OpenClaw plugin already does: routine work you ask for
+  from a private channel is scored like a direct message instead of as someone else's request. Other members still
+  count as someone else, and the recent channel messages Hermes puts in front of your message are sent as content the
+  agent read, never as your words. Reviews there still ask in the channel; because anyone the bot admits can answer
+  there, a snooze, remembered Session answers, grants set by approving and a subagent's prompts stay for a direct
+  message or the terminal, and owner commands are still refused in channels.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the
