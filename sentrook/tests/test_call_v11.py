@@ -143,10 +143,8 @@ def test_call_v11_reserves_call_v10s_largest_form_plus_the_block(v10, v11):
     assert set_state_budget_tokens(v11) == BUDGET_TOKENS - 10_100
 
 
-def test_call_v11_is_the_default_and_the_earlier_sets_stay_selectable():
-    assert ServeConfig().jev_call_question_set == "call-v11"
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v11"
-    for name in ("call-v9", "call-v10"):
+def test_call_v11_stays_selectable():
+    for name in ("call-v9", "call-v10", "call-v11"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set
             == name

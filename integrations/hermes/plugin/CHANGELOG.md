@@ -11,6 +11,11 @@ since the version the catalog pins.
   them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
   (`user:<id>`, `dm:<id>`). The setup skill says to write a binding with its platform, as `send_message` names the
   target.
+- When you answer the agent with a short message (300 characters or less, such as "yes", "go with A" or "try
+  again"), each call of that turn also sends the agent's last message before it, so the scanner can see what you
+  agreed to instead of reading your reply alone. It is sent as the agent's words, never as your request, redacted and
+  cut to 2,000 characters (start and end). It is not sent with a longer message, someone else's message, a turn Hermes
+  starts itself or the background review.
 - Your own message in a group chat or server channel now counts as yours when you are listed individually in
   `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, as the OpenClaw plugin already does: routine work you ask for
   from a private channel is scored like a direct message instead of as someone else's request. Other members still

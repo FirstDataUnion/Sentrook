@@ -167,13 +167,13 @@ class ServeConfig:
     jev_api_key: str | None = None
     jev_model: str = DEFAULT_MODEL
     jev_timeout_s: float = 20.0
-    # Shipped defaults: the call-v11 / exposure-v2 question sets and conv-v11 (conv-v5 plus the credential-home relief,
+    # Shipped defaults: the call-v12 / exposure-v2 question sets and conv-v11 (conv-v5 plus the credential-home relief,
     # with the provider host relieved too, the service-name relief, and the escalation trend read from each scan's
     # impact with the lift capped, and the granted-send relief). The frozen v1 sets, the earlier call sets, conv-v1 to conv-v5, conv-v7 to conv-v10
     # and conv-v6 (the attended-owner ceiling, off by default) stay selectable
     # (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
     jev_exposure_question_set: str = "exposure-v2"
-    jev_call_question_set: str = "call-v11"
+    jev_call_question_set: str = "call-v12"
     #: Declared self-edits (the host's own background saves to memory or skills); "" sends them to the call set.
     jev_selfedit_question_set: str = "selfedit-v3"
     #: Which Jev route answers (`jev.routing.MODES`); anything but `primary` needs the secondary settings.
@@ -281,7 +281,7 @@ class ServeConfig:
             ),
             jev_selfedit_question_set=_selfedit_set(env),
             jev_call_question_set=_question_set(
-                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v11", "call"
+                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v12", "call"
             ),
             jev_route=(env.get("SENTROOK_JEV_ROUTE") or MODE_PRIMARY).strip().lower(),
             jev_secondary_base_url=(env.get("SENTROOK_JEV_SECONDARY_BASE_URL") or "").strip()

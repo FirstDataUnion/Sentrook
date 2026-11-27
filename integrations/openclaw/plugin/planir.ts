@@ -213,6 +213,70 @@ export function heartbeatEventsOf(messages: unknown): string | undefined {
   return text || undefined;
 }
 
+/**
+ * The agent's last message goes with an owner's message of at most this many characters (a reply such as "yes" or
+ * "go with A"), cut to `PRIOR_MESSAGE_CAP_CHARS`: one third head, two thirds tail, where a proposal usually is.
+ */
+export const PRIOR_MESSAGE_REQUEST_MAX_CHARS = 300;
+export const PRIOR_MESSAGE_CAP_CHARS = 2000;
+const PLACEHOLDER = /⟦[^⟦⟧]{0,80}⟧/g;
+
+/** A message's text: a string, or its text blocks joined. */
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((b: any) => (b?.type === "text" && typeof b.text === "string" ? b.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The agent's last message with text in the run's model context (`event.messages`) before the owner's current
+ * message: the proposal or question a short reply answers. The current message, when the host lists it last, is
+ * skipped; an earlier user message before any agent text ends the search (the agent said nothing since).
+ */
+export function priorAgentTextOf(messages: unknown, current: unknown): string | undefined {
+  if (!Array.isArray(messages)) return undefined;
+  const now = typeof current === "string" ? current.trim() : "";
+  let skippedCurrent = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || typeof m !== "object") continue;
+    if (m.role === "user") {
+      if (!skippedCurrent && now && messageText(m.content).trim() === now) {
+        skippedCurrent = true;
+        continue;
+      }
+      return undefined;
+    }
+    if (m.role === "assistant") {
+      const text = messageText(m.content).trim();
+      if (text) return text;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The agent's message as sent: redacted first, then cut, with the cut points moved out of any placeholder so none is
+ * split (a cut before redaction could leave part of a secret the redactor no longer recognises).
+ */
+export function priorMessage(text: string, redactor: Redactor): string {
+  const t = redactor.string(text.trim());
+  const cap = PRIOR_MESSAGE_CAP_CHARS;
+  if (t.length <= cap) return t;
+  let end = Math.floor(cap / 3);
+  let start = t.length - (cap - end);
+  for (const m of t.matchAll(PLACEHOLDER)) {
+    const s = m.index ?? 0;
+    const e = s + m[0].length;
+    if (s < end && end < e) end = s;
+    if (s < start && start < e) start = e;
+  }
+  return `${t.slice(0, end)} …[${start - end} characters cut]… ${t.slice(start)}`;
+}
+
 export function requestTextOf(run: RunContext): string {
   const text = String(run.currentUserMessage ?? run.prompt ?? "");
   if (isSystemAgentTurn(run)) return text.replace(SYSTEM_AGENT_MARKERS, "");
@@ -801,6 +865,17 @@ export function buildPlanir(b: BuildInput): Built {
     ? null
     : sendPlatformOf(event.params, tk, b.hostConfig, ctx.requester?.channel ?? run.channel ?? run.messageProvider);
   const sender = senderOf(ctx.requester, run, cfg, chatKind, kind);
+  // A short message from the owner goes with the agent's message before it, as the agent's text (never in `text`).
+  const prior =
+    !b.hostProcess &&
+    !isSub &&
+    kind === "message" &&
+    sender.relation === "owner" &&
+    typeof run.priorAgentText === "string" &&
+    run.priorAgentText.trim() &&
+    String(requestText).trim().length <= PRIOR_MESSAGE_REQUEST_MAX_CHARS
+      ? priorMessage(run.priorAgentText, redactor)
+      : undefined;
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
@@ -839,7 +914,11 @@ export function buildPlanir(b: BuildInput): Built {
           channel: kind === "message" && chatKind === "unknown" && sender.relation === "owner" ? null : channel,
           sender,
         },
-    request: { text: redactor.string(String(requestText)), carried_from_turn: null },
+    request: {
+      text: redactor.string(String(requestText)),
+      carried_from_turn: null,
+      ...(prior ? { prior_agent_message: prior } : {}),
+    },
     new_inputs: sentInputs,
     history,
     pending_call: {

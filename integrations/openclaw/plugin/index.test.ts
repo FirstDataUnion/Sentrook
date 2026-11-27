@@ -1428,3 +1428,64 @@ test("code run from OpenClaw's copy of the plugin: a read of the installed skill
     assert.deepEqual(h.scans.at(-1).history.map((s: any) => s.tool), [want], JSON.stringify(extra));
   }
 });
+
+// ---- the agent's last message beside a short owner reply ---------------------------------------------------------
+
+const PROPOSAL = "I drafted two tickets for the Sprint board. Reply **yes** and I'll file both, or send edits.";
+const HISTORY = [
+  { role: "user", content: "look through yesterday's log and draft tickets", __openclaw: { senderIsOwner: true } },
+  { role: "assistant", content: [{ type: "text", text: "Reading the log now." }, { type: "toolCall", id: "c0", name: "exec", arguments: { command: "ls" } }] },
+  { role: "toolResult", toolCallId: "c0", content: "log.txt" },
+  { role: "assistant", content: [{ type: "text", text: PROPOSAL }] },
+];
+
+const CHAT = { ...CTX, trigger: "user" };
+
+async function replyScan(text: string, messages: unknown[] = HISTORY, ctx: any = CHAT, senderIsOwner = true) {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: "r1", currentUserMessage: text, prompt: text, messages }, ctx);
+  await h.fire("before_agent_run", { runId: "r1", senderIsOwner }, ctx);
+  await h.fire("before_tool_call", call("c1", "ls"), ctx);
+  return h.scans.at(-1);
+}
+
+test("a short owner reply carries the agent's last message before it", async () => {
+  const p = await replyScan("yes");
+  assert.equal(p.trigger.kind, "message");
+  assert.deepEqual(p.request, { text: "yes", carried_from_turn: null, prior_agent_message: PROPOSAL });
+});
+
+test("the current message in the host's list is skipped to find the agent's message before it", async () => {
+  const withCurrent = [...HISTORY, { role: "user", content: "go with A", __openclaw: { senderIsOwner: true } }];
+  assert.equal((await replyScan("go with A", withCurrent)).request.prior_agent_message, PROPOSAL);
+});
+
+test("a reply at the limit carries it and a longer message does not", async () => {
+  assert.equal((await replyScan("y".repeat(300))).request.prior_agent_message, PROPOSAL);
+  assert.equal("prior_agent_message" in (await replyScan("z".repeat(301))).request, false);
+});
+
+test("no agent message since the owner's last one, or none at all, sends none", async () => {
+  const noReply = [{ role: "user", content: "hello", __openclaw: { senderIsOwner: true } }];
+  assert.equal("prior_agent_message" in (await replyScan("yes", noReply)).request, false);
+  assert.equal("prior_agent_message" in (await replyScan("yes", [])).request, false);
+});
+
+test("another sender's message, a cron run and a sub-agent send none", async () => {
+  const other = { ...CHAT, requester: { senderIsOwner: false, channel: "discord" } };
+  assert.equal("prior_agent_message" in (await replyScan("yes", HISTORY, other, false)).request, false);
+  assert.equal("prior_agent_message" in (await replyScan("yes", HISTORY, { ...CTX, trigger: "cron" })).request, false);
+  const sub = { ...CHAT, sessionKey: "agent:main:subagent:abc" };
+  assert.equal("prior_agent_message" in (await replyScan("yes", HISTORY, sub)).request, false);
+});
+
+test("the agent's message is redacted and cut, keeping its end", async () => {
+  const secret = "ghp_" + "d".repeat(36);
+  const long = `token ${secret} ` + "x".repeat(5000) + " Reply yes to go ahead.";
+  const msgs = [...HISTORY.slice(0, 3), { role: "assistant", content: long }];
+  const sent = (await replyScan("go ahead", msgs)).request.prior_agent_message;
+  assert.ok(!sent.includes(secret) && sent.includes("⟦secret"));
+  assert.ok(sent.endsWith("Reply yes to go ahead."));
+  assert.ok(sent.includes("characters cut]"));
+  assert.ok(sent.length <= 2040);
+});

@@ -278,6 +278,12 @@ class Request(_Model):
         default=None,
         description="Set only when the request text is from an earlier turn (heartbeat, system continuation)",
     )
+    prior_agent_message: str | None = Field(
+        default=None,
+        description="The agent's last message to the owner before this request, sent on an owner's chat turn whose "
+        "message is short: the proposal or question a reply such as 'yes' or 'go with A' answers. The agent's words, "
+        "never the owner's; redacted, and capped head and tail by the plugin",
+    )
 
 
 class Provider(_Model):

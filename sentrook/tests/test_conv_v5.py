@@ -105,7 +105,7 @@ def test_serve_defaults_to_call_v10_and_the_earlier_sets_stay_selectable():
         ServeConfig.from_env({}),
         ServeConfig.from_env({"SENTROOK_TEST_MODE": "1"}),
     ):
-        assert cfg.jev_call_question_set == "call-v11"
+        assert cfg.jev_call_question_set == "call-v12"
     old = ServeConfig.from_env(
         {"SENTROOK_CONVERGENCE": "conv-v4", "SENTROOK_JEV_CALL_QUESTIONS": "call-v6"}
     )
