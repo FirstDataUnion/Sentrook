@@ -61,7 +61,7 @@ still blocked whatever is granted.
 
 ## The owner's commands
 
-`/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. They refuse in a group or channel room, even from the owner, since everyone there would see the reply. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
+`/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. They refuse in a group or channel room (a private server channel included), even from the owner, since everyone there would see the reply. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
 owner type it.
 
 - `/sentrook status`: plugin version, mode and thresholds, scan host, whether credentials are set, how many grants and bindings, snooze, held calls and where notices go. Anyone may run it.

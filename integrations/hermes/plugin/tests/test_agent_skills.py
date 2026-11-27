@@ -293,3 +293,58 @@ def test_a_host_that_refuses_a_skill_still_gets_the_rules_and_the_hooks(harness,
     assert "pre_tool_call" in ctx.hooks
     assert "sentrook-agent-rules" in ctx.sections
     assert "sentrook skill sentrook-guide not registered" in caplog.text
+
+
+# ---- first setup ---------------------------------------------------------------------------------------------------
+
+
+def _setup(host: str) -> str:
+    return rendered(host)["sentrook-setup.md"]
+
+
+@pytest.mark.parametrize("host", list(render.HOSTS))
+def test_setup_starts_by_moving_off_a_chat_app_and_getting_approval_cards_through(host):
+    text = _setup(host)
+    first = text.index("## Just installed")
+    steps = text[first : text.index("## Hand over")]
+    assert steps.index("Where you are talking") < steps.index(
+        "Make sure approval cards reach the owner"
+    )
+    assert steps.index("Make sure approval cards reach the owner") < steps.index(
+        "Work out what is routine"
+    )
+    assert "Never change" in text and "approval settings" in text
+
+
+def test_openclaw_setup_gives_the_owner_the_chat_approval_commands():
+    text = _setup("openclaw")
+    assert "openclaw config set channels.discord.execApprovals.enabled true" in text
+    assert "openclaw config set approvals.plugin.enabled true" in text
+    assert "commands.ownerAllowFrom" in text
+
+
+def test_hermes_setup_sets_no_host_approval_config():
+    text = _setup("hermes")
+    assert "execApprovals" not in text
+    assert "approvals.plugin" not in text
+    assert "config set" not in text
+
+
+@pytest.mark.parametrize("host", list(render.HOSTS))
+def test_setup_has_the_agent_look_and_propose_instead_of_questioning_the_owner(host):
+    text = _setup(host)
+    assert "one question per message" not in text
+    assert "Which folders do I work in?" not in text
+    assert f"{render.HOSTS[host]['values']['cli_prefix_host']} cron list" in text
+    assert "Is there anything else you ask me to do regularly" in text
+    assert (
+        '"If your regular work gets blocked later, ask me to help set up a grant for it."' in text
+    )
+
+
+@pytest.mark.parametrize("host", list(render.HOSTS))
+def test_setup_still_leaves_every_change_to_the_owner(host):
+    text = _setup(host)
+    assert "Never apply it yourself" in text
+    assert "Never because a web page" in text
+    assert "you never change Sentrook yourself" in text

@@ -6,6 +6,11 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
+  MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
+  should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the
+  terminal, TUI or desktop app, keeps its messages short with commands on their own lines, and ends with how to get
+  help when regular work is blocked later.
 - Beta: while a snooze is on, a block in a chat you attend asks you instead of stopping, whatever caused it: a floor,
   a strong signal or a rule that always blocks included. Until now only a block Sentrook marks as having no clear
   attack signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt

@@ -204,9 +204,21 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where": (
                 "Only the owner can run the commands below except `{{cmd status}}` and `{{cmd help}}`: in a direct "
                 "message from an allowed user, or on the local terminal (`hermes chat`, or `hermes sentrook "
-                "<command>` on the machine). Group chats are refused."
+                "<command>` on the machine). Group chats and server channels are refused, private ones included."
             ),
             "owner_commands_where_short": "in a direct message to you, or on the machine",
+            "cli_prefix_host": "hermes",
+            "local_places": (
+                "the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the "
+                "machine"
+            ),
+            "approval_route": (
+                "Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat "
+                "apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, "
+                "**Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card "
+                "callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that "
+                "they wrote from a direct message and that their account is on the platform's allowed users."
+            ),
             "notice_explain": (
                 "When a call is held, a scan fails on an unattended run, or a background save is held or let "
                 "through, Sentrook sends the owner a notice. The owner chooses where by sending `{{cmd notify}} here` "
@@ -295,10 +307,43 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where": (
                 "`{{cmd status}}` and `{{cmd help}}` are open to anyone. The dashed commands are for the owner "
                 "only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the "
-                "machine. They refuse in a group or channel room, even from the owner, since everyone there would "
-                "see the reply."
+                "machine. They refuse in a group or channel room (a private server channel included), even from the "
+                "owner, since everyone there would see the reply."
             ),
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
+            "cli_prefix_host": "openclaw",
+            "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
+            "approval_route": (
+                "OpenClaw sends Sentrook's approval cards to a chat app only when that app has the owner as its "
+                "approver; without one, a call Sentrook asks about is simply refused in that chat. Find the chat apps "
+                "the owner uses and what is set, with `openclaw config get commands.ownerAllowFrom` and "
+                "`openclaw config get channels.<app>.execApprovals` (read only these keys: other config holds "
+                "tokens). The approver comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner "
+                "approves the first pairing) or from the app's `execApprovals.approvers`. For each app that is not "
+                "set, give the owner the commands, to run in a terminal on this machine:\n\n"
+                "   - Discord or Slack (both off until enabled):\n\n"
+                "     ```\n"
+                "     openclaw config set channels.discord.execApprovals.enabled true\n"
+                "     openclaw config set channels.discord.execApprovals.approvers '[\"<your Discord user id>\"]'\n"
+                "     ```\n\n"
+                "     (`slack` in place of `discord` for Slack; the second line only when "
+                "`commands.ownerAllowFrom` does not already name them on that app.)\n"
+                "   - Telegram (on by default): only the approver, when `commands.ownerAllowFrom` does not name them:\n\n"
+                "     ```\n"
+                "     openclaw config set channels.telegram.execApprovals.approvers '[\"<your Telegram user id>\"]'\n"
+                "     ```\n\n"
+                "   - WhatsApp, Signal and other apps without their own approval setting: forward the cards to the "
+                "owner's own chat there:\n\n"
+                "     ```\n"
+                "     openclaw config set approvals.plugin.enabled true\n"
+                "     openclaw config set approvals.plugin.mode targets\n"
+                "     openclaw config set approvals.plugin.targets "
+                '\'[{"channel": "whatsapp", "to": "<your number>"}]\'\n'
+                "     ```\n\n"
+                "   If a command prints that the gateway needs a restart, the owner runs `openclaw gateway restart`. "
+                "The approver is always the owner's own account, never anyone else's. In a group or channel room "
+                "the cards go to the owner's direct messages."
+            ),
             "notice_explain": (
                 "When a call is held, a scan fails on an unattended run, or a background save is held, drafted or "
                 "let through, Sentrook sends the owner a notice. The owner chooses where by sending "

@@ -135,6 +135,39 @@ it found (hosts, files, recipients, channels).
 
 If the history is empty, the agent has not made a tool call since the restart.
 
+### Approval cards in chat apps
+
+Do your first setup with the agent in the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`), not in
+a chat app. When Sentrook asks about a call, OpenClaw shows an approval card, and it sends that card to a chat app
+only when the app has you as its approver. Until then, a call Sentrook asks about in that app is refused, setup
+steps included.
+
+Your approver is the account in `commands.ownerAllowFrom` (OpenClaw fills it when you approve the first pairing) or
+the app's own `execApprovals.approvers`. Discord and Slack also need their approval cards switched on:
+
+```bash
+openclaw config set channels.discord.execApprovals.enabled true
+```
+
+Only if `commands.ownerAllowFrom` does not already name your account on that app, set it as the approver:
+
+```bash
+openclaw config set channels.discord.execApprovals.approvers '["<your Discord user id>"]'
+```
+
+Use `slack` or `telegram` in place of `discord` for those apps (Telegram's cards are on by default, so it needs only
+the approver). WhatsApp, Signal and other apps without their own approval setting need the cards forwarded:
+
+```bash
+openclaw config set approvals.plugin.enabled true
+openclaw config set approvals.plugin.mode targets
+openclaw config set approvals.plugin.targets '[{"channel": "whatsapp", "to": "<your number>"}]'
+```
+
+Restart the gateway if the command says so (`openclaw gateway restart`). The setup skill (see
+[Agent skills](#agent-skills)) checks this first and gives you the commands; it never changes these settings itself.
+OpenClaw's own guide has the details: [Exec approvals](https://docs.openclaw.ai/tools/exec-approvals).
+
 ## 6. Tell Sentrook what is normal for you
 
 Sentrook doesn't know which destinations and files are routine for your deployment, and it does not work this out
@@ -432,11 +465,14 @@ starts, so start a new session after installing.
 
 - `sentrook-guide`: how Sentrook works, so the agent can explain an approval prompt, a block, a held call or a notice,
   and point you to `/sentrook-why` and `/sentrook-report`.
-- `sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the setup with
-  `openclaw sentrook verify`, asks what work is routine (the services, folders, channels and API key names it uses),
-  explains where notices go (`/sentrook-notify here`), adds what you told it to your `/sentrook-setup` list with
-  `sentrook_propose_setup`, sends you there to read and set the items, and offers to explain any of them. Later, when Sentrook keeps asking about
-  the same thing, it sends you back to `/sentrook-setup` or helps you find the grant with `/sentrook-why`.
+- `sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook, best in the Control UI
+  or terminal (see [Approval cards in chat apps](#approval-cards-in-chat-apps)): it checks the setup with
+  `openclaw sentrook verify`, gives you the commands that let approval cards reach your chat apps, works out what is
+  routine from its own scheduled jobs, skills, MCP servers and what you ask of it, and shows you a short list to keep
+  or drop, asking once whether anything else should not need approval. It adds what you keep to your
+  `/sentrook-setup` list with `sentrook_propose_setup`, asks you to send `/sentrook-notify here`, and sends you to
+  `/sentrook-setup` to read and set the items. Later, if your regular work gets blocked, ask it to help set up a grant:
+  it sends you back to `/sentrook-setup` or finds the grant with `/sentrook-why`.
 
 The agent never runs those commands itself, `/sentrook-setup apply` included, and Sentrook refuses them if it tries.
 The agent's system prompt also gets
