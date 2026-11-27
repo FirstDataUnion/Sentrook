@@ -206,9 +206,48 @@ def test_what_the_read_showed_must_be_the_trusted_file(repo, home, state):
     assert attest(state, home, path, seen=[]) is None
     # a page of the file, and a long line Hermes cut short, still match
     assert attest(state, home, path, seen=[(3, "Follow these steps exactly.")]) == gid
-    assert attest(state, home, path, seen=[(1, "# Job: month-end... [truncated]")]) == gid
+    # a cut anywhere but the host's line limit could change what a line says ("Delete X... only after tests pass")
+    assert attest(state, home, path, seen=[(1, "# Job: month-end... [truncated]")]) is None
     assert attest(state, home, path, seen=[(1, "# Job: month-end close... [truncated]x")]) is None
     assert attest(state, home, path, seen=[(99, "x")]) is None
+    # numbers must run on from the first, as Hermes numbers them
+    assert (
+        attest(
+            state,
+            home,
+            path,
+            seen=[(3, "Follow these steps exactly."), (3, "Follow these steps exactly.")],
+        )
+        is None
+    )
+    assert attest(state, home, path, seen=[(2, ""), (1, "# Job: month-end close")]) is None
+
+
+def test_a_long_line_cut_at_the_hosts_limit_still_matches(home, state):
+    notes = home / "notes"
+    notes.mkdir()
+    long_line = "x" * 3000
+    (notes / "big.md").write_text(f"# Big\n{long_line}\n{long_line}\n")
+    gid = trust(state, home, "~/notes")
+    cut = long_line[:2000] + folders.TRUNCATED
+    path = notes / "big.md"
+    assert attest(state, home, path, seen=[(1, "# Big"), (2, cut), (3, cut)]) == gid
+    # two cuts of different lengths, or one shorter than any host limit, are not the host's
+    assert (
+        attest(state, home, path, seen=[(2, cut), (3, long_line[:1999] + folders.TRUNCATED)])
+        is None
+    )
+    assert attest(state, home, path, seen=[(2, long_line[:100] + folders.TRUNCATED)]) is None
+
+
+def test_lines_are_split_as_hermes_splits_them(home, state):
+    """CRLF lines keep their carriage return, a form feed is no line break, and a byte-order mark is dropped."""
+    notes = home / "notes"
+    notes.mkdir()
+    (notes / "crlf.md").write_bytes(b"\xef\xbb\xbfone\r\ntwo\x0cstill two\r\nthree\n")
+    gid = trust(state, home, "~/notes")
+    seen = [(1, "one\r"), (2, "two\x0cstill two\r"), (3, "three")]
+    assert attest(state, home, notes / "crlf.md", seen=seen) == gid
 
 
 def test_numbered_lines_reads_hermes_output_only():

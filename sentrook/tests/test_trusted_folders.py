@@ -242,3 +242,34 @@ def test_on_macos_a_read_in_another_case_is_still_under_the_folder():
     raw = read(path=JOB.upper(), grant={**FOLDER, "pattern": REPO})
     raw["host"]["os"] = "macos"
     assert_trusted(*run_exposure(raw))
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    ["\x1b[8m", "\x08", "\r", "\u206a", "\U00013430", "\u0600", "\U0001d173", "\x85"],
+    ids=[
+        "ansi conceal",
+        "backspace",
+        "bare cr",
+        "inhibit swapping",
+        "egyptian format",
+        "arabic number sign",
+        "musical format",
+        "nel",
+    ],
+)
+def test_control_and_format_characters_drop_the_trust(hidden):
+    content = ORDERS.replace("Follow these", f"Follow{hidden} these")
+    assert_untrusted(*run_exposure(read(content=content)))
+
+
+def test_crlf_line_ends_and_tabs_keep_the_trust():
+    content = ORDERS.replace("\n", "\r\n").replace("1. ", "1.\t")
+    assert_trusted(*run_exposure(read(content=content)))
+
+
+def test_a_read_cut_to_fit_the_request_is_not_trusted():
+    """The plugin sends a long read's head and tail: whatever the middle holds, the scanner never saw it."""
+    raw = read()
+    raw["new_inputs"][0]["truncated"] = True
+    assert_untrusted(*run_exposure(raw))

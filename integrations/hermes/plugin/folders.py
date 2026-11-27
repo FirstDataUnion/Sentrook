@@ -158,11 +158,14 @@ def _git(top: str | None, *args: str, timeout: int = GIT_TIMEOUT) -> str:
         **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
-        # Nothing from anyone's git config: the agent can write `~/.gitconfig`, where `url.<x>.insteadOf` would
-        # point the recorded remote elsewhere; the repository's own config is set aside by `_GIT`.
+        # Nothing from the global or system git config: the agent can write `~/.gitconfig`, where
+        # `url.<x>.insteadOf` would point the recorded remote elsewhere. The repository's own config is still read,
+        # with the keys that run code (fsmonitor, hooks) overridden by `_GIT`; `ls-remote` runs outside it.
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_COUNT": "0",
+        # The folder is a path, never a pattern: a `*` or `:(...)` in its name matches nothing else.
+        "GIT_LITERAL_PATHSPECS": "1",
     }
     done = subprocess.run(  # noqa: S603 - fixed argv, no shell
         cmd,
@@ -447,22 +450,37 @@ def numbered_lines(content: str) -> list[tuple[int, str]] | None:
     return out
 
 
+#: A cut shorter than this is never Hermes's own (its line limit is 2,000 characters unless the owner lowers it).
+MIN_CUT = 256
+
+
+def file_lines(text: str) -> list[str]:
+    """`text` split into lines as Hermes's `read_file` splits it: on `\\n` only (a `\\r` stays on its line), one final
+    newline ending the last line, and a byte-order mark at the start dropped."""
+    return text.removeprefix("\ufeff").removesuffix("\n").split("\n")
+
+
 def seen_matches(seen: list[tuple[int, str]], text: str) -> bool:
-    """The numbered lines the read showed (`seen`) are the lines of `text`, the file as the plugin hashed it. A line
-    the host cut short (`... [truncated]`) must be the start of its line. Nothing shown, or a line out of range, is no
-    match."""
-    lines = text.splitlines()
+    """The numbered lines the read showed (`seen`) are lines of `text`, the file as the plugin hashed it, numbered one
+    after another. A line the host cut short (`... [truncated]`) must be the start of a longer line, and every cut is the
+    same length and at least `MIN_CUT`: the host cuts at its line limit, never at a point someone picked. Nothing
+    shown, numbers out of order, or a line out of range, is no match."""
+    lines = file_lines(text)
     if not seen:
         return False
-    for n, shown in seen:
-        if not 1 <= n <= len(lines):
+    cut_len: int | None = None
+    for k, (n, shown) in enumerate(seen):
+        if n != seen[0][0] + k or not 1 <= n <= len(lines):
             return False
         line = lines[n - 1]
         if shown == line:
             continue
         cut = shown.removesuffix(TRUNCATED)
-        if cut == shown or not line.startswith(cut):
+        if cut == shown or len(cut) < MIN_CUT or len(line) <= len(cut) or not line.startswith(cut):
             return False
+        if cut_len is not None and len(cut) != cut_len:
+            return False
+        cut_len = len(cut)
     return True
 
 

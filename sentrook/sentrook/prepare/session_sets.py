@@ -22,6 +22,7 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
@@ -499,14 +500,27 @@ def _names_file(text: str, name: str) -> bool:
     )
 
 
-#: Characters that hide text from a person reading the file: bidirectional controls, zero-width characters and
-#: joiners, invisible operators, the byte-order mark inside text, variation selectors (which can carry arbitrary bytes
-#: after a visible character), fillers and interlinear marks, and Unicode tag characters. A rules or
-#: instruction file has no need for them; they are how instructions are slipped past a reviewer.
-HIDDEN_CHARS = re.compile(
-    "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u2064"
-    "\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\U000e0000-\U000e01ef]"
+#: Characters outside the format and control categories that still hide text from a person reading the file:
+#: variation selectors (which can carry arbitrary bytes after a visible character), the combining grapheme joiner,
+#: blank fillers and the Mongolian free variation selectors.
+_HIDDEN_EXTRA = re.compile(
+    "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\ufe00-\ufe0f\uffa0\U000e0100-\U000e01ef]"
 )
+
+
+def has_hidden(text: str) -> bool:
+    """`text` holds characters that hide text from a person reading it: any format character (bidirectional controls,
+    zero-width characters and joiners, the byte-order mark, Unicode tags, ...), any control character but tab and
+    newline (escape sequences, backspace, a carriage return not ending a line), or one of `_HIDDEN_EXTRA`. A rules or
+    instruction file has no need for them; they are how instructions are slipped past a reviewer."""
+    for k, c in enumerate(text):
+        if c in "\t\n":
+            continue
+        if c == "\r" and text[k + 1 : k + 2] == "\n":
+            continue
+        if unicodedata.category(c) in ("Cf", "Cc") or _HIDDEN_EXTRA.match(c):
+            return True
+    return False
 
 
 def trusted_folder_read(
@@ -520,7 +534,8 @@ def trusted_folder_read(
     """The file (normalised) that `new_input` read when the plugin's attestation holds, else None: the input
     names a sent grant (`trusted_by`) that is a live `folder` grant on a folder Sentrook trusts
     (`grants.folder_root`), it is the result of a plain file read (`call`) whose path is inside that folder,
-    and its content carries no hidden characters (`HIDDEN_CHARS`). The caller adds the session guards (not
+    its content carries no hidden characters (`has_hidden`), and it reached the scanner whole (a read cut to fit
+    the request may hide anything in the part left out). The caller adds the session guards (not
     written or tainted in this session, no change since)."""
     from .grants import folder_root, lapse
 
@@ -552,7 +567,7 @@ def trusted_folder_read(
         or (norm.casefold() if fold else norm) == (root.casefold() if fold else root)
     ):
         return None
-    if HIDDEN_CHARS.search(new_input.content or ""):
+    if getattr(new_input, "truncated", False) or has_hidden(new_input.content or ""):
         return None
     return posixpath.normpath(path)
 

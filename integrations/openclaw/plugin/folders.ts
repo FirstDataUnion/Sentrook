@@ -187,11 +187,14 @@ function git(top: string | null, args: string[], timeoutMs = GIT_TIMEOUT_MS): st
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_OPTIONAL_LOCKS = "0";
-  // Nothing from anyone's git config: the agent can write `~/.gitconfig`, where `url.<x>.insteadOf` would point the
-  // recorded remote elsewhere; the repository's own config is set aside by `GIT`.
+  // Nothing from the global or system git config: the agent can write `~/.gitconfig`, where `url.<x>.insteadOf` would
+  // point the recorded remote elsewhere. The repository's own config is still read, with the keys that run code
+  // (fsmonitor, hooks) overridden by `GIT`; `ls-remote` runs outside it.
   env.GIT_CONFIG_GLOBAL = devNull;
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_CONFIG_COUNT = "0";
+  // The folder is a path, never a pattern: a `*` or `:(...)` in its name matches nothing else.
+  env.GIT_LITERAL_PATHSPECS = "1";
   const done = spawnSync("git", [...GIT, ...(top ? ["-C", top] : []), ...args], {
     cwd: top ?? tmpdir(),
     env,
