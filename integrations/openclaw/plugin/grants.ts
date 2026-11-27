@@ -89,7 +89,7 @@ export function printable(s: string): boolean {
   return !NOT_PRINTABLE.test(s);
 }
 
-function clean(s: unknown, cap = 200): string {
+export function clean(s: unknown, cap = 200): string {
   return Array.from(String(s), (c) => (printable(c) ? c : "?"))
     .slice(0, cap)
     .join("");

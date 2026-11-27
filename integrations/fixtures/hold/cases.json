@@ -1283,6 +1283,141 @@
       }
     },
     {
+      "name": "a few points higher (a held-call pass has no margin)",
+      "tool": "message",
+      "held": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "owner_pass": "always",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports",
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ]
+      },
+      "pass_level": "always",
+      "later": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 50,
+        "enforced": null,
+        "owner_pass": "always",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports",
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ]
+      },
+      "matches": false,
+      "args": {
+        "message": "a"
+      },
+      "later_args": {
+        "message": "b"
+      }
+    },
+    {
+      "name": "a rising consequence trend (a warning for a held-call pass)",
+      "tool": "message",
+      "held": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "owner_pass": "always",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports",
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          }
+        ]
+      },
+      "pass_level": "always",
+      "later": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "owner_pass": "always",
+        "approval_fingerprint": "afp1:message_send|ch:discord:#ops-reports",
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel",
+            "subject": "E1"
+          },
+          {
+            "code": "escalation.consequence_rising"
+          }
+        ]
+      },
+      "matches": false,
+      "args": {
+        "message": "a"
+      },
+      "later_args": {
+        "message": "b"
+      }
+    },
+    {
       "name": "another channel",
       "tool": "message",
       "held": {

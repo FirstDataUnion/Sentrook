@@ -210,9 +210,13 @@ def is_owner(trigger: dict[str, Any]) -> bool:
 
 
 def carries(trigger: dict[str, Any]) -> bool:
-    """A host turn's calls may carry the session's last request: the sender reads as the owner, or the run
-    is not a chat message (a scheduled job, an API call) where the session's requests are the run's own."""
-    return is_owner(trigger) or trigger.get("kind") != "message"
+    """A host turn's calls may carry the session's last request: the sender reads as the owner outside a group chat
+    (in a group the last request may be another member's), or the run is not a chat message (a scheduled job, an API
+    call) where the session's requests are the run's own."""
+    if trigger.get("kind") != "message":
+        return True
+    basis = (trigger.get("sender") or {}).get("basis") or []
+    return is_owner(trigger) and "group_chat" not in basis
 
 
 def trigger_for(trigger: dict[str, Any], kind: str) -> dict[str, Any]:

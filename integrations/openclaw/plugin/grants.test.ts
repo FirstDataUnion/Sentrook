@@ -880,7 +880,7 @@ for (const c of RELEVANCE.cases) {
       home: c.home ?? RELEVANCE.home,
       workspace: c.workspace ?? RELEVANCE.workspace,
       cwd: callCwd(c.arguments),
-      platform: callPlatform(c.arguments, c.tool_kind ?? "other"),
+      platform: callPlatform(c.arguments, c.tool_kind ?? "other", c.send_platform ?? null),
       execCall: c.tool_kind === "exec",
     });
     assert.equal(sent.length > 0, c.sent);

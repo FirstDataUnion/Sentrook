@@ -511,3 +511,61 @@ def test_the_setup_skill_calls_the_tool_at_check_in():
     check_in = skill[skill.index("## Check-in") : skill.index("## Rules for every suggestion")]
     assert f"`{setup_report.TOOL}`" in check_in
     assert META["refusal"] in check_in
+
+
+# ---- channel bindings no send would carry -------------------------------------------------------------------------
+
+
+def send_log(tmp_path, sends, now=NOW):
+    """A traffic log holding a scan of each logged pending call, an hour before `now`."""
+    at = (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    log = tmp_path / "traffic.jsonl"
+    log.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "ts": at,
+                    "kind": "scan",
+                    "request_id": f"rq-{i}",
+                    "session_ref": "s_reach",
+                    "planir": {"pending_call": pc},
+                    "response": {},
+                }
+            )
+            + "\n"
+            for i, pc in enumerate(sends)
+        )
+    )
+    return log
+
+
+@pytest.mark.parametrize("c", RULES["unreached_bindings"], ids=lambda c: c["name"])
+def test_the_channel_bindings_no_logged_message_send_would_carry(tmp_path, c):
+    """Shared with the OpenClaw plugin."""
+    ev = setup.read_evidence(
+        send_log(tmp_path, c["sends"]), META["review_at"], NOW, timedelta(days=14)
+    )
+    force = [("a channel binding", {"kind": "destination", "pattern": p}) for p in c["bindings"]]
+    assert setup.unreached_bindings(force, ev) == c["unreached"]
+
+
+@pytest.mark.parametrize(("count", "lines"), RULES["binding_gaps"])
+def test_the_gap_for_bindings_no_send_would_carry(count, lines):
+    """Shared with the OpenClaw plugin."""
+    assert setup_report.binding_gaps(count) == lines
+
+
+def test_the_report_counts_the_bindings_no_send_would_carry_and_verify_names_them(tmp_path):
+    from plugin import cli
+
+    c = RULES["unreached_bindings"][1]
+    now = datetime.now(NOW.tzinfo)  # verify reads the log as of now
+    log = send_log(tmp_path, c["sends"], now)
+    settings = {"channel_bindings": c["bindings"], "traffic_log": {"path": str(log)}}
+    env = {"HOME": "/nowhere", "HERMES_HOME": str(tmp_path / "home")}
+    cfg = resolve_config(settings, env)
+    ev = setup.read_evidence(log, 45, now)
+    text = setup_report.render(STATE, setup.in_force(cfg, None, now), ev, now, 14)
+    assert setup_report.binding_gaps(2)[0] in text
+    assert c["unreached"][0] not in text  # the report never lists bindings
+    assert cli.unreached_summary(cfg, now) == ", ".join(c["unreached"])

@@ -8,6 +8,7 @@ quadratic work about 16 times, on any machine.
 `assert_fast_or_linear` keeps a time bound as the first check and falls back to the growth check only
 when a run goes over it, for tests whose bound is also a promise (a scan well under the probe
 timeout): a fast machine still holds the bound, and a slow one is judged by how the time grows.
+`assert_linear(..., bound=...)` applies the same rule to a test that runs the growth check anyway.
 
 Measured on the redaction inputs: 3.6-4.7 for the scanner's own patterns and the vendor shapes. A shape
 whose match is capped at a few thousand characters grows quadratically on runs shorter than a few caps
@@ -76,6 +77,35 @@ def _seconds(run: Callable[[int], object], divisor: int) -> float:
 
 
 def assert_linear(
+    run: Callable[[int], object],
+    what: str = "",
+    limit: float = LIMIT,
+    bound: float | None = None,
+) -> tuple[float, float]:
+    """As `_assert_growth`, and with `bound` the fastest full-size time is also held to it as
+    `assert_fast_or_linear` holds a run: under `bound` it passes; over it, a run that grew linearly
+    passes with a warning (a slow machine), up to CEILING times the bound."""
+    small, large = _assert_growth(run, what, limit)
+    if bound is not None:
+        _within_ceiling(large, large, bound, what)
+    return small, large
+
+
+def _within_ceiling(spent: float, best: float, bound: float, what: str) -> None:
+    """The growth check has passed. `best` must stay under CEILING times `bound`; a `spent` over the
+    bound warns."""
+    assert best < CEILING * bound, (
+        f"{what}: {best:.2f} s, over {CEILING:g}x the {bound:.2f} s bound, however it grows"
+    )
+    if spent >= bound:
+        warnings.warn(
+            f"{what}: {spent:.2f} s, over the {bound:.2f} s bound, but it grows linearly: a slow "
+            "machine?",
+            stacklevel=3,
+        )
+
+
+def _assert_growth(
     run: Callable[[int], object], what: str = "", limit: float = LIMIT
 ) -> tuple[float, float]:
     """`run(d)` does the work at 1/d of its full size; it is called with d = FACTOR and d = 1.
@@ -111,14 +141,5 @@ def assert_fast_or_linear(
     bound (the fastest full-size time counts)."""
     if spent < bound and os.environ.get(ALWAYS_ENV) != "1":
         return
-    _, large = assert_linear(run, what)
-    best = min(spent, large)
-    assert best < CEILING * bound, (
-        f"{what}: {best:.2f} s, over {CEILING:g}x the {bound:.2f} s bound, however it grows"
-    )
-    if spent >= bound:
-        warnings.warn(
-            f"{what}: {spent:.2f} s, over the {bound:.2f} s bound, but it grows linearly: a slow "
-            "machine?",
-            stacklevel=2,
-        )
+    _, large = _assert_growth(run, what)
+    _within_ceiling(spent, min(spent, large), bound, what)

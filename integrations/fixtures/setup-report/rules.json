@@ -1,5 +1,5 @@
 {
-  "_comment": "Rules both plugins' setup reports follow. days: the tool's arguments and the days read (a string Hermes would coerce to a whole number reads as that number). window: the line saying how far back the log was read, in whole days (rounded down, at least 1) from the time of the oldest record read; capped means the log is larger than a history read takes. own_service: the keys a scan shows sent only to their own service (a relief naming no grant that takes sensitivity off a host; the credential-shaped names in the call's logged arguments). gaps: the gaps for settings that differ from state.json.",
+  "_comment": "Rules both plugins' setup reports follow. days: the tool's arguments and the days read (a string Hermes would coerce to a whole number reads as that number). window: the line saying how far back the log was read, in whole days (rounded down, at least 1) from the time of the oldest record read; capped means the log is larger than a history read takes. own_service: the keys a scan shows sent only to their own service (a relief naming no grant that takes sensitivity off a host; the credential-shaped names in the call's logged arguments). gaps: the gaps for settings that differ from state.json. unreached_bindings: the channel bindings in force that no message send logged in the window (its pending_call, as the traffic log keeps it) would carry; binding_gaps: the gap line for that many.",
   "days": [
     [{}, 14],
     [null, 14],
@@ -84,5 +84,44 @@
         "The traffic log is off: Sentrook cannot count the reviews the owner approved or show what it has seen."
       ]
     }
+  ],
+  "unreached_bindings": [
+    {
+      "name": "a send naming only its account, whose platform the plugin reported",
+      "bindings": ["discord:1519377377082216448"],
+      "sends": [
+        {"tool": "message", "tool_kind": "message_send", "arguments": {"action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call"}, "send_platform": "discord"}
+      ],
+      "unreached": []
+    },
+    {
+      "name": "the same send logged without a reported platform",
+      "bindings": ["discord:1519377377082216448", "channel:1519377377082216448", "slack:#ops-alerts"],
+      "sends": [
+        {"tool": "message", "tool_kind": "message_send", "arguments": {"action": "send", "target": "channel:1519377377082216448", "accountId": "sgt-johnson", "message": "Roll call"}}
+      ],
+      "unreached": ["discord:1519377377082216448", "slack:#ops-alerts"]
+    },
+    {
+      "name": "a send that names its platform",
+      "bindings": ["discord:#daily-brief", "slack:#daily-brief"],
+      "sends": [
+        {"tool": "message", "tool_kind": "message_send", "arguments": {"action": "send", "channel": "discord", "target": "#daily-brief", "message": "Daily brief"}}
+      ],
+      "unreached": ["slack:#daily-brief"]
+    },
+    {
+      "name": "no message send in the log: nothing to say",
+      "bindings": ["discord:1519377377082216448"],
+      "sends": [
+        {"tool": "web_fetch", "tool_kind": "web_fetch", "arguments": {"url": "https://example.com/1519377377082216448"}}
+      ],
+      "unreached": []
+    }
+  ],
+  "binding_gaps": [
+    [0, []],
+    [1, ["1 channel binding matches no message send in the log, so it relieves nothing: verify lists it; write a binding as the sends write the channel."]],
+    [2, ["2 channel bindings match no message send in the log, so they relieve nothing: verify lists them; write a binding as the sends write the channel."]]
   ]
 }

@@ -1409,7 +1409,7 @@
       }
     },
     {
-      "name": "review, Hermes: Session covers the same parties at no higher risk",
+      "name": "review, Hermes: Session covers the same parties at a similar risk",
       "response": {
         "response_version": "2.0",
         "status": "ok",
@@ -1454,7 +1454,7 @@
       "hint": null,
       "remember": false,
       "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
-      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\n\"Session\" also covers the same parties at no higher risk.\nDetails: /sentrook why 3f9c2a1b",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\n\"Session\" also covers the same parties at a similar risk.\nDetails: /sentrook why 3f9c2a1b",
       "openclaw": {
         "title": "🪶 Sentrook security check · risk 62/100",
         "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"
@@ -1657,7 +1657,7 @@
       "hint": null,
       "remember": false,
       "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
-      "hermes": "🪶 Sentrook security check · risk 57/100\nSends ~/work/clien…-signed.pdf to https://hook…&mode=batch.\nBecause https://hook…&mode=batch is new to Sentrook as a place to send data.\n\"Session\" also covers the same parties at no higher risk.\nDetails: /sentrook why 3f9c2a1b",
+      "hermes": "🪶 Sentrook security check · risk 57/100\nSends ~/work/clien…-signed.pdf to https://hook…&mode=batch.\nBecause https://hook…&mode=batch is new to Sentrook as a place to send data.\n\"Session\" also covers the same parties at a similar risk.\nDetails: /sentrook why 3f9c2a1b",
       "openclaw": {
         "title": "🪶 Sentrook security check · risk 57/100",
         "description": "Sends ~/work/clients/acme-industries…agreement-final-v7-signed.pdf to https://hooks.example-collecto…f5a6b?source=agent&mode=batch.\nBecause https://hooks.example-collecto…f5a6b?source=agent&mode=batch is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"

@@ -241,6 +241,19 @@ def window_text(ev: setup.Evidence, now: datetime, days: int, capped: bool) -> s
     return f"Read: covers {_n(got, 'day')}, not the {days} asked for: {why}."
 
 
+def binding_gaps(unreached: int) -> list[str]:
+    """The gap for channel bindings that no message send in the log would carry
+    (`setup.unreached_bindings`)."""
+    if not unreached:
+        return []
+    one = unreached == 1
+    return [
+        f"{_n(unreached, 'channel binding')} {'matches' if one else 'match'} no message send in the log, so "
+        f"{'it relieves' if one else 'they relieve'} nothing: verify lists {'it' if one else 'them'}; "
+        "write a binding as the sends write the channel."
+    ]
+
+
 def gaps(state: dict[str, Any]) -> list[str]:
     out = []
     if not state["scan_ok"]:
@@ -324,7 +337,8 @@ def render(
     if state.get("shadowed_skills"):
         names = ", ".join(_q(s, 60) for s in state["shadowed_skills"])
         lines.append(f"- Skills that outrank the plugin's own: {names}.")
-    lines += ["", "Gaps:", *_rows(gaps(state))]
+    unreached = len(setup.unreached_bindings(force, ev))
+    lines += ["", "Gaps:", *_rows([*gaps(state), *binding_gaps(unreached)])]
     if not ev.available:
         lines += ["", "Sentrook's traffic log is off; only settings are shown."]
         return "\n".join(lines)

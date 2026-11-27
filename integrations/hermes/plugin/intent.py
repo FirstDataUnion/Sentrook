@@ -3,15 +3,18 @@
 Hermes has no owner flag; its gateway allowlist is a yes/no admission gate. The mapping used here:
 - owner (basis `host_allowlist_dm`): a direct message from a sender individually on
   `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, or a local CLI/TUI turn;
-- other (basis `group_chat`): any group, channel or thread message, even from a listed user;
+- owner (basis `group_chat`): a group, channel or thread message from a sender individually on one of those lists,
+  as the OpenClaw plugin sends an owner in a group. The basis keeps what needs the owner alone in the room off:
+  the scanner's attended-owner ceiling, the snooze, remembered Session answers and grants, owner commands;
+- other (basis `group_chat`): any other group, channel or thread message;
 - other (basis `host_open_access`): a DM admitted only by allow-all (or a grant the plugin cannot see);
 - unknown (basis `none`): cron, subagent, API-server and webhook runs.
 
 A turn Hermes starts itself with a user message it wrote (a finished sub-agent or background process, a
 heartbeat, a goal) is never an owner message: see `host_turns`.
 
-The conversation sent with a background save (`conversation_sender_of`) differs in one place: a group
-message from a sender individually on the allowlist is the owner (basis `group_chat`).
+The channel history Hermes puts in front of a group message is other people's words, never the sender's request
+(`channel_context`).
 """
 
 from __future__ import annotations
@@ -109,7 +112,7 @@ def session_facts() -> dict[str, str]:
     except Exception:  # noqa: BLE001 - not running under the gateway
         return {}
     out: dict[str, str] = {}
-    for name in ("PLATFORM", "SOURCE", "CHAT_TYPE", "CHAT_ID", "USER_ID", "KEY"):
+    for name in ("PLATFORM", "SOURCE", "CHAT_TYPE", "CHAT_ID", "USER_ID", "ACTOR_ID", "KEY"):
         try:
             value = get_session_env(f"HERMES_SESSION_{name}", "")
         except Exception:  # noqa: BLE001
@@ -303,13 +306,16 @@ def asks_for_children(
     env: dict[str, str],
     *,
     sender_relation: Any,
+    sender_basis: Any = (),
     attended_platforms: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
     """A sub-agent this session delegates to asks its reviews here, in this chat: the owner attends it
-    (`owner_attends`), the turn is the owner's own (sender `owner`), and Hermes shows a child's prompt on this platform
-    (`CHILD_PROMPT_PLATFORMS`). Anywhere else the sub-agent's reviews are held for the owner."""
+    (`owner_attends`), the turn is the owner's own (sender `owner`) outside a group chat (anyone admitted to a group
+    may answer a prompt there, and the owner may not be watching a sub-agent's), and Hermes shows a child's prompt on
+    this platform (`CHILD_PROMPT_PLATFORMS`). Anywhere else the sub-agent's reviews are held for the owner."""
     return (
         sender_relation == "owner"
+        and "group_chat" not in (sender_basis if isinstance(sender_basis, list | tuple) else ())
         and platform in CHILD_PROMPT_PLATFORMS
         and owner_attends(platform, env, attended_platforms=attended_platforms)
     )
@@ -342,9 +348,11 @@ def _truthy(env: dict[str, str], name: str) -> bool:
 
 
 def _allowlisted(platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]) -> bool:
-    """The sender is individually on `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`."""
+    """The sender is individually on `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`. The sender is the turn's
+    actor where Hermes names one (`HERMES_SESSION_ACTOR_ID`, who asked this turn), else the session's user (the
+    session route, empty in a shared group session), else the hook's sender id."""
     up = platform.upper()
-    uid = facts.get("user_id") or (str(sender_id) if sender_id else "")
+    uid = facts.get("actor_id") or facts.get("user_id") or (str(sender_id) if sender_id else "")
     return bool(uid) and uid in (
         _env_set(env, f"{up}_ALLOWED_USERS") | _env_set(env, "GATEWAY_ALLOWED_USERS")
     )
@@ -359,6 +367,8 @@ def sender_of(
         return {"relation": "unknown", "basis": ["none"]}
     chat_type = (facts.get("chat_type") or "").lower()
     if chat_type and chat_type != "dm":
+        if _allowlisted(platform, facts, sender_id, env):
+            return {"relation": "owner", "basis": ["group_chat"]}
         return {"relation": "other", "basis": ["group_chat"]}
     if not chat_type:
         return {"relation": "unknown", "basis": ["none"]}
@@ -370,9 +380,7 @@ def sender_of(
 def conversation_sender_of(
     platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
 ) -> dict[str, Any]:
-    """Who wrote a message in the conversation a background save is judged against: `sender_of`, except
-    that in a group chat a sender individually on the allowlist is the owner (basis `group_chat`). The
-    trigger keeps calling every group message `other`; this only says who wrote each message.
+    """Who wrote a message in the conversation a background save is judged against: `sender_of`.
 
     While Hermes's write origin is its background review (the review fork or the curator, which may run in
     a context that still holds the owner's chat), nobody is the owner: the sender is unknown."""
@@ -380,10 +388,7 @@ def conversation_sender_of(
 
     if in_background_review():
         return {"relation": "unknown", "basis": ["none"]}
-    sender = sender_of(platform, facts, sender_id, env)
-    if sender["basis"] == ["group_chat"] and _allowlisted(platform, facts, sender_id, env):
-        return {"relation": "owner", "basis": ["group_chat"]}
-    return sender
+    return sender_of(platform, facts, sender_id, env)
 
 
 def environ() -> dict[str, str]:

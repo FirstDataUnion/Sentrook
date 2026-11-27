@@ -768,7 +768,7 @@ def test_a_grant_is_sent_when_the_call_could_be_covered_by_it(c):
         home=c.get("home", RELEVANCE["home"]),
         workspace=c.get("workspace", RELEVANCE["workspace"]),
         cwd=call_cwd(c["arguments"]),
-        platform=call_platform(c["arguments"], c.get("tool_kind", "other")),
+        platform=call_platform(c["arguments"], c.get("tool_kind", "other"), c.get("send_platform")),
         exec_call=c.get("tool_kind") == "exec",
     )
     assert bool(sent) is c["sent"]

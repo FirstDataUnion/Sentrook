@@ -208,28 +208,35 @@ _CHANNEL_PREFIXES = ("channel:", "group:", "thread:")
 _BARE_ID = re.compile(r"(?=.*\d)[a-z0-9_-]{3,}")
 
 
-def call_platform(args: Any, kind: str) -> str | None:
-    """The chat platform a message send names in its own argument (`discord` for `{channel: discord,
-    target: "#x"}`), lower-cased; None for any other call."""
+def call_platform(args: Any, kind: str, reported: str | None = None) -> str | None:
+    """The chat platform of a message send, lower-cased: the one it names in its own argument (`discord`
+    for `{channel: discord, target: "#x"}`), else `reported`, one the host says it goes out on. None for
+    any other call. Hermes' `send_message` names its platform in its target (`discord:<id>`), so the
+    plugin reports none; the OpenClaw plugin reports an account's."""
     if kind != "message_send" or not isinstance(args, dict):
         return None
     for k in _PLATFORM_KEYS:
         v = args.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip().lower()
-    return None
+    return (reported or "").strip().lower() or None
 
 
 def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bool]]:
     """The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner
     reads them, each with whether it needs no minimum length: as written; without a `<platform>:` prefix
-    when the send names that platform in its own argument; a `#name` as the channel target
+    when the send is on that platform (`call_platform`), a bare id left that way only as a channel target
+    or a whole argument (never inside a direct message's `user:<id>`); a `#name` as the channel target
     `channel:name` (or `group:`, `thread:`); and a `channel:<id>` (or `group:`, `thread:`) or `#<id>` as
     the bare id, as a send writes it in `channelId`."""
     forms = [(pattern, False)]
+    bare_id = None
     head, sep, rest = pattern.partition(":")
     if platform and sep and rest and head == platform:
-        forms.append((rest, True))
+        if _BARE_ID.fullmatch(rest):
+            bare_id = rest
+        else:
+            forms.append((rest, True))
     for form, short_ok in list(forms):
         prefix = next((p for p in _CHANNEL_PREFIXES if form.startswith(p)), "")
         if prefix and _BARE_ID.fullmatch(form[len(prefix) :]):
@@ -239,6 +246,9 @@ def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bo
             forms += [(prefix + form[1:], short_ok) for prefix in _CHANNEL_PREFIXES]
             if _BARE_ID.fullmatch(form[1:]):
                 forms.append((form[1:], short_ok))
+    if bare_id:
+        forms += [(prefix + bare_id, True) for prefix in _CHANNEL_PREFIXES]
+        forms.append((json.dumps(bare_id), True))
     return forms
 
 

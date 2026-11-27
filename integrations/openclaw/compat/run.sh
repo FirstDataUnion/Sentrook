@@ -59,7 +59,11 @@ chmod a+rw "$out/steps.tsv"
 echo "== $image"
 status=0
 if [ -f "$stage/pkg/sentrook.tgz" ]; then
-  docker run --rm --init --user node \
+  # --no-healthcheck: the image's HEALTHCHECK probes a gateway this check never starts. On 2026.11.10 the probe
+  # reads the gateway lock, the state database and openclaw.json, and racing the check's own `openclaw` commands it
+  # made `config set` refuse ("The state owner has no Gateway listener") or `plugins install` find the config
+  # invalid, at random.
+  docker run --rm --init --no-healthcheck --user node \
     -e COMPAT_CLIENT_SECRET="${COMPAT_CLIENT_SECRET:-}" -e COMPAT_PROBE_EXTRA="${COMPAT_PROBE_EXTRA:-}" \
     -v "$stage/pkg:/pkg:ro" -v "$here:/compat:ro" -v "$root/integrations/compat:/shared:ro" -v "$out:/out" \
     --entrypoint bash "$image" /compat/container_check.sh || status=1

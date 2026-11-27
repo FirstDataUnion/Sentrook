@@ -48,7 +48,7 @@ import * as folders from "./folders.ts";
 import * as grants from "./grants.ts";
 import { actionOf, recordsBackward, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
-import { bindingProblem, serverIdentity } from "./planir.ts";
+import { bindingProblem, callPlatform, relevantGrants, serverIdentity } from "./planir.ts";
 import { type GrantsFile, type ProposalsFile, readTime, Store, withFileLock } from "./store.ts";
 
 type Entry = Record<string, any>;
@@ -57,6 +57,8 @@ type Entry = Record<string, any>;
 export const EVIDENCE_MIN = 2;
 /** How far back approved reviews count. */
 export const EVIDENCE_WINDOW_MS = 30 * 24 * 3600_000;
+/** How many logged message sends a binding is checked against (`unreachedBindings`). */
+export const MAX_SENDS = 2000;
 /** How long the screen's code works. */
 export const CODE_TTL_MS = 15 * 60_000;
 /** How long an agent proposal waits for the owner. */
@@ -192,6 +194,8 @@ export class Evidence {
   exposed = new Set<string>();
   unsuggested = new Map<string, Unsuggested>();
   ownService = new Map<string, OwnService>();
+  /** The message sends in the window, as logged (at most `MAX_SENDS`, newest first), with their platform. */
+  sends: Array<{ args: unknown; platform: string | null }> = [];
   scans = 0;
   oldest: Date | null = null;
   readonly available: boolean;
@@ -237,6 +241,17 @@ export function readEvidence(log: string | null, reviewAt: number, now: Date, wi
     if (exposureFlagged(resp) && typeof sref === "string") ev.exposed.add(sref);
     const at = stamp;
     const planir = rec.planir;
+    const pc = planir && typeof planir === "object" ? (planir as Entry).pending_call : null;
+    if (
+      at !== null &&
+      at.getTime() >= since &&
+      at.getTime() <= now.getTime() &&
+      pc?.tool_kind === "message_send" &&
+      ev.sends.length < MAX_SENDS
+    ) {
+      const reported = typeof pc.send_platform === "string" ? pc.send_platform : null;
+      ev.sends.push({ args: pc.arguments ?? {}, platform: callPlatform(pc.arguments ?? {}, "message_send", reported) });
+    }
     if (
       at === null ||
       at.getTime() < since ||
@@ -482,6 +497,25 @@ export function inForce(cfg: PluginConfig, data: GrantsFile | null, now: Date): 
   }
   for (const b of grants.fileBindings(data)) out.push(["a channel binding", { kind: "destination", pattern: b.pattern.trim() }]);
   return out.filter(([, g]) => g.kind !== "destination" || destinationOk(g.pattern));
+}
+
+/**
+ * The channel bindings in force (`inForce`) that no message send in the evidence would carry, as written: the plugin
+ * sends a binding only with a send that shows its channel (`planir.relevantGrants`), so one written another way than
+ * the host's sends write the channel never relieves anything. None when the window holds no message send.
+ */
+export function unreachedBindings(force: Array<[string, Entry]>, ev: Evidence): string[] {
+  if (!ev.sends.length) return [];
+  const out: string[] = [];
+  for (const [label, g] of force) {
+    if (label !== "a channel binding" || out.includes(g.pattern)) continue;
+    const grant = { kind: "destination", pattern: String(g.pattern), scope: "persistent" as const };
+    const carried = ev.sends.some(
+      (s) => relevantGrants([grant], JSON.stringify(s.args ?? {}), { platform: s.platform }).length > 0,
+    );
+    if (!carried) out.push(g.pattern);
+  }
+  return out;
 }
 
 /**
