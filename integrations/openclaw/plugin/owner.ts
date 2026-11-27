@@ -76,16 +76,21 @@ export const OWNER_ROUTES =
   "approval fills), from the Control UI, or as openclaw sentrook <command> on the machine";
 
 export function refusal(verb: string): string {
-  return `Only the owner can run /sentrook ${verb}: send /sentrook-${verb} ${OWNER_ROUTES}.`;
+  return (
+    `Only the owner can run /sentrook ${verb}: send /sentrook-${verb} ${OWNER_ROUTES}. A group chat or server ` +
+    "channel, even a private one, never runs it."
+  );
 }
 
 /** The reply to the owner's command in a room, in a session a room shares, or in a chat Sentrook cannot tell from one. */
 export function roomRefusal(verb: string): string {
   return (
-    `Run /sentrook-${verb} in your own direct message to the agent or in the Control UI, in a session no group or ` +
-    `channel shares, or as openclaw sentrook ${verb} on the machine: this chat is a group or channel, shares its ` +
-    "session with one, or is one Sentrook cannot tell from one, and everyone there could see the reply. Nothing was " +
-    "shown or changed."
+    `/sentrook-${verb} only runs in your own direct message with the agent, in the Control UI (in a session no ` +
+    "group or channel shares), or as " +
+    `openclaw sentrook ${verb} on the machine. This chat is a group or a server channel (a private channel counts ` +
+    "too), shares its session with one, or is one Sentrook cannot tell from one: anyone there could see the reply, " +
+    `so Sentrook's security settings are never shown or changed there. Open a direct message with the agent and send /sentrook-${verb} there. ` +
+    "Nothing was shown or changed."
   );
 }
 

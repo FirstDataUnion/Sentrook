@@ -368,7 +368,8 @@ commands run only for the owner, from any of three places:
 - **The machine**: whoever can run `openclaw` there counts as the owner.
 
 OpenClaw decides who the owner is by the sender, not the room, and keeps a command and its reply in the room's
-transcript. So every dashed command refuses in a group or channel room, even from you, since its reply (recent scans,
+transcript. So every dashed command refuses in a group or channel room (a private server channel included), even
+from you, since its reply (recent scans,
 hosts, file paths, reasons, grants, setup codes) would be shown to everyone there; and in a chat it cannot tell from
 one: a chat channel with no session key, or the agent's main session when `session.groupScope` routes rooms into it.
 This includes a Control UI session that is a room's, and the Control UI on the main session when rooms share it, since

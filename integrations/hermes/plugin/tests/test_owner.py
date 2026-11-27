@@ -138,18 +138,19 @@ def test_local_terminal_runs_the_command(gated):
 
 
 @pytest.mark.parametrize(
-    "facts",
+    ("facts", "start"),
     [
-        {**dm("u1"), "chat_type": "group"},
-        dm("u2"),
-        {"platform": "api_server"},
+        ({**dm("u1"), "chat_type": "group"}, "/sentrook grant only runs in a direct message"),
+        ({**dm("u1"), "chat_type": "channel"}, "/sentrook grant only runs in a direct message"),
+        (dm("u2"), "Only the owner can run /sentrook grant"),
+        ({"platform": "api_server"}, "Only the owner can run /sentrook grant"),
     ],
 )
-def test_non_owner_is_refused_and_audited(gated, facts):
+def test_non_owner_is_refused_and_audited(gated, facts, start):
     current, handler, ran, commands = gated
     current.update(facts)
     reply = handler("exec 24h")
-    assert reply.startswith("Only the owner can run /sentrook grant")
+    assert reply.startswith(start)
     assert ran == []
     [rec] = commands()
     assert rec["verb"] == "grant"
@@ -189,3 +190,25 @@ def test_a_failing_owner_check_refuses(gated, monkeypatch):
     assert ran == []
     [rec] = commands()
     assert (rec["outcome"], rec["basis"], rec["reason"]) == ("refused", ["none"], "error")
+
+
+def test_a_group_or_server_channel_refusal_says_why_and_where_to_go(gated):
+    """The owner in a private server channel is refused as in a group, and told it is the chat, not
+    their account, and where the command does run."""
+    current, handler, ran, _commands = gated
+    current.update({**dm("u1"), "chat_type": "channel"})
+    reply = handler("exec 24h")
+    assert ran == []
+    assert "private channel counts too" in reply
+    assert "direct message with the bot" in reply
+    assert "hermes sentrook grant" in reply
+    assert "Nothing was changed." in reply
+
+
+def test_a_sender_refusal_names_the_allowed_users_and_the_machine(gated):
+    current, handler, _ran, _commands = gated
+    current.update(dm("u2"))
+    reply = handler("exec 24h")
+    assert "allowed users" in reply
+    assert "direct message with the bot" in reply
+    assert "private ones included" in reply
