@@ -58,10 +58,10 @@ HOSTS: dict[str, dict[str, Any]] = {
 }
 
 #: What Hermes's Session answer covers on a review (`session` in `review_lines`): later calls in this chat of the
-#: same tool, about the same parties, scoring no higher and adding no attack-type warning ("parties"), or, when the
-#: review names no party or the answer is not known to be the owner's, only this exact action ("exact").
+#: same tool, about the same parties, scoring at most 10 points higher and adding no attack-type warning ("parties"),
+#: or, when the review names no party or the answer is not known to be the owner's, only this exact action ("exact").
 SESSION_LINES = {
-    "parties": '"Session" also covers the same parties at no higher risk.',
+    "parties": '"Session" also covers the same parties at a similar risk.',
     "exact": '"Session" covers only this exact action.',
 }
 
