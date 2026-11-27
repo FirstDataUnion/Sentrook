@@ -19,7 +19,9 @@ such entity (in the call, a sibling, a file the call writes, or a later run's ro
 sibling or written file whose sends are not all written out: a shell command must be local commands and `curl` with
 a short list of options and every URL written out (no `git push`, `rsync`, `scp`, `docker push`, `wget`, interpreter,
 background job, process or command substitution, proxy, redirect following or address from a variable or config file),
-and Python must aim every request at a URL written in the code.
+and Python must aim every request at a URL written in the code. Nor is it covered when the call, a sibling, a written
+file or any earlier step of the session sets a proxy (`https_proxy=`, `ProxyHandler`, `proxies=`) or names curl's
+config file: HTTP clients read both, so a send written out to a granted host may still go through somewhere else.
 
 **Gate.** No floor fired; concealment is below `concealment_below` and the new content's exposure below
 `exposure_below`; the session is not tainted (before or in this scan). A session that holds sensitive data passes
@@ -31,6 +33,7 @@ Grants sanction where data goes; this never clears session flags and never lower
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 from collections.abc import Iterable
@@ -71,8 +74,9 @@ class GrantedSend:
     relief: list[Relief]
 
 
-def covering_grants(prepared: Prepared) -> list[str] | None:
-    """The grant refs that cover every place the call sends to, or None when the call is not a fully granted send."""
+def covering_grants(prepared: Prepared, extra: dict[str, str] | None = None) -> list[str] | None:
+    """The grant refs that cover every place the call sends to, or None when the call is not a fully granted send.
+    `extra`: entity id -> grant ref for a destination grant the owner has not set yet (a hint's re-score)."""
     sends = [
         e
         for e in prepared.entities
@@ -82,7 +86,7 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
     ]
     if not sends or not sends_off_host(prepared.pending, prepared.entities.pending()):
         return None
-    if not _routes_known(prepared):
+    if not _routes_known(prepared) or _proxy_configured(prepared):
         return None
     kinds = {g.grant_ref: g.kind for g in prepared.planir.grants}
     by_entity: dict[str, list[str]] = {}
@@ -90,6 +94,8 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
         if kinds.get(ref) == "destination":
             for eid in eids:
                 by_entity.setdefault(eid, []).append(ref)
+    for eid, ref in (extra or {}).items():
+        by_entity.setdefault(eid, []).append(ref)
     refs: list[str] = []
     for ent in sends:
         found = by_entity.get(ent.id)
@@ -183,6 +189,29 @@ def _shell_routes_known(command: str) -> bool:
     return True
 
 
+#: A proxy variable set, or curl's config file named: HTTP clients (curl, Python's urllib and requests) read both,
+#: so a send written out to a granted host may still go through somewhere else.
+_PROXY_SETTING = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:https?|all|ftp|socks|no)_proxy\s*=|curlrc|CURL_HOME|ProxyHandler|proxies\s*="
+)
+
+
+def _proxy_configured(prepared: Prepared) -> bool:
+    """The call, its siblings, a file it writes or any earlier step of the session sets a proxy variable, a proxy in
+    code, or names curl's config file."""
+    from ..probes.aira import written_file_call
+
+    texts = [
+        json.dumps(c.raw, default=str)
+        for c in (prepared.pending, *prepared.siblings, *prepared.resolved)
+    ]
+    written = written_file_call(prepared)
+    if written is not None:
+        texts.append(written.command or "")
+    texts += [json.dumps(h.arguments, default=str) for h in prepared.planir.history]
+    return any(_PROXY_SETTING.search(t) for t in texts)
+
+
 def _routes_known(prepared: Prepared) -> bool:
     """Every place the call, its siblings and a file it writes can send to is written out, so the entities show
     them all: a tool's own destination arguments, a shell command of local commands and literal `curl` / `wget`
@@ -270,10 +299,12 @@ def granted_send(
     merged: Merged,
     envelopes: list[Envelope],
     p: GrantedSendParams,
+    *,
+    extra: dict[str, str] | None = None,
 ) -> GrantedSend | None:
     """`claims` and `merged`: after the other relief. None when the call is not a fully granted send, the gate does
-    not hold, or no part changes a claim."""
-    refs = covering_grants(prepared)
+    not hold, or no part changes a claim. `extra`: as for `covering_grants`."""
+    refs = covering_grants(prepared, extra)
     if refs is None or not _gate(prepared, merged, envelopes, p):
         return None
     ref = refs[0]

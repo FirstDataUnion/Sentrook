@@ -1353,6 +1353,11 @@ stopped call, and the reach of any off-host send, none of which a grant touched.
     or the scanner's own block, is not the owner's refusal);
   - below the same 0.5, reach is held to 0.67 and the call judge's sensitivity to 0.34 (a credential's rule-based
     sensitivity and every floor stay).
+- Not covered either when the call, a sibling, a written file or any earlier step of the session sets a proxy
+  (`https_proxy=` and the other proxy variables, `ProxyHandler`, `proxies=`) or names curl's config file (`.curlrc`,
+  `CURL_HOME`): HTTP clients read both.
+- Grant hints: a `destination` candidate is also re-scored with the granted-send relief as it would apply once the
+  grant is set, so the hint for the owner's own service is offered where that relief would clear the call.
 - `conv-v11` is `conv-v10` with it on. `sentrook serve` and `sentrook scan` default to it (`SENTROOK_CONVERGENCE`);
   `conv-v1` to `conv-v10` stay selectable, unchanged.
 - Response: `grant_effect` (null when no grant matched): the grants that matched, the risk with the same answers and no
