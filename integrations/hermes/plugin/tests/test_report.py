@@ -11,7 +11,9 @@ import pytest
 import yaml
 
 import plugin
-from plugin import config, history, owner, report, traffic
+from plugin import config, history, report, traffic
+
+from .conftest import refusals
 
 #: Shared with the OpenClaw plugin's tests: both hosts build the same report for the same log.
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "traffic-log" / "report"
@@ -175,7 +177,7 @@ def test_bad_arguments_and_unknown_ids(log):
 def test_a_non_owner_is_refused(log, monkeypatch):
     monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "u1")
     log.facts.update({"platform": "mattermost", "chat_type": "group", "user_id": "u1"})
-    assert slash(log, "report aaaa1b2c --full") == owner.refusal("report")
+    assert slash(log, "report aaaa1b2c --full") in refusals("report")
 
 
 def test_the_cli_form_matches_the_slash_form(log, capsys):

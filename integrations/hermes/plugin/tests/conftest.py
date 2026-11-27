@@ -269,3 +269,11 @@ def review_fork(provenance, monkeypatch):
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     return state
+
+
+def refusals(verb):
+    """The replies an owner command may be refused with: from someone not the owner, or in a group chat or server
+    channel."""
+    from plugin import owner
+
+    return (owner.refusal(verb), owner.refusal(verb, ["group_chat"]))

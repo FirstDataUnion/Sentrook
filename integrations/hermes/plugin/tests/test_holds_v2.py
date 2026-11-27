@@ -16,6 +16,7 @@ import pytest
 import plugin
 from plugin import hold, passes, session_allow
 
+from .conftest import refusals
 from .test_hold import ABSENT, FIXTURES, held_call_harness, holds, resolutions, slash, turn
 
 FP = "afp1:message_send|ch:discord:#ops-reports"
@@ -315,7 +316,7 @@ def test_a_non_owner_is_refused(h, monkeypatch, verb):
     )
     monkeypatch.setattr(plugin, "session_surface", lambda: "telegram")
     arg = "" if verb == "passes" else f" {rec['hold']['id']}"
-    assert "Only the owner" in slash(h, f"{verb}{arg}")
+    assert slash(h, f"{verb}{arg}") in refusals(verb)
     assert len(holds(h)) == 1 and stored_passes(h) == []
 
 
