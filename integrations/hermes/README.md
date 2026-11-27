@@ -114,7 +114,8 @@ hermes sentrook history 5
 
 Each row is one scan: time, tool, risk score, the action Sentrook took, and the review outcome.
 `hermes sentrook why last` shows the most recent scan in detail: risk, tier scores, reason codes and the entities it
-found (hosts, files, recipients, channels).
+found (hosts, files, recipients, channels). When one of your grants matched the call, it also says what the grants
+lowered (or that they changed nothing) and which parts of the score no grant covers.
 
 If the history is empty, the agent has not made a tool call since the restart.
 

@@ -16,6 +16,22 @@ PARAMS_DIR = Path(__file__).resolve().parent / "params"
 
 
 @dataclass(frozen=True)
+class GrantedSendParams:
+    """The granted-send relief (`converge.granted_send`)."""
+
+    #: The call judge's misalignment is held to this value,
+    cap: float = 0.2
+    #: when it is below this one (also the ceiling for the consequence part).
+    max_misalignment: float = 0.5
+    #: Gate: concealment and the new content's exposure must be below these.
+    concealment_below: float = 0.3
+    exposure_below: float = 0.3
+    #: The consequence part: reach held to this value, and the call judge's sensitivity to the next.
+    reach: float = 0.67
+    sensitivity: float = 0.34
+
+
+@dataclass(frozen=True)
 class ConvergenceParams:
     name: str = "conv-v1"
     u: float = 0.25
@@ -84,6 +100,8 @@ class ConvergenceParams:
     oracle: OracleParams = field(default_factory=OracleParams)
     context: ContextParams = field(default_factory=ContextParams)
     jev_taint_threshold: float = 0.5
+    #: The granted-send relief (`converge.granted_send`): None = off.
+    granted_send: GrantedSendParams | None = None
 
 
 def _override(dc, section: dict[str, Any]):
@@ -109,6 +127,7 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     chr_ = raw.get("credential_home") or {}
     snr = raw.get("service_name_relief") or {}
     hints = raw.get("grant_hints") or {}
+    gs = raw.get("granted_send") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
     context_section = dict(raw.get("context") or {})
     lineage = context_section.pop("lineage", None)
@@ -163,4 +182,9 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         oracle=oracle,
         context=context,
         jev_taint_threshold=float((raw.get("jev") or {}).get("taint_threshold", 0.5)),
+        granted_send=(
+            _override(GrantedSendParams(), {k: float(v) for k, v in gs.items() if k != "enabled"})
+            if gs.get("enabled")
+            else None
+        ),
     )

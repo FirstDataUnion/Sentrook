@@ -6,7 +6,17 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { helpText, OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { actionOf, CHAT_CALL_TOTAL, callLines, formatWhy, recentScans, recordsBackward, reviewOf, WHY_CALL_HEADER } from "./history.ts";
+import {
+  actionOf,
+  CHAT_CALL_TOTAL,
+  callLines,
+  formatWhy,
+  grantEffectLines,
+  recentScans,
+  recordsBackward,
+  reviewOf,
+  WHY_CALL_HEADER,
+} from "./history.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 import { keepAllRecordsForTests } from "./traffic.ts";
@@ -352,4 +362,61 @@ test("a deny the Hermes review loop gave itself reads as such, as on Hermes", ()
   assert.equal(reviewOf(actionOf(scan, auto), auto), "auto-denied by the review loop");
   const other = { resolution: "deny", decided_by: "someone_else" };
   assert.equal(reviewOf(actionOf(scan, other), other), "denied");
+});
+
+const EFFECT_SCAN = (effect: unknown, riskNow = 40.2) => ({
+  request_id: "abcd1234-0000-4000-8000-000000000001",
+  ts: "2026-11-27T10:00:00Z",
+  tool: "message",
+  verdict: "allow",
+  decision: "allowed",
+  mode: "enforce",
+  response: { response_version: "2.0", status: "ok", risk: riskNow, enforced: null, grant_effect: effect },
+});
+
+test("why says what the owner's grants lowered and what they did not cover", () => {
+  const out = formatWhy(
+    EFFECT_SCAN({
+      grants: ["g_dest", "g_cred"],
+      risk_without: 62.23,
+      lowered: ["suspicion.misalignment", "consequence.reach"],
+      unchanged: [{ signal: "suspicion.overreach", value: 0.5, text: "the call does more than the request asks" }],
+    }),
+    null,
+  );
+  assert.ok(out.includes("grants: g_dest, g_cred lowered the risk from 62 to 40 (misalignment, reach)"), out);
+  assert.ok(out.includes("not covered by grants: the call does more than the request asks (0.50)"), out);
+});
+
+test("why says when a matched grant changed nothing", () => {
+  const lines = grantEffectLines(
+    EFFECT_SCAN(
+      {
+        grants: ["g_notion"],
+        risk_without: 56,
+        lowered: [],
+        unchanged: [
+          { signal: "suspicion.misalignment", value: 0.72, text: "the request does not clearly ask for this call" },
+          { signal: "consequence.reach", value: 1, text: "it sends data off this machine" },
+        ],
+      },
+      56,
+    ).response as never,
+  );
+  assert.deepEqual(lines, [
+    "grants: g_notion matched but did not change this score",
+    "not covered by grants: the request does not clearly ask for this call (0.72); it sends data off this machine (1.00)",
+  ]);
+});
+
+test("why shows no grant line without a grant effect, or with a malformed one", () => {
+  for (const bad of [undefined, null, "x", { grants: [] }, { grants: [1, ""] }]) {
+    assert.deepEqual(grantEffectLines(EFFECT_SCAN(bad).response as never), [], JSON.stringify(bad));
+  }
+  assert.ok(!formatWhy(EFFECT_SCAN(undefined), null).includes("grants:"));
+});
+
+test("why says when grants lowered parts but not the risk", () => {
+  const eff = { grants: ["g_1"], risk_without: 56.2, lowered: ["suspicion.distrust"], unchanged: [] };
+  assert.deepEqual(grantEffectLines(EFFECT_SCAN(eff, 56).response as never), ["grants: g_1 lowered distrust but not the risk (56)"]);
 });

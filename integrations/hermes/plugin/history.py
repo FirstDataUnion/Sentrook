@@ -413,6 +413,51 @@ def _entity_order(key: str) -> tuple[float, str]:
     return (float(digits) if digits.isdigit() else math.inf, key)
 
 
+def _finite(v: Any) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return float(v)
+
+
+def grant_effect_lines(resp: dict[str, Any]) -> list[str]:
+    """What the owner's grants did to this score (the response's `grant_effect`), so the owner can see why a grant
+    did or did not help: the grants that matched, the risk without them and the parts they lowered, then the largest
+    parts they did not cover. Empty when no grant matched, or for a scanner that does not send it."""
+    eff = resp.get("grant_effect")
+    if not isinstance(eff, dict):
+        return []
+    refs = [_text(g, 60) for g in eff.get("grants") or [] if isinstance(g, str) and g][:6]
+    if not refs:
+        return []
+    names = ", ".join(refs)
+    lowered = [
+        _text(s.split(".", 1)[-1].replace("_", " "), 40)
+        for s in eff.get("lowered") or []
+        if isinstance(s, str) and s
+    ][:6]
+    without, now = _finite(eff.get("risk_without")), _finite(resp.get("risk"))
+    if lowered and without is not None and now is not None and _half_up(without) > _half_up(now):
+        head = f"grants: {names} lowered the risk from {_half_up(without)} to {_half_up(now)} ({', '.join(lowered)})"
+    elif lowered and now is not None:
+        head = f"grants: {names} lowered {', '.join(lowered)} but not the risk ({_half_up(now)})"
+    elif lowered:
+        head = f"grants: {names} lowered {', '.join(lowered)}"
+    else:
+        head = f"grants: {names} matched but did not change this score"
+    out = [head]
+    parts = []
+    for p in eff.get("unchanged") or []:
+        if not isinstance(p, dict) or not isinstance(p.get("text"), str) or not p["text"].strip():
+            continue
+        v = _finite(p.get("value"))
+        parts.append(
+            _text(p["text"], 80) + (f" ({min(max(v, 0.0), 1.0):.2f})" if v is not None else "")
+        )
+    if parts:
+        out.append("not covered by grants: " + "; ".join(parts[:4]))
+    return out
+
+
 def format_why(
     scan: dict[str, Any],
     resolution: dict[str, Any] | None,
@@ -455,6 +500,7 @@ def format_why(
         if isinstance(code, str) and code and _text(code, 80) not in codes:
             codes.append(_text(code, 80))
     lines.append(f"reasons: {', '.join(codes) or 'none'}")
+    lines += grant_effect_lines(resp)
     entities = resp.get("entities") if isinstance(resp.get("entities"), dict) else {}
     shown = [
         f"  {_text(key, 12)} {_text(e.get('kind') or '?', 20)}: {_text(e.get('display'), 200)}"

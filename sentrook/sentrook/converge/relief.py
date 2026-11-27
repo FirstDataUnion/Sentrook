@@ -95,6 +95,12 @@ class Relief:
     excluded: tuple[tuple[str, str | None], ...]
 
 
+def granted_send_relief(grant_ref: str, effect: str, reason: str) -> Relief:
+    """The record of a granted-send part (`converge.granted_send`): named by a grant that covers the send, on the whole
+    call, excluding nothing (the part holds claim values down rather than removing claims)."""
+    return Relief(grant_ref, None, effect, reason, ())
+
+
 #: Trigger kinds the host generates from a stored task: the only ones `request_named_trigger_kinds` may add.
 _HOST_TASK_KINDS = frozenset({TriggerKind.SCHEDULED, TriggerKind.HEARTBEAT, TriggerKind.SUBAGENT})
 _OPEN_BASIS = frozenset({SenderBasis.GROUP_CHAT, SenderBasis.HOST_OPEN_ACCESS})
