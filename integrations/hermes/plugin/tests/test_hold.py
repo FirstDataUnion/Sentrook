@@ -27,7 +27,7 @@ from plugin import commands, config, grants, history, hold, scan_failure_notice,
 from plugin.scan_error_policy import ScanFailure
 from plugin.store import read_time
 
-from .conftest import FAKE_LAUNCHER
+from .conftest import FAKE_LAUNCHER, refusals
 from .test_plugin import dump_planirs
 
 FIXTURES = json.loads(
@@ -398,7 +398,7 @@ def test_approve_is_for_the_owner_only(h, monkeypatch):
         lambda: {"platform": "telegram", "chat_type": "group", "user_id": "u9"},
     )
     monkeypatch.setattr(plugin, "session_surface", lambda: "telegram")
-    assert "Only the owner" in slash(h, f"approve {rec['hold']['id']}")
+    assert slash(h, f"approve {rec['hold']['id']}") in refusals("approve")
     assert len(holds(h)) == 1
 
 
@@ -832,7 +832,7 @@ def test_why_with_a_hold_id_is_for_the_owner_only(h, monkeypatch):
         lambda: {"platform": "telegram", "chat_type": "group", "user_id": "u9"},
     )
     monkeypatch.setattr(plugin, "session_surface", lambda: "telegram")
-    assert "Only the owner" in slash(h, f"why {rec['hold']['id']}")
+    assert slash(h, f"why {rec['hold']['id']}") in refusals("why")
 
 
 def test_a_snooze_never_relieves_an_unattended_review(h):

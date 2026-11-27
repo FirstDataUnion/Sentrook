@@ -19,8 +19,10 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import history, owner, snooze, store
+from plugin import history, snooze, store
 from plugin.store import read_time
+
+from .conftest import refusals
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; `S1` is the session the fixture's first entry belongs to.
@@ -716,11 +718,11 @@ def test_owner_attends_reads_the_request_as_the_scanner_does(planir, attends):
 def test_only_the_owner_may_snooze(term):
     term.facts.update(platform="telegram", chat_type="group", user_id="u9")
     reply = slash(term, "snooze --all")
-    assert reply == owner.refusal("snooze")
+    assert reply in refusals("snooze")
     assert not term.file.exists()
     audit = records(term, "command")[-1]
     assert (audit["verb"], audit["outcome"]) == ("snooze", "refused")
-    assert slash(term, "snooze status") == owner.refusal("snooze")
+    assert slash(term, "snooze status") in refusals("snooze")
 
 
 def test_duration_default_limits_and_refusals(term):

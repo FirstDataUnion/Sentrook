@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import history, owner, traffic
+from plugin import history, traffic
+
+from .conftest import refusals
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same log.
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "traffic-log"
@@ -173,7 +175,7 @@ def test_a_missing_or_disabled_log(log):
 def test_a_non_owner_is_refused_and_audited(log, monkeypatch, facts, verb):
     monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "u1")
     log.facts.update(facts)
-    assert slash(log, f"{verb} 5") == owner.refusal(verb)
+    assert slash(log, f"{verb} 5") in refusals(verb)
     [rec] = commands(log)
     assert (rec["verb"], rec["outcome"]) == (verb, "refused")
 
