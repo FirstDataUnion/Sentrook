@@ -307,6 +307,12 @@ class NewInput(_Model):
     channel: Channel | None = None
     sender: Sender | None = None
     subagent_session_ref: str | None = None
+    trusted_by: str | None = Field(
+        default=None,
+        description="Tool results of a file read only: the `grant_ref` of a `folder` grant under which the plugin "
+        "found the file it read unchanged since the owner trusted the folder. Sentrook checks it against the "
+        "request and otherwise ignores it",
+    )
 
 
 class ResultSummary(_Model):

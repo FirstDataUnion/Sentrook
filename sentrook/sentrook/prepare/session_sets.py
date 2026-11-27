@@ -20,6 +20,7 @@ matched, so the bare session flag keeps its weight.
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -34,6 +35,7 @@ from .entities import (
     EntityKind,
     Role,
     extract_call,
+    is_under,
     normalise_path,
     resolve_token,
     shell_segments,
@@ -495,6 +497,53 @@ def _names_file(text: str, name: str) -> bool:
         any(c in word for c in "*?[") and fnmatch.fnmatchcase(name, word)
         for word in _NAME_SPLIT.split(flat)
     )
+
+
+#: Characters that hide text from a person reading the file: bidirectional controls, zero-width characters and
+#: joiners, invisible operators, the byte-order mark inside text, and Unicode tag characters. A rules or
+#: instruction file has no need for them; they are how instructions are slipped past a reviewer.
+HIDDEN_CHARS = re.compile(
+    "[\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f]"
+)
+
+
+def trusted_folder_read(
+    planir: Any,
+    new_input: Any,
+    call: CanonicalCall | None,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+) -> str | None:
+    """The file (normalised) that `new_input` read when the plugin's attestation holds, else None: the input
+    names a sent grant (`trusted_by`) that is a live `folder` grant on a folder Sentrook trusts
+    (`grants.folder_root`), it is the result of a plain file read (`call`) whose path is inside that folder,
+    and its content carries no hidden characters (`HIDDEN_CHARS`). The caller adds the session guards (not
+    written or tainted in this session, no change since)."""
+    from .grants import folder_root, lapse
+
+    ref = getattr(new_input, "trusted_by", None)
+    if not isinstance(ref, str) or not ref or call is None:
+        return None
+    if call.tool_kind is not ToolKind.FILE_READ or not call.path:
+        return None
+    grant = next((g for g in planir.grants if g.grant_ref == ref), None)
+    if grant is None or grant.kind != "folder" or lapse(grant, planir) is not None:
+        return None
+    root = folder_root(grant.pattern, home=home)
+    if root is None:
+        return None
+    path = _resolved(
+        normalise_path(call.path, home=home, workspace_root=workspace_root),
+        call,
+        home=home,
+        workspace_root=workspace_root,
+    )
+    if not path.startswith("/") or path == root or not is_under(posixpath.normpath(path), root):
+        return None
+    if HIDDEN_CHARS.search(new_input.content or ""):
+        return None
+    return posixpath.normpath(path)
 
 
 def owner_config_path(

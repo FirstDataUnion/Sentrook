@@ -26,6 +26,7 @@ from . import (
     commands,
     consent,
     conversation,
+    folders,
     grants,
     history,
     hold,
@@ -2202,6 +2203,29 @@ def on_post_approval_response(**kw: Any) -> None:
         logger.warning("post_approval_response failed: %s", exc)
 
 
+#: Hermes tools that read one file whole or in part: a read `folders.attest` may vouch for.
+FOLDER_READ_TOOLS = frozenset({"read_file"})
+
+
+def _trusted_folder(cfg: Any, store: Store, sid: str, args: Any) -> str | None:
+    """The id of the owner's folder grant that vouches for the file this read took (`folders.attest`), or None."""
+    path = args.get("path") if isinstance(args, dict) else None
+    if not isinstance(path, str):
+        return None
+    live = [
+        (g["_id"], g["pattern"])
+        for g in grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid))
+        if g.get("kind") == "folder" and isinstance(g.get("_id"), str)
+    ]
+    if not live:
+        return None
+    try:
+        return folders.attest(cfg.state_dir, live, path, cwd=os.getcwd(), home=str(Path.home()))
+    except Exception as exc:  # noqa: BLE001 - a read the plugin cannot check is simply not vouched for
+        logger.debug("folder check failed: %s", exc)
+        return None
+
+
 def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", **kw: Any) -> None:
     """Buffer the result (exactly what the model saw) for the next scan, and add it to the conversation
     log; blocked calls add nothing."""
@@ -2251,8 +2275,14 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                 redacted = redactor.string(text)
                 capped, truncated, _ = cap_head_tail(redacted, cfg.input_cap_bytes)
                 s["input_seq"] += 1
+                trusted = (
+                    _trusted_folder(cfg, store, sid, args if args else entry.get("arguments"))
+                    if status == "ok" and entry["tool"] in FOLDER_READ_TOOLS
+                    else None
+                )
                 s["buffer"].append(
                     {
+                        **({"_trusted_grant": trusted} if trusted else {}),
                         "input_seq": s["input_seq"],
                         "kind": "tool_result",
                         "call_id": entry["call_id"],

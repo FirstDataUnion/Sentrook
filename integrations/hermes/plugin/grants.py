@@ -25,6 +25,12 @@ session grant with its `session_ref` and a grant with an expiry with its `expire
 checks both. An expired grant is not sent, and is dropped from the file on the next change. Other
 patterns are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
 
+A `folder` grant (`grant folder <dir> [--follow origin/main]`) trusts a folder the owner keeps as their own: a file
+the agent reads from it while it is unchanged since then counts as the owner's own content, not outside text
+(`folders`). It is `persistent` unless the owner asks for `session`. Setting it records what the folder holds; setting
+it again for the same folder replaces it and records the folder afresh. It is only ever set by command or from the
+setup screen: a folder grant in the plugin settings is never sent, and a suggested grant is never a folder.
+
 Every change is written to the traffic log as a `grants` record (none when the owner has turned the
 traffic log off).
 """
@@ -33,17 +39,19 @@ from __future__ import annotations
 
 import re
 import secrets
+import subprocess
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from . import folders
 from .config import PluginConfig, credential_pattern_ok, destination_ok, parse_grants
 from .planir import binding_problem
 from .store import Store, file_lock, read_time
 
-KINDS = ("destination", "file", "provider", "repo", "credential")
+KINDS = ("destination", "file", "provider", "repo", "credential", "folder")
 #: Why the grant command refuses a destination `destination_ok` refuses; `{pattern}` is the pattern as typed.
 TOO_BROAD = (
     '"{pattern}" is too broad for a destination grant: a wildcard may cover only one registrable domain '
@@ -129,6 +137,11 @@ def effective(
     for raw, g in _file_grants(data):
         if expired(raw, now) or (g["scope"] == "session" and _bound(raw) != session_ref):
             continue
+        if g["kind"] == "folder":
+            if not isinstance(raw.get("id"), str):
+                continue
+            # which manifest vouches for a read (`folders.attest`); never sent (`planir.relevant_grants`)
+            g["_id"] = raw["id"]
         if g["scope"] == "session":
             g["session_ref"] = session_ref
         at = read_time(raw.get("expires_at"))
@@ -170,7 +183,12 @@ def _session_of(raw: dict[str, Any], ref: str | None) -> str:
 
 
 def format_grants(
-    cfg: PluginConfig, data: dict[str, Any] | None, now: datetime, cmd: Cmd, ref: str | None = None
+    cfg: PluginConfig,
+    data: dict[str, Any] | None,
+    now: datetime,
+    cmd: Cmd,
+    ref: str | None = None,
+    state_dir: Path | None = None,
 ) -> str:
     """The grants in force, as seen from the session `ref` (None: no current session)."""
     rows = []
@@ -187,6 +205,8 @@ def format_grants(
             details.append("too broad, never sent")
         if g.get("allows"):
             details.append(f"allows {','.join(g['allows'])}")
+        if g["kind"] == "folder" and state_dir is not None and isinstance(raw.get("id"), str):
+            details.append(folders.describe(folders.load(state_dir, raw["id"])))
         if "expires_at" in raw:
             at = read_time(raw["expires_at"])
             past = expired(raw, now)
@@ -266,11 +286,13 @@ def grant_usage(cmd: Cmd) -> str:
     return (
         f"usage: {cmd('grant')} <kind> <pattern> [--persistent | --scope session|persistent] "
         "[--session <ref>] [--allows read,write] [--expires 12h]\n"
-        "kind is destination, file, provider, repo (github.com/<owner>/<repo>) or credential "
-        "(NAME@host: the key and the host it is meant for); --allows is for file grants; scope defaults to "
+        "kind is destination, file, provider, repo (github.com/<owner>/<repo>), credential "
+        "(NAME@host: the key and the host it is meant for) or folder (a folder of your own whose files count as "
+        "yours while unchanged; --follow origin/main to follow that branch); --allows is for file grants; scope "
+        "defaults to "
         "session: this session only, or the one --session names (a ref from "
         f"{cmd('history')}); cron jobs, subagents and other chats need --persistent. "
-        "A credential grant is persistent unless --scope session is given"
+        "A credential or folder grant is persistent unless --scope session is given"
     )
 
 
@@ -297,7 +319,7 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
         if name == "persistent" and not eq:
             opts["scope"] = "persistent"
             continue
-        if name not in ("scope", "session", "allows", "expires"):
+        if name not in ("scope", "session", "allows", "expires", "follow"):
             return f"Unknown option --{_clean(name, 40)}."
         if not eq:
             if i >= len(tokens):
@@ -309,7 +331,7 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
         return ""
     kind, pattern = pos[0].lower(), pos[1]
     if kind not in KINDS:
-        return f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file, provider, repo or credential.'
+        return f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file, provider, repo, credential or folder.'
     if len(pattern) > MAX_PATTERN or not pattern.isprintable():
         return f"The pattern must be at most {MAX_PATTERN} printable characters."
     if kind == "credential":
@@ -324,12 +346,24 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
             )
     if kind == "destination" and not destination_ok(pattern):
         return TOO_BROAD.format(pattern=_clean(pattern, 80))
-    # a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
-    default = "persistent" if kind == "credential" and "session" not in opts else "session"
+    if "follow" in opts:
+        if kind != "folder":
+            return "--follow applies to folder grants only."
+        try:
+            folders.parse_follow(opts["follow"])
+        except folders.FolderError as exc:
+            return str(exc)
+    # a credential or folder grant is persistent unless the owner asks for a session (naming one with --session
+    # asks too)
+    default = (
+        "persistent" if kind in ("credential", "folder") and "session" not in opts else "session"
+    )
     scope = opts.get("scope", default)
     if scope not in SCOPES:
         return f'Unknown scope "{_clean(scope, 40)}": use session or persistent.'
     grant: dict[str, Any] = {"kind": kind, "pattern": pattern, "scope": scope}
+    if "follow" in opts:
+        grant["follow"] = opts["follow"].strip()
     if "session" in opts:
         if scope != "session":
             return "--session applies to session grants only."
@@ -387,6 +421,31 @@ def _change(
         return reply, record
 
 
+def record_folder(
+    state_dir: Path, pattern: str, follow: str | None, now: datetime, home: str | None = None
+) -> tuple[str, dict[str, Any]] | str:
+    """The folder a folder grant names (its real path, ending in `/`) and the record of what it holds now
+    (`folders.build`), or why it cannot be trusted."""
+    try:
+        real = folders.resolve(pattern, home=home or str(Path.home()), state_dir=state_dir)
+        return real + "/", folders.build(real, follow=follow, now=now)
+    except folders.FolderError as exc:
+        return f"Not trusted: {exc}"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"Not trusted: the folder could not be read ({_clean(exc, 120)})."
+
+
+def _drop_folder(data: dict[str, Any], pattern: str) -> list[dict[str, Any]]:
+    """Takes the folder grants on `pattern` out of `data` (a folder set again replaces them) and returns them."""
+    gone = [
+        g
+        for g in data["grants"]
+        if isinstance(g, dict) and g.get("kind") == "folder" and g.get("pattern") == pattern
+    ]
+    data["grants"] = [g for g in data["grants"] if not any(g is x for x in gone)]
+    return gone
+
+
 def add_grant(
     state_dir: Path,
     rest: str,
@@ -394,6 +453,7 @@ def add_grant(
     by: dict[str, Any],
     now: datetime,
     cmd: Cmd,
+    home: str | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """`grant ...` from the session `ref` (None: no current session)."""
     parsed = parse_grant(rest, cmd)
@@ -404,12 +464,23 @@ def add_grant(
         parsed.setdefault("session_ref", ref)
         if parsed["session_ref"] is None:
             return _no_session(cmd), None
+    manifest: dict[str, Any] | None = None
+    if parsed["kind"] == "folder":
+        got = record_folder(state_dir, parsed["pattern"], parsed.get("follow"), now, home)
+        if isinstance(got, str):
+            return got, None
+        parsed["pattern"], manifest = got
+    replaced: list[dict[str, Any]] = []
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        if manifest is not None:
+            replaced.extend(_drop_folder(data, parsed["pattern"]))
         taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)}
         gid = f"gr-{secrets.token_hex(3)}"
         while gid in taken:
             gid = f"gr-{secrets.token_hex(3)}"
+        if manifest is not None:
+            folders.save(state_dir, gid, manifest)
         span = parsed.pop("expires_in", None)
         entry = {"id": gid, **parsed, "granted_at": _iso(now)}
         if span is not None:
@@ -426,15 +497,30 @@ def add_grant(
             details.append(f"allows {','.join(entry['allows'])}")
         if span is not None:
             details.append(f"expires {_show(now + span)}")
+        if manifest is not None:
+            details.append(folders.describe(manifest))
+        if replaced:
+            details.append(f"replaces {', '.join(str(g.get('id')) for g in replaced)}")
         reply = f"Granted {gid}: {entry['kind']} {entry['pattern']} ({', '.join(details)})."
+        if manifest is not None:
+            reply += (
+                " A file the agent reads from it counts as yours while it is unchanged; set it again after you "
+                "change the folder"
+                + (" (it follows the branch by itself)." if entry.get("follow") else ".")
+            )
         if entry["scope"] == "session":
             reply += " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)."
         return reply, {"op": "grant", "entry": entry}
 
-    return _change(state_dir, now, fn)
+    reply, record = _change(state_dir, now, fn)
+    if record is not None:
+        for g in replaced:
+            if isinstance(g.get("id"), str):
+                folders.remove(state_dir, g["id"])
+    return reply, record
 
 
-def hint_grant(hint: Any) -> dict[str, Any] | None:
+def hint_grant(hint: Any, *, folder: bool = False) -> dict[str, Any] | None:
     """A suggested grant as the owner could have typed it: run through `parse_grant` with the same
     rules as `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more
     than the command could. Kind, pattern and allows only; the scope is always persistent and the
@@ -444,7 +530,17 @@ def hint_grant(hint: Any) -> dict[str, Any] | None:
     kind, pattern, allows = hint.get("kind"), hint.get("pattern"), hint.get("allows")
     if not isinstance(kind, str) or not isinstance(pattern, str):
         return None
+    # Trusting a folder records what it holds: only the owner's command or the setup screen (`folder`) sets one,
+    # never a grant Sentrook suggested.
+    is_folder = kind.strip().lower() == "folder"
+    if is_folder and not folder:
+        return None
+    follow = hint.get("follow")
+    if follow is not None and (not is_folder or not isinstance(follow, str) or not follow.strip()):
+        return None
     words = [kind, pattern.strip(), "--persistent"]
+    if follow is not None:
+        words.append("--follow=" + follow.strip())
     if allows is not None:
         # Each one known verb, exactly: no spaces, commas or anything the command line would split.
         if not isinstance(allows, list) or not all(
@@ -455,10 +551,12 @@ def hint_grant(hint: Any) -> dict[str, Any] | None:
     # One word each, as typed: a kind or pattern with spaces could not have been typed either.
     if any(not w or any(c.isspace() for c in w) for w in words[:2]):
         return None
+    if any(any(c.isspace() for c in w) for w in words[3:]):
+        return None
     parsed = parse_grant(" ".join(words), lambda sub: sub)
     if isinstance(parsed, str):
         return None
-    return {k: v for k, v in parsed.items() if k in ("kind", "pattern", "allows")}
+    return {k: v for k, v in parsed.items() if k in ("kind", "pattern", "allows", "follow")}
 
 
 #: Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a
@@ -606,6 +704,8 @@ def revoke(
         for i, g in enumerate(data["grants"]):
             if isinstance(g, dict) and g.get("id") == gid:
                 del data["grants"][i]
+                if g.get("kind") == "folder":
+                    folders.remove(state_dir, gid)
                 return (
                     f"Revoked {gid}: {_clean(g.get('kind'))} {_clean(g.get('pattern'))}.",
                     {"op": "revoke", "entry": g},

@@ -171,7 +171,7 @@
         "note": "x",
         "reason": "Unknown field"
       },
-      "error": "Unknown field \"note\": a grant takes kind, pattern, allows, expires and reason."
+      "error": "Unknown field \"note\": a grant takes kind, pattern, allows, expires, follow and reason."
     },
     {
       "item": {
@@ -209,7 +209,7 @@
         "pattern": "api.example.com",
         "reason": "No kind"
       },
-      "error": "A grant needs a kind: destination, file, provider, repo or credential."
+      "error": "A grant needs a kind: destination, file, provider, repo, credential or folder."
     },
     {
       "item": {
@@ -217,7 +217,7 @@
         "pattern": "api.example.com",
         "reason": "Unknown kind"
       },
-      "error": "Unknown grant kind \"website\": use destination, file, provider, repo or credential."
+      "error": "Unknown grant kind \"website\": use destination, file, provider, repo, credential or folder."
     },
     {
       "item": {

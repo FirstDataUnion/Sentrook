@@ -47,7 +47,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import grants, history, hold
+from . import folders, grants, history, hold
 from .config import SHARED_SECOND_LEVEL, PluginConfig, destination_ok
 from .planir import binding_problem, server_identity
 from .store import Store, file_lock, read_time
@@ -146,9 +146,10 @@ def key_of(item: dict[str, Any]) -> str:
     if item.get("binding"):
         return json.dumps(["binding", item["pattern"]], ensure_ascii=False, separators=(",", ":"))
     allows = sorted(item["allows"]) if item.get("allows") else None
-    return json.dumps(
-        [item["kind"], item["pattern"], allows], ensure_ascii=False, separators=(",", ":")
-    )
+    key = [item["kind"], item["pattern"], allows]
+    if item.get("follow"):
+        key.append(item["follow"])
+    return json.dumps(key, ensure_ascii=False, separators=(",", ":"))
 
 
 def _grant_key(item: dict[str, Any]) -> str:
@@ -439,7 +440,13 @@ def proposal_item(raw: Any) -> dict[str, Any] | None:
     if raw.get("binding") not in (None, False) or not _raw_ok(raw.get("pattern")):
         return None
     grant = grants.hint_grant(
-        {"kind": raw.get("kind"), "pattern": raw.get("pattern"), "allows": raw.get("allows")}
+        {
+            "kind": raw.get("kind"),
+            "pattern": raw.get("pattern"),
+            "allows": raw.get("allows"),
+            **({"follow": raw["follow"]} if raw.get("follow") is not None else {}),
+        },
+        folder=True,
     )
     if grant is None:
         return None
@@ -611,7 +618,7 @@ def valid_item(cand: dict[str, Any]) -> dict[str, Any] | None:
         if binding_problem(pattern):
             return None
         return {"binding": True, "kind": "destination", "pattern": pattern, "allows": None}
-    grant = grants.hint_grant(cand)
+    grant = grants.hint_grant(cand, folder=True)
     if grant is None or not _raw_ok(grant["pattern"]):
         return None
     return {"binding": False, "allows": None, **grant}
@@ -633,6 +640,16 @@ def item_warnings(item: dict[str, Any]) -> list[str]:
             out.append("this covers your whole home folder or more")
     if not item.get("binding") and item["kind"] == "provider" and whole_registry(item["pattern"]):
         out.append("this covers a whole package registry or every server")
+    if not item.get("binding") and item["kind"] == "folder":
+        out.append(
+            "the agent follows what these files say as your own instructions; trust only a folder you write and "
+            "maintain yourself"
+        )
+        if item.get("follow"):
+            out.append(
+                f"anyone who can push to {item['follow']} on that remote, the agent included if it can, decides "
+                "what is trusted"
+            )
     return out
 
 
@@ -670,6 +687,12 @@ def describe(item: dict[str, Any], minutes: int | None) -> str:
         what = f"Use tools from the provider `{p}`"
     elif item["kind"] == "repo":
         what = f"Run install scripts from the repository `{p}`"
+    elif item["kind"] == "folder":
+        what = (
+            f"Count the files in `{p}` as your own while they match `{item['follow']}` on its remote"
+            if item.get("follow")
+            else f"Count the files in `{p}` as your own while they are as they are now"
+        )
     else:
         name, _, host = p.partition("@")
         what = f"Send the key `{name}` to `{host}`"
@@ -708,6 +731,7 @@ def build(
                 "kind": cand["kind"],
                 "pattern": cand["pattern"],
                 "allows": list(cand["allows"]) if cand.get("allows") else None,
+                **({"follow": cand["follow"]} if cand.get("follow") else {}),
                 "sources": [],
             }
         items[k]["sources"].append(source)
@@ -816,6 +840,7 @@ def build(
                 "kind": item["kind"],
                 "pattern": item["pattern"],
                 "allows": item["allows"],
+                **({"follow": item["follow"]} if item.get("follow") else {}),
                 "minutes": minutes,
                 "tags": list(dict.fromkeys(tags)),
                 "proposals": list(dict.fromkeys(s["id"] for s in agent)),
@@ -1010,7 +1035,7 @@ def _stored_item(raw: Any) -> dict[str, Any] | None:
             return None
         grant = {"kind": "destination", "pattern": raw["pattern"]}
     else:
-        grant = grants.hint_grant(raw)
+        grant = grants.hint_grant(raw, folder=True)
         if grant is None:
             return None
     return {
@@ -1126,6 +1151,8 @@ def _apply_one(
             "op": "bind_add",
             "entry": entry,
         }
+    if item["kind"] == "folder":
+        return _apply_folder(cfg, data, item, tags, parsed, who, now, n)
     want = sorted(item["allows"]) if item.get("allows") else None
     for g in data["grants"]:
         if (
@@ -1167,6 +1194,60 @@ def _apply_one(
         "op": "grant",
         "entry": entry,
     }
+
+
+def _apply_folder(
+    cfg: PluginConfig,
+    data: dict[str, Any],
+    item: dict[str, Any],
+    tags: list[str],
+    parsed: dict[str, Any],
+    who: dict[str, Any],
+    now: datetime,
+    n: int,
+) -> tuple[str, dict[str, Any] | None]:
+    """A folder item: records what the folder holds now (`grants.record_folder`) and replaces any folder grant on the
+    same folder, as `grant folder` does."""
+    got = grants.record_folder(cfg.state_dir, item["pattern"], item.get("follow"), now)
+    if isinstance(got, str):
+        return f"{n}. {got}", None
+    pattern, manifest = got
+    gone = grants._drop_folder(data, pattern)
+    minutes = (
+        None
+        if parsed["until_revoked"]
+        else parsed["minutes"]
+        if parsed["minutes"] is not None
+        else item["minutes"]
+    )
+    taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)} | {
+        g.get("id") for g in gone
+    }
+    gid = f"gr-{secrets.token_hex(3)}"
+    while gid in taken:
+        gid = f"gr-{secrets.token_hex(3)}"
+    folders.save(cfg.state_dir, gid, manifest)
+    for g in gone:
+        if isinstance(g.get("id"), str):
+            folders.remove(cfg.state_dir, g["id"])
+    entry: dict[str, Any] = {"id": gid, "kind": "folder", "pattern": pattern}
+    if item.get("follow"):
+        entry["follow"] = item["follow"]
+    entry.update({"scope": "persistent", "granted_at": _iso(now)})
+    if minutes is not None:
+        entry["expires_at"] = _iso(now + timedelta(minutes=minutes))
+    entry.update({"set_by": who, "source": tags})
+    data["grants"].append(entry)
+    life = (
+        "until you revoke it"
+        if minutes is None
+        else f"expires {_show(now + timedelta(minutes=minutes))}"
+    )
+    replaced = f", replaces {', '.join(str(g.get('id')) for g in gone)}" if gone else ""
+    return (
+        f"{n}. Trusted {gid}: folder `{pattern}` ({folders.describe(manifest)}, {life}{replaced}).",
+        {"op": "grant", "entry": entry},
+    )
 
 
 def _close(

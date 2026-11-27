@@ -217,7 +217,9 @@ def run_grants(
 ) -> str:
     cfg = resolve_config(settings, env)
     ref = session_ref(session_id) if session_id else None
-    return grants.format_grants(cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD, ref)
+    return grants.format_grants(
+        cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD, ref, state_dir=cfg.state_dir
+    )
 
 
 def run_grant(

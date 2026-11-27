@@ -50,6 +50,11 @@ Matching, by kind:
 - `credential`: `NAME@host`, a credential's environment name (or `PREFIX*`) and the host it is meant for
   (or `*.example.com`). Not matched here: the credential-home check (`prepare.credential_home`) reads it as it
   reads a library entry, and convergence relieves the call when that check holds.
+- `folder`: a directory the owner trusts as their own (`/home/me/src/jobs/`). Not matched against entities: a
+  file read the plugin attests as unchanged since the owner trusted the folder (`NewInput.trusted_by`) is read
+  as the owner's own content by preparation, and nothing else is relieved. The pattern must name one folder
+  (`folder_ok`): no glob, not `/`, not the home folder or one above it, not the host's own folders. Any
+  other folder pattern covers nothing and is reported as lapsed (`too_broad`).
 """
 
 from __future__ import annotations
@@ -151,6 +156,8 @@ GRANT_KINDS: dict[str, GrantKind] = {
         GrantKind("credential", reason="relief.credential_grant"),
         # Read by Jev from the grants block; no deterministic relief yet.
         GrantKind("automation"),
+        # Read by preparation through `NewInput.trusted_by` (`folder_root`); no entity relief.
+        GrantKind("folder"),
     )
 }
 
@@ -162,6 +169,8 @@ def lapse(grant: Grant, planir: PlanIR) -> str | None:
     """Why `grant` does not apply to this request (`too_broad`, `expired`, `unbound_session`,
     `other_session`), or None when it does."""
     if grant.kind == "destination" and not destination_ok(grant.pattern):
+        return "too_broad"
+    if grant.kind == "folder" and folder_root(grant.pattern, home=planir.host.home) is None:
         return "too_broad"
     if grant.expires_at is not None and _aware(grant.expires_at) <= _aware(planir.sent_at):
         return "expired"
@@ -203,6 +212,51 @@ def over_broad(pattern: str) -> bool:
 
 
 _GLOB_CHARS = re.compile(r"[*?\[\]]")
+#: Folders the host and Sentrook keep their own files in, relative to the home (and `/etc/hermes`): never a
+#: folder the owner trusts as their own content, whatever is inside.
+_HOST_FOLDERS = (".hermes", ".openclaw")
+_SYSTEM_HOST_FOLDERS = ("/etc/hermes",)
+
+
+def folder_root(pattern: str, *, home: str | None) -> str | None:
+    """The folder a `folder` grant names, as an absolute path without a trailing `/`, or None when the pattern
+    may not name a trusted folder: empty, relative, with a glob character, `/` or one level below it, the home
+    folder or a folder above it, or inside the host's own folders (`~/.hermes`, `~/.openclaw`,
+    `/etc/hermes`). `~` and `$HOME` are read against `home`; without a home they name nothing. `..` is
+    resolved first, so it cannot climb into a refused folder."""
+    pat = pattern.strip()
+    if not pat or _GLOB_CHARS.search(pat) or not pat.isprintable():
+        return None
+    home_root = home.rstrip("/") if home and home.strip("/") else None
+    for prefix in ("~", "$HOME"):
+        if pat == prefix or pat.startswith(prefix + "/"):
+            if home_root is None:
+                return None
+            pat = home_root + pat[len(prefix) :]
+            break
+    if not pat.startswith("/"):
+        return None
+    root = posixpath.normpath(pat)
+    if root.startswith("//"):
+        root = "/" + root.lstrip("/")
+    parts = [p for p in root.split("/") if p]
+    if len(parts) < 2:
+        return None
+    if home_root is not None:
+        if root == home_root or is_under(home_root, root):
+            return None
+        if any(is_under(root, f"{home_root}/{d}") for d in _HOST_FOLDERS):
+            return None
+    if any(is_under(root, d) for d in _SYSTEM_HOST_FOLDERS):
+        return None
+    return root
+
+
+def folder_ok(pattern: str, *, home: str | None) -> bool:
+    """A `folder` grant pattern Sentrook trusts a folder on (`folder_root`)."""
+    return folder_root(pattern, home=home) is not None
+
+
 #: A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme.
 _PLATFORM_PREFIX = re.compile(r"[a-z][a-z0-9_-]*:(?!//)")
 
