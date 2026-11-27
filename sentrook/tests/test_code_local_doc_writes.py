@@ -600,8 +600,7 @@ def test_doubling_text_in_a_path_is_not_followed_and_stays_fast():
 
     texts = {d: program(d) for d in (1, FACTOR)}
     assert python_reach(texts[FACTOR]) == CodeReach(network=True)
-    _, large = assert_linear(lambda d: python_reach.__wrapped__(texts[d]), "doubling chains")
-    assert large < 2.0
+    assert_linear(lambda d: python_reach.__wrapped__(texts[d]), "doubling chains", bound=2.0)
 
 
 # ------------------------------------------------------------------ an address also sent to stays a recipient
@@ -693,8 +692,7 @@ def _chain(d: int) -> str:
 )
 def test_large_collections_and_chains_read_linearly(make):
     texts = {d: make(d) for d in (1, FACTOR)}
-    _, large = assert_linear(lambda d: python_reach.__wrapped__(texts[d]), make.__name__)
-    assert large < 4.0
+    assert_linear(lambda d: python_reach.__wrapped__(texts[d]), make.__name__, bound=4.0)
 
 
 @pytest.mark.parametrize("unit", GROWTH.values(), ids=GROWTH.keys())
@@ -708,5 +706,4 @@ def test_reading_grows_linearly(unit):
 
     texts = {d: program(d) for d in (1, FACTOR)}
     assert len(texts[1]) > 150_000
-    _, large = assert_linear(lambda d: python_reach.__wrapped__(texts[d]), unit)
-    assert large < 4.0
+    assert_linear(lambda d: python_reach.__wrapped__(texts[d]), unit, bound=4.0)

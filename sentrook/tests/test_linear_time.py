@@ -68,6 +68,27 @@ def test_a_linear_run_far_over_its_bound_fails(monkeypatch: pytest.MonkeyPatch):
     assert CEILING == 3.0
 
 
+def test_with_a_bound_a_quadratic_run_over_it_fails():
+    with pytest.raises(AssertionError, match="super-linear"):
+        assert_linear(_quadratic, "quadratic", bound=1e-9)
+
+
+def test_with_a_bound_a_linear_run_over_it_passes_with_a_warning():
+    """A slow machine: the run missed its bound, but grows linearly."""
+    with pytest.warns(UserWarning, match="grows linearly"):
+        assert_linear(_sleep_linear, "linear", bound=0.05)
+
+
+def test_with_a_bound_a_linear_run_far_over_it_fails():
+    with pytest.raises(AssertionError, match="however it grows"):
+        assert_linear(_sleep_linear, "linear", bound=0.01)
+
+
+def test_with_a_bound_a_run_under_it_passes_quietly(recwarn: pytest.WarningsRecorder):
+    assert_linear(_sleep_linear, "linear", bound=1.0)
+    assert not recwarn.list
+
+
 def _scripted(monkeypatch: pytest.MonkeyPatch, small: list[float], large: list[float]) -> list[int]:
     """Timed runs report these seconds in order, quarter size from `small` and full size from `large`,
     so a noisy reading can be replayed. Returns the divisor of every timed run, in order."""
