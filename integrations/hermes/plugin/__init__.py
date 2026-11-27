@@ -112,6 +112,8 @@ SETTINGS_KEYS = (
     "packs",
     "skill_review",
     "owner_channel",
+    "hide_tool_calls",
+    # replaced by hide_tool_calls; still accepted, does nothing
     "dashboard_show_calls",
 )
 
@@ -1757,6 +1759,7 @@ def _background_info(built: dict[str, Any], resp: dict[str, Any]) -> dict[str, A
             "rule": resp.get("enforced") == "review",
             "request_id": planir["request_id"],
             "session_ref": planir["session"]["session_ref"],
+            "call": planir.get("pending_call"),
         }
     except Exception as exc:  # noqa: BLE001 - a malformed response: not announced
         logger.warning("sentrook could not build a background-save notice: %s", exc)
@@ -1814,6 +1817,13 @@ def _send_background_notice(
 
     try:
         tool, shown, where = info["tool"], info["shown"], info["where"]
+        call = (
+            ()
+            if cfg.hide_tool_calls
+            else history.call_lines(
+                info.get("call"), history.NOTICE_CALL_TOTAL, history.NOTICE_CALL_HEADER
+            )
+        )
         listed = "the review's calls are" if outcome == "held-call" else "every background save is"
         details = (
             f"Details: {commands.CMD('why')} {info['request_id'][:8]}; {listed} in "
@@ -1822,9 +1832,13 @@ def _send_background_notice(
             else None
         )
         if outcome == "held-call":
-            text = skill_review.held_call_text(tool, shown, where, info["category"], details)
+            text = skill_review.held_call_text(
+                tool, shown, where, info["category"], details, call=call
+            )
         elif outcome in ("blocked", "held"):
-            text = skill_review.stopped_text(outcome, tool, shown, where, info["category"], details)
+            text = skill_review.stopped_text(
+                outcome, tool, shown, where, info["category"], details, call=call
+            )
         elif outcome == "staged":
             stage = stage or {}  # a staged notice without its record is not built
             text = skill_review.staged_text(
@@ -1837,14 +1851,15 @@ def _send_background_notice(
                 str(stage["id"]),
                 details,
                 by_hermes=stage.get("by") == "hermes",
+                call=call,
             )
         elif outcome.startswith("unstaged"):
             text = skill_review.unstaged_text(
-                tool, shown, where, details, saved=outcome == "unstaged-saved"
+                tool, shown, where, details, saved=outcome == "unstaged-saved", call=call
             )
         else:
             text = skill_review.let_through_text(
-                tool, shown, where, details, outcome == "allowed-snoozed"
+                tool, shown, where, details, outcome == "allowed-snoozed", call=call
             )
     except Exception as exc:  # noqa: BLE001 - a malformed response: not announced
         logger.warning("sentrook could not build a background-save notice: %s", exc)

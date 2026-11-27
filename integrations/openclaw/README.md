@@ -338,7 +338,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls (and the one held most often), where notices go, passes and denials, OpenClaw's own saves by outcome, and any settings Sentrook cannot read |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
-| `/sentrook-why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
+| `/sentrook-why [request_id\|last]` | One scan in detail: the call itself (secrets masked, long text cut; unless `hideToolCalls` is on) and the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `/sentrook-report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
 | `/sentrook-grants` | Grants in force: from config (read-only) and set by command |
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
@@ -506,18 +506,17 @@ Anything waiting for you comes first: an approval prompt still open, or a call h
 The tab only reads. To change a grant or a snooze, use the commands above. It shows the same records as
 `/sentrook-history` and `/sentrook-why`, and nothing when the traffic log is off.
 
-By default the tab never shows what a call contained: an edit shows its tool and the files it touched, not the edit.
-To see the call itself, turn on `dashboardShowCalls`:
+Each scan has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them to
+the scanner, as `/sentrook-why` shows them. Secrets are masked; file contents, messages and commands are shown as the agent
+wrote them (an edit's old and new text side by side), and very long text is cut. Anyone with gateway access can open the tab, so hide them on a gateway you share.
+To hide calls everywhere (the tab, `/sentrook-why` and background-save notices):
 
 ```bash
-openclaw config set plugins.entries.sentrook.config.dashboardShowCalls true
+openclaw config set plugins.entries.sentrook.config.hideToolCalls true
 ```
 
-Each scan then has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them
-to the scanner. Secrets are masked; file contents, messages and commands are shown as the agent wrote them (an edit's
-old and new text side by side), and very long text is cut. Anyone with gateway access can open the tab, so leave it
-off on a gateway you share. Without it, `/sentrook-report <id> --save` writes a scan's full record to a file only you
-can read.
+While they are hidden, `/sentrook-report <id> --save` writes a scan's full record to a file only you can read. The old
+`dashboardShowCalls` setting is no longer needed and does nothing.
 
 Every scan has **Report this scan…**, which opens the report described in [Report a wrong scan](#report-a-wrong-scan):
 the summary to copy, a button for a public GitHub issue with it filled in, and the commands and email address for the
@@ -710,6 +709,10 @@ must be the skill's own `SKILL.md` under the agent's Skill Workshop folder, a re
 OpenClaw also refuses a background patch of a skill the run has not viewed first; the draft route does not check that,
 so such a change can still reach your drafts. Applying a draft does not check whether the skill changed since:
 OpenClaw replaces the skill with the draft and keeps the version it replaced in the skill's history.
+
+Each of these notices also shows the save itself as the agent wrote it, right after the line naming it: secrets
+masked, long text cut, and marked as data so the agent does not take it as instructions if the notice reaches its
+chat. `hideToolCalls` leaves it out.
 
 A held background save is not a [held call](#held-calls-in-cron-jobs-and-subagents) you can approve: approving could
 not make the save, so it gets no approve id and is not kept with the held calls (`status` counts it on its `skill
@@ -938,6 +941,7 @@ at most every 6 hours while it stands. Running `openclaw doctor --fix` leaves Se
 | `onScanError` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `timeoutMs` | `30000` | How long to wait for a scan |
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
+| `hideToolCalls` | `false` | Hides the calls (secrets masked) that `/sentrook-why`, background-save notices and the dashboard show. Anyone who can read your chat or open the tab reads them, so turn this on where others can. `dashboardShowCalls` is replaced by this and does nothing |
 | `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it. Either way those saves are never asked about ([Background skill and memory saves](#background-skill-and-memory-saves)) |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |

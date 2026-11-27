@@ -6,6 +6,12 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- `/sentrook why` now shows the call itself (the tool's arguments as sent to the scanner: secrets masked, long text
+  cut), and a background-save notice shows the save it is about, so you can judge it without opening the dashboard.
+  The dashboard shows each scan's call by default too. One new setting, `hide_tool_calls`, hides calls in all three
+  places; `dashboard_show_calls` is no longer needed and does nothing. A report's summary never carries the call.
+- A held change to the agent's own skills or memory no longer reads "Changes the agent's or host's configuration a
+  destination" when it names no destination.
 - Each scan names the plugin build that ran, as `host.plugin_build` in the traffic log: a hash of the plugin's files
   (with the Git revision Hermes installed, when it recorded one), taken when the process started. The version label
   stays the same across many changes, so it could not tell builds apart. `/sentrook status` shows it as

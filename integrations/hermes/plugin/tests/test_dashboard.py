@@ -203,6 +203,11 @@ def api(monkeypatch, tmp_path):
     return mod
 
 
+def _without_calls(m):
+    """The model with each scan's call taken out: the only place a call's arguments may appear."""
+    return {**m, "scans": [{k: v for k, v in s.items() if k != "call"} for s in m["scans"]]}
+
+
 def _home_with_log(root: Path) -> Path:
     (root / "sentrook").mkdir(parents=True)
     shutil.copy(DASH / "traffic.jsonl", root / "sentrook" / "traffic.jsonl")
@@ -216,7 +221,7 @@ def test_api_serves_the_model_from_the_profile_home(api, tmp_path):
     assert m["host"] == "hermes"
     assert m["limit"] == 25
     assert [s["tool"] for s in m["scans"]] == ["web_fetch", "web_fetch"]
-    assert RAW not in json.dumps(m)
+    assert RAW not in json.dumps(_without_calls(m))
 
 
 def test_api_records_the_dashboard_process_build(api, tmp_path):
@@ -288,7 +293,8 @@ def test_build_model_adds_the_report_panel_only_when_asked(tmp_path):
         "/sentrook report aaaa1b2c --full",
     ]
     assert not any(
-        marker in json.dumps(m) for marker in ("PLANIR-BODY-MARKER", "PRIVATE-PATH-MARKER")
+        marker in json.dumps(_without_calls(m))
+        for marker in ("PLANIR-BODY-MARKER", "PRIVATE-PATH-MARKER")
     )
     assert m["report"]["summary"] == (REPORT_FIXTURES / "summary-aaaa1b2c.txt").read_text().rstrip(
         "\n"
@@ -310,12 +316,11 @@ def test_api_serves_the_report_panel(api, tmp_path):
     request = types.SimpleNamespace(query_params={"n": "10", "report": "aaaa1b2c"})
     m = asyncio.run(api.router.routes["/model"](request))
     assert m["report"]["id"] == "aaaa1b2c-0000-4000-8000-00000000000a"
-    assert "PLANIR-BODY-MARKER" not in json.dumps(
-        m
-    )  # the full record stays with the owner's commands
+    # the full record stays with the owner's commands; a scan's call is the only place its arguments show
+    assert "PLANIR-BODY-MARKER" not in json.dumps(_without_calls(m))
 
 
-# ---- Showing the call (dashboard_show_calls, off by default) ----
+# ---- Showing the call (on by default; hide_tool_calls hides it) ----
 
 CALLS_LOG = DASH / "calls.jsonl"
 #: Strings in the calls fixture that sit outside the pending call's tool and arguments.
@@ -355,16 +360,18 @@ def test_call_of_matches_the_shared_fixture():
     assert got[11] is None
 
 
-def test_show_calls_setting_is_off_by_default(tmp_path):
-    assert resolve_config({}, {}).dashboard_show_calls is False
-    assert resolve_config({"dashboard_show_calls": True}, {}).dashboard_show_calls is True
-    assert resolve_config({}, {"SENTROOK_DASHBOARD_SHOW_CALLS": "1"}).dashboard_show_calls is True
-    assert "dashboard_show_calls" in SETTINGS_KEYS
+def test_calls_are_shown_unless_hidden(tmp_path):
+    assert resolve_config({}, {}).hide_tool_calls is False
+    assert resolve_config({"hide_tool_calls": True}, {}).hide_tool_calls is True
+    assert resolve_config({}, {"SENTROOK_HIDE_TOOL_CALLS": "1"}).hide_tool_calls is True
+    # the old dashboard-only setting is still accepted and does nothing
+    assert resolve_config({"dashboard_show_calls": False}, {}).hide_tool_calls is False
+    assert {"hide_tool_calls", "dashboard_show_calls"} <= set(SETTINGS_KEYS)
 
 
-def test_calls_off_the_model_holds_no_part_of_a_call(tmp_path):
+def test_calls_hidden_the_model_holds_no_part_of_a_call(tmp_path):
     shutil.copy(CALLS_LOG, tmp_path / "traffic.jsonl")
-    cfg = resolve_config({"state_dir": str(tmp_path)}, {})
+    cfg = resolve_config({"state_dir": str(tmp_path), "hide_tool_calls": True}, {})
     m = dashboard.build_model(cfg, dashboard.query_of({"n": "50"}))
     assert m["show_calls"] is False
     assert len(m["scans"]) == 13
@@ -374,9 +381,9 @@ def test_calls_off_the_model_holds_no_part_of_a_call(tmp_path):
         assert marker not in text
 
 
-def test_calls_on_each_scan_carries_its_call_and_nothing_else(tmp_path):
+def test_by_default_each_scan_carries_its_call_and_nothing_else(tmp_path):
     shutil.copy(CALLS_LOG, tmp_path / "traffic.jsonl")
-    cfg = resolve_config({"state_dir": str(tmp_path), "dashboard_show_calls": True}, {})
+    cfg = resolve_config({"state_dir": str(tmp_path)}, {})
     m = dashboard.build_model(cfg, dashboard.query_of({"n": "50"}))
     assert m["show_calls"] is True
     edits = [s for s in m["scans"] if s["tool"] == "edit"]
@@ -392,4 +399,4 @@ def test_calls_on_each_scan_carries_its_call_and_nothing_else(tmp_path):
     text = json.dumps(m, ensure_ascii=False)
     for marker in NOT_THE_CALL:
         assert marker not in text
-    assert m["commands"]["call_setting"].endswith("dashboard_show_calls true")
+    assert m["commands"]["call_setting"].endswith("hide_tool_calls false")

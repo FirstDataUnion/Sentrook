@@ -44,7 +44,7 @@ from . import (
     snooze,
 )
 from .auth import missing_credentials
-from .config import PluginConfig, hermes_home, resolve_config
+from .config import HIDE_SETTING, PluginConfig, hermes_home, resolve_config
 from .intent import hermes_config
 from .owner import refusal
 from .planir import PLUGIN_VERSION, session_ref
@@ -160,7 +160,14 @@ def run_why(
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
     if hold.is_id(rest):
-        return hold.why_text(cfg.state_dir, cfg.traffic_log_path, rest, datetime.now(UTC), CMD)
+        return hold.why_text(
+            cfg.state_dir,
+            cfg.traffic_log_path,
+            rest,
+            datetime.now(UTC),
+            CMD,
+            show_call=not cfg.hide_tool_calls,
+        )
     match = history.parse_ref(rest)
     if match is None:
         return (
@@ -169,7 +176,9 @@ def run_why(
         )
     found = history.recent_scans(cfg.traffic_log_path, 1, match)
     if found:
-        return history.format_why(*found[0])
+        return history.format_why(
+            *found[0], show_call=not cfg.hide_tool_calls, hidden_by=HIDE_SETTING
+        )
     if rest.lower() in ("", "last"):
         return history.NO_SCANS
     return f"No scan {rest} in the recent traffic log."

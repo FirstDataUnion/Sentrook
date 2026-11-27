@@ -86,8 +86,8 @@ owner type it.
 
 ## A scan that looks wrong
 
-Point the owner to `/sentrook history` to find the scan and `/sentrook why <id>` to see the score, the reasons, the hosts
-and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
+Point the owner to `/sentrook history` to find the scan and `/sentrook why <id>` to see the call itself (secrets
+masked), the score, the reasons, the hosts and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
 wrong, `/sentrook report <id>` prints a report to send to the Sentrook team: `--github` opens a public issue with it
 filled in, and `--save` writes the full record to a private file to email (the command gives the address).
 

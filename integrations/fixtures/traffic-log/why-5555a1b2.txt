@@ -6,3 +6,7 @@ action: blocked (scan error)
 review: -
 reasons: none
 entities: none
+call, as the scanner saw it (secrets masked):
+```
+command: echo RAW-ARG-MARKER
+```

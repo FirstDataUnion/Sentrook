@@ -16,11 +16,20 @@ import { afterEach, beforeEach, test } from "node:test";
 import { clearScanTokenCache } from "./auth.ts";
 import * as bg from "./backgroundSave.ts";
 import { runSentrookCommand } from "./commands.ts";
-import { actionOf, formatHistory, recentScans } from "./history.ts";
+import { actionOf, formatHistory, NOTICE_CALL_HEADER, recentScans } from "./history.ts";
 import * as hold from "./hold.ts";
 import plugin from "./index.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
 import { runVerify } from "./verify.ts";
+
+/** A notice's text with the call block (header and fenced lines) taken out, for checks of the rest of its words. */
+function withoutCall(text: string): string {
+  const lines = text.split("\n");
+  const start = lines.indexOf(NOTICE_CALL_HEADER);
+  if (start < 0) return text;
+  const end = lines.indexOf("```", start + 2);
+  return [...lines.slice(0, start), ...lines.slice(end + 1)].join("\n");
+}
 
 const ENV_KEYS = [
   "OPENCLAW_STATE_DIR",
@@ -346,7 +355,7 @@ for (const run of Object.keys(RUNS) as (keyof typeof RUNS)[]) {
         const text: string = r.sent[0].text;
         assert.match(text, want.notice);
         assert.match(text, WHERE[run]);
-        assert.ok(!text.includes(BODY_MARKER), "nothing the saving model wrote reaches the notice");
+        assert.ok(!withoutCall(text).includes(BODY_MARKER), "nothing the saving model wrote reaches the notice outside the marked call");
         assert.ok(!/\b55\b|\b92\b|selfedit\.|selfmod\./.test(text), "no risk score or reason codes");
         assert.equal(r.sent[0].channel, "telegram");
         assert.deepEqual(noticeOf(r, rec, want.decision), { status: "queued", target: "telegram" });
@@ -784,7 +793,7 @@ for (const [name, report] of [
     const { rec } = await r.save("review", SAVES.review, report as any);
     assert.equal(r.sent.length, 1);
     assert.match(r.sent[0].text, /^Sentrook sent a new skill .* but OpenClaw did not keep the draft, so the save was not made/);
-    assert.ok(!r.sent[0].text.includes(BODY_MARKER));
+    assert.ok(!withoutCall(r.sent[0].text).includes(BODY_MARKER));
     const [resolution] = r.records("resolution");
     assert.equal(resolution.request_id, rec.request_id);
     assert.equal(resolution.resolution, "draft_failed");
@@ -885,13 +894,36 @@ test("must hold: a held call and a held save of one run each send their own noti
   assert.match(r.sent[1].text, /^Sentrook held one of OpenClaw's background saves/);
 });
 
-test("must hold: a held call's notice carries nothing the model wrote", async () => {
+test("must hold: a held call's notice carries what the model wrote only inside the marked call block", async () => {
   const r = registered();
   await r.command("sentrook-notify", "here");
   otherReview();
   await r.save("review", { toolName: "exec", params: { command: `echo ${BODY_MARKER}` } });
   assert.equal(r.sent.length, 1);
+  assert.ok(!withoutCall(r.sent[0].text).includes(BODY_MARKER));
+  assert.ok(r.sent[0].text.includes(`command: echo ${BODY_MARKER}`), "the call, as data");
+});
+
+test("must hold: with hideToolCalls a notice carries nothing the model wrote", async () => {
+  const r = registered({ pluginConfig: { hideToolCalls: true } });
+  await r.command("sentrook-notify", "here");
+  otherReview();
+  await r.save("review", { toolName: "exec", params: { command: `echo ${BODY_MARKER}` } });
+  assert.equal(r.sent.length, 1);
   assert.ok(!r.sent[0].text.includes(BODY_MARKER));
+  assert.ok(!r.sent[0].text.includes(NOTICE_CALL_HEADER));
+});
+
+test("must show: a held save's notice shows what it would save after the Save line, marked as data", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const params = { action: "patch", name: "deploy-staging", old_text: "a", new_text: `b ${BODY_MARKER}` };
+  await r.save("review", { toolName: "skill_workshop", params });
+  const lines = r.sent[0].text.split("\n");
+  const at = lines.indexOf(NOTICE_CALL_HEADER);
+  assert.ok(at > 0 && lines[at - 1]!.startsWith("Save "), "right after the Save line");
+  assert.deepEqual(lines.slice(at + 1, at + 7), ["```", "action: patch", "name: deploy-staging", "old_text: a", `new_text: b ${BODY_MARKER}`, "```"]);
 });
 
 test("must hold: without a notice target the call is still held, and the record says why nothing was sent", async () => {
@@ -1115,7 +1147,7 @@ test("a create OpenClaw ran live instead of the draft is recorded as saved live 
   assert.equal(r.sent.length, 1);
   assert.match(r.sent[0].text, /^Sentrook sent a new skill .* but OpenClaw saved it as a live skill instead/);
   assert.doesNotMatch(r.sent[0].text, /not made|not saved/);
-  assert.ok(!r.sent[0].text.includes(BODY_MARKER));
+  assert.ok(!withoutCall(r.sent[0].text).includes(BODY_MARKER));
   setVerdict("allow");
   const next = await r.save("review", { toolName: "skill_workshop", params: { action: "list" } });
   assert.equal(next.planir.history.at(-1).decision, "allowed", "the scanner is told the save ran");
@@ -1219,7 +1251,7 @@ test("must draft: a reviewed background patch of SKILL.md matching once becomes 
   assert.match(text, /^Sentrook saved a change to an existing skill from one of OpenClaw's background runs as a Skill Workshop draft/);
   assert.match(text, /the Skill Workshop drafts in the Control UI, or \/learn drafts in a chat with the agent/);
   assert.match(text, /Applying it replaces the skill with the version from when the change was held, with this one change: any later change to that skill would be undone\. It can be brought back from the skill's history\./);
-  assert.ok(!text.includes(BODY_MARKER) && !text.includes("Run make deploy-staging"), "never the saved body");
+  assert.ok(!withoutCall(text).includes(BODY_MARKER) && !text.includes("Run make deploy-staging"), "never the saved body");
 });
 
 for (const [name, params, want] of [
@@ -1495,7 +1527,7 @@ test("a patch draft OpenClaw ignored (the patch went live) is recorded and annou
   const text: string = r.sent[0].text;
   assert.match(text, /^Sentrook sent a change to an existing skill .* to the Skill Workshop drafts, but OpenClaw applied the change to the live skill instead/);
   assert.match(text, /To undo it, restore the skill's previous version from its history on Plugins → Skill workshop in the Control UI/);
-  assert.ok(!text.includes(BODY_MARKER));
+  assert.ok(!withoutCall(text).includes(BODY_MARKER));
 });
 
 test("a patch draft OpenClaw did not keep is recorded and announced as not made", async () => {
