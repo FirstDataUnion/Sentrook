@@ -207,3 +207,18 @@ def test_call_v12_is_the_default_and_the_earlier_sets_stay_selectable():
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set
             == name
         )
+
+
+@pytest.mark.parametrize("side", ["head", "tail"])
+def test_a_placeholder_across_a_cut_point_is_kept_whole_or_left_out_whole(side):
+    ph = "⟦secret:credential:ab12⟧"
+    total = 5200
+    head_cut = PRIOR_MESSAGE_CAP_CHARS // 3
+    tail_cut = total - (PRIOR_MESSAGE_CAP_CHARS - head_cut)
+    at = (head_cut if side == "head" else tail_cut) - 5
+    msg = "a" * at + ph + "b" * (total - at - len(ph))
+    cut = prior_agent_message(_raw(prior=msg))
+    assert "characters cut]" in cut
+    pieces = [cut[i:] for i in range(len(cut)) if cut[i] == "⟦"]
+    assert all(p.startswith(ph) for p in pieces)
+    assert "⟧" not in cut.replace(ph, "")

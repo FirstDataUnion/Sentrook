@@ -648,12 +648,13 @@ const plugin = {
     api.on("before_prompt_build", (event: any, ctx: any) =>
       safely("before_prompt_build", () => {
         const runId = event?.runId ?? ctx?.runId;
-        const patch: Json = {
-          currentUserMessage: event?.currentUserMessage,
-          prompt: event?.prompt,
-          // The agent's message a short reply from the owner answers (sent only with such a reply, `planir.ts`).
-          priorAgentText: priorAgentTextOf(event?.messages, event?.currentUserMessage ?? event?.prompt),
-        };
+        const patch: Json = { currentUserMessage: event?.currentUserMessage, prompt: event?.prompt };
+        // The agent's message a short reply from the owner answers (sent only with such a reply, `planir.ts`): read
+        // once, at the run's first prompt build, before the run's own messages can be in the list.
+        if (runId && !store.loadRun(runId).priorAgentRead) {
+          patch.priorAgentRead = true;
+          patch.priorAgentText = priorAgentTextOf(event?.messages, event?.currentUserMessage ?? event?.prompt);
+        }
         // OpenClaw's own background process (selfEdit.ts): recognised here, where raw model runs never arrive.
         const kind = selfEdit.runKindOf(runId, ctx, event?.prompt);
         if (kind) {

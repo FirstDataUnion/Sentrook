@@ -233,21 +233,18 @@ function messageText(content: unknown): string {
 
 /**
  * The agent's last message with text in the run's model context (`event.messages`) before the owner's current
- * message: the proposal or question a short reply answers. The current message, when the host lists it last, is
- * skipped; an earlier user message before any agent text ends the search (the agent said nothing since).
+ * message: the proposal or question a short reply answers. The current message is skipped only when the host lists it
+ * as the last message; any other user message before agent text ends the search (the agent said nothing since, and an
+ * earlier message with the same words is not the current one).
  */
 export function priorAgentTextOf(messages: unknown, current: unknown): string | undefined {
   if (!Array.isArray(messages)) return undefined;
   const now = typeof current === "string" ? current.trim() : "";
-  let skippedCurrent = false;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (!m || typeof m !== "object") continue;
     if (m.role === "user") {
-      if (!skippedCurrent && now && messageText(m.content).trim() === now) {
-        skippedCurrent = true;
-        continue;
-      }
+      if (i === messages.length - 1 && now && messageText(m.content).trim() === now) continue;
       return undefined;
     }
     if (m.role === "assistant") {

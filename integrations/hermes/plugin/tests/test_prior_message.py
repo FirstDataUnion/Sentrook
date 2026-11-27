@@ -138,3 +138,21 @@ def test_the_message_is_redacted_and_cut_keeping_its_end(h):
     assert "characters cut]" in sent
     assert len(sent) <= PRIOR_MESSAGE_CAP_CHARS + 40
     assert "prior_agent_message" not in json.dumps(call(h, "t2", "c3")["request"]["text"])
+
+
+@pytest.mark.parametrize("side", ["head", "tail"])
+def test_a_placeholder_across_a_cut_point_is_kept_whole_or_left_out_whole(side):
+    from plugin.planir import prior_message
+
+    class Same:
+        def string(self, s):
+            return s
+
+    ph = "⟦secret:credential:ab12⟧"
+    total = 5200
+    head_cut = PRIOR_MESSAGE_CAP_CHARS // 3
+    tail_cut = total - (PRIOR_MESSAGE_CAP_CHARS - head_cut)
+    at = (head_cut if side == "head" else tail_cut) - 5
+    cut = prior_message("a" * at + ph + "b" * (total - at - len(ph)), Same())
+    assert "characters cut]" in cut
+    assert "⟦" not in cut.replace(ph, "") and "⟧" not in cut.replace(ph, "")

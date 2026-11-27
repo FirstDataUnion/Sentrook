@@ -8,7 +8,7 @@ import { clearScanTokenCache } from "./auth.ts";
 import { ERROR_TITLE } from "./card.ts";
 import { runSentrookCommand } from "./commands.ts";
 import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
-import { execPolicy } from "./planir.ts";
+import { execPolicy, priorMessage } from "./planir.ts";
 import { invalidEndpointEffect } from "./scanErrorPolicy.ts";
 
 type Handler = (event: any, ctx: any) => any;
@@ -1463,6 +1463,38 @@ test("the current message in the host's list is skipped to find the agent's mess
 test("a reply at the limit carries it and a longer message does not", async () => {
   assert.equal((await replyScan("y".repeat(300))).request.prior_agent_message, PROPOSAL);
   assert.equal("prior_agent_message" in (await replyScan("z".repeat(301))).request, false);
+});
+
+test("a message with the current one's words is skipped only when it is the last in the list", async () => {
+  // The host left the current "yes" out of its list; an earlier "yes" (the previous turn, followed only by a host
+  // message and no answer from the agent) is not the current one and ends the search.
+  const earlierYes = [
+    ...HISTORY,
+    { role: "user", content: "yes", __openclaw: { senderIsOwner: true } },
+    { role: "custom", customType: "openclaw.runtime-context", details: { fragments: [] } },
+  ];
+  assert.equal("prior_agent_message" in (await replyScan("yes", earlierYes)).request, false);
+});
+
+test("the message is read once per run, at its first prompt build", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: "r1", currentUserMessage: "yes", prompt: "yes", messages: HISTORY }, CHAT);
+  const later = [...HISTORY, { role: "user", content: "yes" }, { role: "assistant", content: "Filing the first one now." }];
+  await h.fire("before_prompt_build", { runId: "r1", currentUserMessage: "yes", prompt: "yes", messages: later }, CHAT);
+  await h.fire("before_agent_run", { runId: "r1", senderIsOwner: true }, CHAT);
+  await h.fire("before_tool_call", call("c1", "ls"), CHAT);
+  assert.equal(h.scans.at(-1).request.prior_agent_message, PROPOSAL);
+});
+
+test("a placeholder at a cut point is kept whole or left out whole", async () => {
+  const ph = "⟦secret:credential:ab12⟧";
+  const r = { string: (s: string) => s } as any;
+  for (const at of [666 - 5, 5200 - 1334 - 5]) {
+    const text = "a".repeat(at) + ph + "b".repeat(5200 - at - ph.length);
+    const cut = priorMessage(text, r);
+    const pieces = cut.match(/⟦[^⟧]*⟧?/g) ?? [];
+    for (const p of pieces) assert.equal(p, ph, `split at ${at}: ${p}`);
+  }
 });
 
 test("no agent message since the owner's last one, or none at all, sends none", async () => {
