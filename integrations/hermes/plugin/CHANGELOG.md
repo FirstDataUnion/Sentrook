@@ -6,6 +6,16 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- Each scan names the plugin build that ran, as `host.plugin_build` in the traffic log: a hash of the plugin's files
+  (with the Git revision Hermes installed, when it recorded one), taken when the process started. The version label
+  stays the same across many changes, so it could not tell builds apart. `/sentrook status` shows it as
+  `plugin build`.
+- After an install or update of the plugin, a Hermes process that was already running keeps the old plugin until it
+  restarts. `hermes sentrook verify` now fails a `running build` line, and `/sentrook status` says `restart needed`,
+  naming each process (hermes-serve, the gateway, the dashboard) still on another build; such a process also logs a
+  warning on its scans (the files are read at most once a minute). Each process records its build in
+  `~/.hermes/sentrook/processes/` while it runs. The guide's "Updating" section and the setup skill say to restart all
+  of them.
 - Beta: while a snooze is on, a block in a chat you attend asks you instead of stopping, whatever caused it: a floor,
   a strong signal or a rule that always blocks included. Until now only a block Sentrook marks as having no clear
   attack signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt

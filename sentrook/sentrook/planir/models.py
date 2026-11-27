@@ -229,6 +229,11 @@ class Host(_Model):
     platform: str = Field(description="openclaw | hermes | …; open string")
     platform_version: str | None = None
     plugin_version: str | None = None
+    plugin_build: str | None = Field(
+        default=None,
+        description="The plugin's build as the running process imported it (a hash of its files, with the "
+        "installed revision when known); plugin_version is the release label",
+    )
     workspace_root: str = Field(description="Needed to classify reach: scratch → workspace → host")
     home: str
     os: OS = OS.UNKNOWN

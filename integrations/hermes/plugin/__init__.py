@@ -21,6 +21,7 @@ from typing import Any
 
 from . import (
     agent_skills,
+    build,
     card,
     cli,
     commands,
@@ -562,6 +563,10 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, **kw: Any) -> dict[s
         cfg, env = _load()
         store, traffic = _state(cfg)
         _capturing(cfg, store)
+        try:
+            build.check_on_scan()
+        except Exception as exc:  # noqa: BLE001 - never in the way of a scan
+            logger.info("sentrook build check failed: %s", exc)
         sid = _sid(kw)
         with store.session_lock(sid):
             return _scan_one(
@@ -2382,11 +2387,16 @@ def register(ctx: Any) -> None:
 
     route, no_route = hold.send_route(callable(getattr(ctx, "dispatch_tool", None)))
     notice_retry.resume(cfg.state_dir)
+    try:
+        build.record_self(cfg.state_dir)
+    except OSError as exc:
+        logger.warning("sentrook could not record this process's plugin build: %s", exc)
 
     logger.info(
-        "sentrook %s registered: scan=%s issuer=%s%s mode=%s review>=%s block>=%s on_scan_error=%s "
+        "sentrook %s (build %s) registered: scan=%s issuer=%s%s mode=%s review>=%s block>=%s on_scan_error=%s "
         "skill_review=%s traffic=%s notices=%s",
         PLUGIN_VERSION,
+        build.RUNNING.id,
         show(ep.scan),
         show(ep.issuer),
         " (dev endpoints)" if ep.dev else "",
