@@ -461,3 +461,39 @@ def test_sql_after_a_denied_drop_stays_silent(attack_case):
     # The denied step destroyed nothing: a later drop is not a retry of it.
     read = _sql_history(command='sqlite3 /srv/other.db "SELECT 1"', decision="denied_by_user")
     assert grade(read, "query", "mcp", {"sql": "DROP TABLE yard_ledger"}, MCP) == none
+
+
+def test_a_repeat_of_a_call_the_owner_approved_is_not_a_retry(attack_case):
+    """Only a denied, blocked or unanswered step is retried: once the owner approved a review (or an allowance let
+    it through, recorded as allowed), the same call again carries no retry code, so a Session allowance never meets
+    one that points at the call it covered."""
+    for decision in ("approved_by_user", "allowed"):
+        history = [
+            step(1, "query", "mcp", {"sql": "DROP TABLE yard_ledger"}, decision, provider=MCP),
+            step(2, "exec", "exec", {"command": "git --version"}),
+        ]
+        retry, carried, _ = run(
+            attack_case,
+            DROP_REQUEST,
+            history,
+            "query",
+            "mcp",
+            {"sql": "DROP TABLE yard_ledger"},
+            provider=MCP,
+        )
+        assert (retry.reason, retry.value, carried) == ("retry.none", 0.0, {}), decision
+    # the same history with the step denied is a retry
+    denied = [
+        step(1, "query", "mcp", {"sql": "DROP TABLE yard_ledger"}, "denied_by_user", provider=MCP),
+        step(2, "exec", "exec", {"command": "git --version"}),
+    ]
+    retry, _, _ = run(
+        attack_case,
+        DROP_REQUEST,
+        denied,
+        "query",
+        "mcp",
+        {"sql": "DROP TABLE yard_ledger"},
+        provider=MCP,
+    )
+    assert retry.reason == "retry.same_action"

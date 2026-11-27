@@ -574,13 +574,15 @@ Details: /sentrook why 3f9c2a1b
   address or other target is covered only when it is repeated exactly.
 - When you asked for the work in your own chat, **Session** also covers the rest of the job in that chat for 12
   hours: a later call of the same tool about the same parties (the hosts and files the review's reasons and its
-  description of the call name), scoring no higher, goes through without asking, even when it writes a different
-  output file. It still asks when the later call adds a warning the answered one did not have (for example content
-  that tried to change the agent's task or that the call uses, a target only such content named, a secret carried
-  into the request, a look-alike or known-bad party, a remote delete, a retry after a refusal), and for another
-  party, a higher score, another tool, another chat or a block. What the session has been reading (documents with
-  instructions in them) does not count as new on its own; it still raises the score.
-  The prompt says which applies: "also covers the same parties at no higher risk", or "covers only this exact
+  description of the call name), scoring at most 10 points higher than the call you answered and below the block
+  line, goes through without asking, even when it writes a different output file. It still asks when the later call
+  adds a warning the answered one did not have (for example content that tried to change the agent's task or that
+  the call uses, a target only such content named, a secret carried into the request, a look-alike or known-bad
+  party, a remote delete, a retry after a refusal), and for another party, a score more than 10 points higher,
+  another tool, another chat or a block. What the session has been reading (documents with instructions in them) and
+  the session's rising consequence trend do not count as new on their own; they still raise the score. The 10
+  points count from the call you answered, not from a call Session let through since.
+  The prompt says which applies: "also covers the same parties at a similar risk", or "covers only this exact
   action" when the review named no party or the answer is not known to be yours (a group chat, someone else's
   message, a subagent). **Always** covers only the same action, as above.
 - Where a grant would cover calls like this, the prompt says what **Session** (for this chat) and **Always** (for 30

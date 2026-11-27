@@ -3,8 +3,9 @@
 Hermes remembers a Session answer under the rule key the prompt carried, and that key holds every entity of the call,
 so a job whose calls differ in an incidental file (each writes its own output) would ask again at every step. On the
 owner's own turn, a Session answer also lets a later review in the same chat through when it is a call of the same
-tool, about the same parties (the entities its reasons and its description name), scoring no higher, with no
-attack-type warning the answered review lacked, nothing enforced and no floor, within 12 hours. Anything else asks.
+tool, about the same parties (the entities its reasons and its description name), scoring at most 10 points higher
+and below the block line, with no attack-type warning the answered review lacked (a rising consequence trend is not
+one), nothing enforced and no floor, within 12 hours. Anything else asks.
 A Session answer that sets the review's suggested grant (for this session only) keeps no such allowance: the scanner
 scores later calls with the grant. Always is unchanged: Hermes's exact key and the 30-day grant.
 """
@@ -203,6 +204,50 @@ def test_the_same_risk_is_not_asked_again(owner):
     assert _session_then(owner) is None
 
 
+@pytest.mark.parametrize("risk", [56.0, 60.0, 65.0])
+def test_a_repeat_up_to_10_points_higher_is_not_asked_again(owner, risk):
+    """The judge's score moves a few points between near-identical calls of one job (answered at 55)."""
+    assert _session_then(owner, then={"risk": risk}) is None
+
+
+def test_answered_at_62_a_repeat_at_68_with_only_the_judges_reasons_changed_is_not_asked(owner):
+    first = {"risk": 62.0}
+    then = {"risk": 68.0, "extra": ["call.not_supported_by_request", "jev.unrequested"]}
+    assert _session_then(owner, first, then) is None
+
+
+def test_a_rising_consequence_trend_alone_does_not_ask(owner):
+    """The trend rises as a job goes on; its lift is in the score, which the margin bounds."""
+    assert (
+        _session_then(owner, then={"risk": 63.0, "extra": ["escalation.consequence_rising"]})
+        is None
+    )
+
+
+def test_a_rising_consequence_trend_does_not_widen_the_margin(owner):
+    assert _asked(
+        _session_then(owner, then={"risk": 66.0, "extra": ["escalation.consequence_rising"]})
+    )
+
+
+def test_a_rising_trend_with_another_new_warning_asks(owner):
+    then = {"risk": 56.0, "extra": ["escalation.consequence_rising", "exfil.web_post"]}
+    assert _asked(_session_then(owner, then=then))
+
+
+def test_a_retry_the_answered_review_already_carried_does_not_ask(owner):
+    """A review that is itself a retry of a refused call, answered Session: its repeats carry the same retry."""
+    first = {"risk": 62.0, "extra": ["retry.same_action", "retry.denied_consequence_carried"]}
+    then = {"risk": 66.0, "extra": ["retry.same_action", "retry.denied_consequence_carried"]}
+    assert _session_then(owner, first, then) is None
+
+
+def test_a_new_retry_after_a_refusal_asks(owner):
+    """A retry code points at a call that was denied, blocked or left unanswered, never at one the owner approved:
+    a repeat that newly carries one is a retry after a refusal, and asks."""
+    assert _asked(_session_then(owner, then={"risk": 50.0, "extra": ["retry.same_action"]}))
+
+
 def test_a_new_judge_wording_alone_does_not_ask(owner):
     """The judge's own reasons vary from call to call; only attack-type warnings count."""
     assert (
@@ -240,7 +285,7 @@ def test_what_the_session_has_been_reading_does_not_ask_while_the_score_stays_no
     """A job that reads documents picks up a different one of these at every step."""
     h = owner
     assert _session_then(h, then={"risk": 50.0, "extra": [background]}) is None
-    h.next = {"risk": 60.0, "extra": [background]}
+    h.next = {"risk": 66.0, "extra": [background]}
     assert _asked(_code(h, "c3"))
 
 
@@ -303,8 +348,32 @@ def test_always_keeps_no_allowance(owner):
     assert _asked(_code(h, "c2"))
 
 
-def test_a_higher_risk_asks(owner):
-    assert _asked(_session_then(owner, then={"risk": 60.0}))
+def test_more_than_10_points_higher_asks(owner):
+    """Answered at 55: 65 is covered, 65.5 asks."""
+    assert _asked(_session_then(owner, then={"risk": 65.5}))
+
+
+def test_the_margin_is_counted_from_the_answer_not_from_a_call_it_covered(owner):
+    """A covered call never raises the risk the allowance was answered at, so a job cannot creep up 10 at a time."""
+    h = owner
+    assert _session_then(h, then={"risk": 64.0}) is None
+    h.next = {"risk": 70.0}
+    assert _asked(_code(h, "c3"))
+    assert [a["risk"] for a in _allows(h)] == [55.0]
+
+
+@pytest.mark.parametrize("first, later", [(72.0, 79.9), (75.0, 80.0), (75.0, 84.0)])
+def test_the_margin_never_reaches_the_block_line(owner, first, later):
+    """Within 10 points of the answer, a score at or above the block line (80) is never covered: it blocks, or
+    asks where the scanner capped the block to a review."""
+    h = owner
+    out = _session_then(h, {"risk": first}, {"risk": later})
+    if later < 80.0:
+        assert out is None
+    else:
+        assert out["action"] == "block"
+        h.next = {"risk": later, "ceiling": "review"}
+        assert _asked(_code(h, "c3"))
 
 
 @pytest.mark.parametrize(
@@ -327,7 +396,8 @@ def test_a_higher_risk_asks(owner):
         "selfmod.startup",
         "destroy.workspace_wide",
         "sensitivity.session_holds_sensitive",
-        "escalation.consequence_rising",
+        "retry.denied_consequence_carried",
+        "retry.same_destination_new_source",
         "reputation.unknown_host_as_code_source",
         "a.code_the_scanner_adds_later",
     ],
@@ -525,7 +595,7 @@ def test_the_card_says_what_session_covers(owner):
     h = owner
     _turn(h)
     out = _code(h, "c1")
-    assert '"Session" also covers the same parties at no higher risk.' in out["message"]
+    assert '"Session" also covers the same parties at a similar risk.' in out["message"]
     assert len(out["message"]) <= 300
 
 
