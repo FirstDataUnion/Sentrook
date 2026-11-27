@@ -436,8 +436,10 @@ def grant_effect_lines(resp: dict[str, Any]) -> list[str]:
         if isinstance(s, str) and s
     ][:6]
     without, now = _finite(eff.get("risk_without")), _finite(resp.get("risk"))
-    if lowered and without is not None and now is not None:
+    if lowered and without is not None and now is not None and _half_up(without) > _half_up(now):
         head = f"grants: {names} lowered the risk from {_half_up(without)} to {_half_up(now)} ({', '.join(lowered)})"
+    elif lowered and now is not None:
+        head = f"grants: {names} lowered {', '.join(lowered)} but not the risk ({_half_up(now)})"
     elif lowered:
         head = f"grants: {names} lowered {', '.join(lowered)}"
     else:

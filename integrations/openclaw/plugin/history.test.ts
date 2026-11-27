@@ -415,3 +415,8 @@ test("why shows no grant line without a grant effect, or with a malformed one", 
   }
   assert.ok(!formatWhy(EFFECT_SCAN(undefined), null).includes("grants:"));
 });
+
+test("why says when grants lowered parts but not the risk", () => {
+  const eff = { grants: ["g_1"], risk_without: 56.2, lowered: ["suspicion.distrust"], unchanged: [] };
+  assert.deepEqual(grantEffectLines(EFFECT_SCAN(eff, 56).response as never), ["grants: g_1 lowered distrust but not the risk (56)"]);
+});

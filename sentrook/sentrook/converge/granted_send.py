@@ -15,8 +15,9 @@ owner granted every place the call sends to, this relief also:
 
 **Coverage.** The call sends off the host and names at least one host, recipient or channel in a sending role; every
 such entity (in the call, a sibling, a file the call writes, or a later run's roles) is covered by a matched
-`destination` grant, or is a host a `credential` grant ties the call's key to. An exec command that sends to a place
-it does not write as a host (`git push origin`) is not covered.
+`destination` grant (a `credential` grant alone ties a key to a host, not what else is sent there). Not covered: a call,
+sibling or written file that sends by a route whose destination need not be written as a host (`git push origin`,
+`rsync`, `aws s3 cp`, a socket opened in code), or builds an address at run time.
 
 **Gate.** No floor fired; concealment is below `concealment_below` and the new content's exposure below
 `exposure_below`; the session is not tainted (before or in this scan). A session that holds sensitive data passes
@@ -70,15 +71,14 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
     ]
     if not sends or not sends_off_host(prepared.pending, prepared.entities.pending()):
         return None
+    if _unwritten_route(prepared):
+        return None
     kinds = {g.grant_ref: g.kind for g in prepared.planir.grants}
     by_entity: dict[str, list[str]] = {}
     for ref, eids in prepared.grant_hits.items():
         if kinds.get(ref) == "destination":
             for eid in eids:
                 by_entity.setdefault(eid, []).append(ref)
-    home = prepared.credential_home
-    for host, ref in home.grants if home is not None else ():
-        by_entity.setdefault(host, []).append(ref)
     refs: list[str] = []
     for ent in sends:
         found = by_entity.get(ent.id)
@@ -86,6 +86,28 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
             return None
         refs.extend(r for r in found if r not in refs)
     return refs
+
+
+def _unwritten_route(prepared: Prepared) -> bool:
+    """The call, a sibling or a file the call writes sends by a route whose destination need not be written as a host,
+    or builds an address at run time: its entities may not show every place it reaches."""
+    from ..prepare.credential_home import _BUILT_ADDRESS_RE, _code_sends_by_unwritten_route
+    from ..prepare.grants import sends_by_unwritten_route
+    from ..probes.aira import written_file_call
+
+    calls = [prepared.pending, *prepared.resolved]
+    written = written_file_call(prepared)
+    if written is not None:
+        calls.append(written)
+    for call in calls:
+        text = call.command or ""
+        if text and (
+            sends_by_unwritten_route(text)
+            or _code_sends_by_unwritten_route(text)
+            or _BUILT_ADDRESS_RE.search(text)
+        ):
+            return True
+    return False
 
 
 def _flags(prepared: Prepared, envelopes: Iterable[Envelope]) -> set[SessionFlag]:
@@ -115,7 +137,7 @@ def _only_the_key_held(prepared: Prepared, envelopes: Iterable[Envelope]) -> boo
             if ent is None:
                 return False
             held.add(ent.hash)
-    return bool(homes) and held <= homes
+    return bool(homes) and bool(held) and held <= homes
 
 
 def _gate(
@@ -135,20 +157,16 @@ def _gate(
 
 def _owner_denied(prepared: Prepared, envelopes: Iterable[Envelope]) -> bool:
     """One of the earlier steps this call retries was denied by the owner."""
+    steps: set[object] = set()
     for env in envelopes:
         if env.step is not ProbeStep.CONTEXT or env.status is not ProbeStatus.OK:
             continue
         retry = env.evidence.get("retry")
-        steps = (
-            {m.get("step") for m in retry.get("matches") or []}
-            if isinstance(retry, dict)
-            else set()
-        )
-        return any(
-            h.step in steps and h.decision is Decision.DENIED_BY_USER
-            for h in prepared.planir.history
-        )
-    return False
+        if isinstance(retry, dict):
+            steps |= {m.get("step") for m in retry.get("matches") or [] if isinstance(m, dict)}
+    return any(
+        h.step in steps and h.decision is Decision.DENIED_BY_USER for h in prepared.planir.history
+    )
 
 
 def granted_send(

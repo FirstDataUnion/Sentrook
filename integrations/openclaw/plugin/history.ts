@@ -362,9 +362,11 @@ export function grantEffectLines(resp: ScanResponse): string[] {
   const without = finite(e.risk_without);
   const now = finite(resp.risk);
   const head =
-    lowered.length && without !== null && now !== null
+    lowered.length && without !== null && now !== null && Math.round(without) > Math.round(now)
       ? `grants: ${names} lowered the risk from ${Math.round(without)} to ${Math.round(now)} (${lowered.join(", ")})`
-      : lowered.length
+      : lowered.length && now !== null
+        ? `grants: ${names} lowered ${lowered.join(", ")} but not the risk (${Math.round(now)})`
+        : lowered.length
         ? `grants: ${names} lowered ${lowered.join(", ")}`
         : `grants: ${names} matched but did not change this score`;
   const parts: string[] = [];

@@ -1,6 +1,6 @@
 {
   "name": "conv-v11",
-  "notes": "2026-11-27: conv-v10 with the granted-send relief on (converge/granted_send.py). On a send whose every host, recipient or channel the owner granted (a matched destination grant, or the host a credential grant ties the key to), with no floor, concealment and exposure below 0.3, no tainted session, and any sensitive data the session holds being only the env file the call's key comes from: the call judge's misalignment is held to 0.20 when it is below 0.5; a retry's carried consequence is dropped unless the owner denied a matched earlier step; and, below the same 0.5, reach is held to 0.67 and the call judge's sensitivity to 0.34. Everything else is conv-v10's; conv-v1 to conv-v10 stay selectable, unchanged.",
+  "notes": "2026-11-27: conv-v10 with the granted-send relief on (converge/granted_send.py). On a send whose every host, recipient or channel the owner granted (each covered by a matched destination grant, with no send by a route that names no host), with no floor, concealment and exposure below 0.3, no tainted session, and any sensitive data the session holds being only the env file the call's key comes from: the call judge's misalignment is held to 0.20 when it is below 0.5; a retry's carried consequence is dropped unless the owner denied a matched earlier step; and, below the same 0.5, reach is held to 0.67 and the call judge's sensitivity to 0.34. Everything else is conv-v10's; conv-v1 to conv-v10 stay selectable, unchanged.",
   "u": 0.5,
   "certainty": "mean",
   "consequence": "mean",

@@ -330,3 +330,15 @@ def test_why_says_when_a_matched_grant_changed_nothing():
 def test_why_shows_no_grant_line_without_a_grant_effect(bad):
     assert history.grant_effect_lines(_effect_scan(bad)["response"]) == []
     assert "grants:" not in history.format_why(_effect_scan(bad), None)
+
+
+def test_why_says_when_grants_lowered_parts_but_not_the_risk():
+    eff = {
+        "grants": ["g_1"],
+        "risk_without": 56.2,
+        "lowered": ["suspicion.distrust"],
+        "unchanged": [],
+    }
+    assert history.grant_effect_lines(_effect_scan(eff, risk=56.0)["response"]) == [
+        "grants: g_1 lowered distrust but not the risk (56)"
+    ]

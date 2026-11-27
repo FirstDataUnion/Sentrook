@@ -317,6 +317,10 @@ def _grant_effect(
     grants = list(dict.fromkeys(matched))
     if not grants:
         return None
+    if home is not None and home.grants and {h for h, _ in home.grants} >= set(home.hosts):
+        # the credential-home check held only through the owner's credential grant: the model's sensitivity it held
+        # down is the grant's doing too
+        claims = collect(envelopes)
     bare = merge(claims, {pair for r in relief if r.grant_ref is None for pair in r.excluded})
     without = compute(bare, envelopes, params, exposure_unjudged=exposure_unjudged).risk
     without = max([without, *floor_risks])
