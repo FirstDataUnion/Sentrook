@@ -931,11 +931,12 @@ def _scan_one(
                 allow_key := _allow_key(cfg, resp, planir, built, relaxed, store),
                 resp,
                 datetime.now(UTC),
+                cfg.block_at,
             )
         ) is not None:
-            # The owner answered Session for a call of this tool about the same parties, at this risk or higher, with
-            # every attack-type warning this one carries, in this chat (`session_allow`). History says allowed: the
-            # owner was not shown this call.
+            # The owner answered Session for a call of this tool about the same parties, at most 10 points below this
+            # risk, with every attack-type warning this one carries, in this chat (`session_allow`). History says
+            # allowed: the owner was not shown this call.
             entry["decision"] = "allowed"
             session_allowed = {"by": covered.get("request_id")}
         else:

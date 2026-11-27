@@ -13,6 +13,12 @@ since the version the catalog pins.
   agent read, never as your words. Reviews there still ask in the channel; because anyone the bot admits can answer
   there, a snooze, remembered Session answers, grants set by approving and a subagent's prompts stay for a direct
   message or the terminal, and owner commands are still refused in channels.
+- **Session** on a review now also covers a later call of the same tool about the same parties that scores up to 10
+  points higher than the call you answered (never at or above the block line), and one that newly carries only the
+  session's rising consequence trend. A score moves a few points between near-identical calls of one job, so the
+  same job asked again. Every other new warning, a retry after a refusal included, still asks. The 10 points count
+  from your answer, not from a call Session let through. The prompt now says "also covers the same parties at a
+  similar risk". Passes on held calls are unchanged: no higher score and no new warning.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the

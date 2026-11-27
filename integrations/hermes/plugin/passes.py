@@ -17,13 +17,14 @@ are bound to the same source. The source is hashed as `session_ref` is (`source_
 prompt or the call. A run with no source the plugin can name has nothing to bind to: there `allow` gives a one-use
 pass bound to the call's exact arguments, for 7 days, and nothing else is offered.
 
-A later call matches on the same terms as a Session answer in a chat (`session_allow`), with the job as the scope:
-a call of the same tool about the same parties (the entities its reasons and description name), scoring no higher,
-with no warning the held call lacked, which the scanner neither enforced nor applied a floor to, and on a complete
-scan. A pass also needs the scan's `owner_pass` at or above its own level (`level_of`): a call that has since picked
-up a strong signal is never passed. When the call names no party, or its approval fingerprint names nothing, the
-match also binds to the call's exact arguments (hashed), and only a one-use pass is offered. A denial matches the
-job and action whatever the scan says: refusing is always safe.
+A later call matches as a Session answer in a chat does (`session_allow`), with the job as the scope and without that
+answer's margin: a call of the same tool about the same parties (the entities its reasons and description name),
+scoring no higher, with no warning the held call lacked (a rising consequence trend included), which the scanner
+neither enforced nor applied a floor to, and on a complete scan. A pass also needs the scan's `owner_pass` at or
+above its own level (`level_of`): a call that has since picked up a strong signal is never passed. When the call
+names no party, or its approval fingerprint names nothing, the match also binds to the call's exact arguments
+(hashed), and only a one-use pass is offered. A denial matches the job and action whatever the scan says: refusing
+is always safe.
 
 The match key is an HMAC under the install's salt, so the file reveals nothing about the action; it keeps the
 tool, the run's description of the call (as the hold's notice showed it) and the job, for the owner's list.
