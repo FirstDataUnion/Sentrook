@@ -38,7 +38,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 
 export type Manifest = Record<string, any>;
@@ -76,9 +76,15 @@ export class FolderError extends Error {}
 
 const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 
+/** The filesystem ignores letter case (macOS, Windows): `/Users/ME/.OPENCLAW` is `~/.openclaw`. Changeable by tests. */
+export const CASE = { folds: process.platform === "darwin" || process.platform === "win32" };
+
+const key = (p: string) => (CASE.folds ? p.toLowerCase() : p);
+
 function under(p: string, root: string): boolean {
-  const r = root.replace(/\/+$/, "");
-  return p === r || p.startsWith(`${r}/`);
+  const a = key(p);
+  const r = key(root.replace(/\/+$/, ""));
+  return a === r || a.startsWith(`${r}/`);
 }
 
 /** The path with every symlink resolved, as far as it exists (the rest appended as written), like Python's realpath. */
@@ -139,7 +145,7 @@ export function resolve(pattern: string, opts: { home: string; stateDir?: string
     const parts = candidate.split("/").filter(Boolean);
     if (parts.length < 2) throw new FolderError(`"${raw}" is too broad: trust one project folder, not ${candidate}.`);
     for (const h of homes) {
-      if (candidate === h || under(h, candidate)) {
+      if (under(h, candidate)) {
         throw new FolderError(`"${raw}" is your home folder or a folder above it: trust one project folder inside it.`);
       }
       if (HOST_FOLDERS.some((d) => under(candidate, `${h}/${d}`))) {
@@ -149,8 +155,14 @@ export function resolve(pattern: string, opts: { home: string; stateDir?: string
     if (SYSTEM_HOST_FOLDERS.some((d) => under(candidate, d))) {
       throw new FolderError(`"${raw}" holds the agent's own files: it can never be a trusted folder.`);
     }
-    if (state !== null && (under(candidate, state) || under(state, candidate))) {
-      throw new FolderError(`"${raw}" holds Sentrook's own files: it can never be a trusted folder.`);
+    if (state !== null) {
+      if (under(candidate, state) || under(state, candidate)) {
+        throw new FolderError(`"${raw}" holds Sentrook's own files: it can never be a trusted folder.`);
+      }
+      // The host's own home (`<openclaw state dir>/sentrook` sits in it), wherever it is configured.
+      if (path.basename(state) === "sentrook" && under(candidate, path.dirname(state))) {
+        throw new FolderError(`"${raw}" holds the agent's own files: it can never be a trusted folder.`);
+      }
     }
   }
   return real;
@@ -175,6 +187,11 @@ function git(top: string | null, args: string[], timeoutMs = GIT_TIMEOUT_MS): st
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_OPTIONAL_LOCKS = "0";
+  // Nothing from anyone's git config: the agent can write `~/.gitconfig`, where `url.<x>.insteadOf` would point the
+  // recorded remote elsewhere; the repository's own config is set aside by `GIT`.
+  env.GIT_CONFIG_GLOBAL = devNull;
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_COUNT = "0";
   const done = spawnSync("git", [...GIT, ...(top ? ["-C", top] : []), ...args], {
     cwd: top ?? tmpdir(),
     env,
@@ -205,23 +222,28 @@ export function gitTop(folder: string): string | null {
 /** {path relative to `folder`: blob id} for each regular file under `folder` in `commit`. */
 function blobFiles(top: string, folder: string, commit: string): Record<string, string> {
   const prefix = path.relative(top, folder) || ".";
-  const args = ["ls-tree", "-r", "-z", "--full-tree", commit];
+  const args = ["ls-tree", "-r", "-l", "-z", "--full-tree", commit];
   if (prefix !== ".") args.push("--", `${prefix}/`);
   const out = git(top, args, 60_000);
   const files: Record<string, string> = {};
   let n = 0;
+  let total = 0;
   for (const entry of out.split("\0")) {
     if (!entry) continue;
     const tab = entry.indexOf("\t");
     const meta = tab < 0 ? entry : entry.slice(0, tab);
     const p = tab < 0 ? "" : entry.slice(tab + 1);
-    const [mode = "", kind = "", oid = ""] = meta.split(/\s+/).filter(Boolean);
+    const [mode = "", kind = "", oid = "", size = ""] = meta.split(/\s+/).filter(Boolean);
     if (kind !== "blob" || (mode !== "100644" && mode !== "100755")) continue; // symlinks and submodules are never attested
     const rel = prefix === "." ? p : p.slice(prefix.length + 1);
     if (!Object.hasOwn(files, rel)) n++;
     files[rel] = oid;
-    if (n > LIMITS.maxFiles) {
-      throw new FolderError(`The folder has more than ${LIMITS.maxFiles} files: trust a smaller folder inside it.`);
+    total += /^\d+$/.test(size) ? Number(size) : 0;
+    if (n > LIMITS.maxFiles || total > LIMITS.maxBytes) {
+      throw new FolderError(
+        `The folder is larger than ${LIMITS.maxFiles} files or ${Math.floor(LIMITS.maxBytes / (1024 * 1024))} MB: trust a ` +
+          "smaller folder inside it, or a git repository.",
+      );
     }
   }
   return files;
@@ -464,25 +486,40 @@ function refresh(stateDir: string, gid: string, manifest: Manifest, now: Date): 
 }
 
 /**
+ * What OpenClaw's `read` showed the agent (`shown`, its one text block) is the text of the file the plugin hashed, or
+ * a run of whole lines of it, as a read with an offset and limit returns them. Anything else (another copy of the
+ * file, a notice the host added, nothing at all) is no match.
+ */
+export function shownMatches(shown: string | null, text: string): boolean {
+  if (!shown) return false;
+  if (shown === text) return true;
+  for (let i = text.indexOf(shown); i >= 0; i = text.indexOf(shown, i + 1)) {
+    const end = i + shown.length;
+    const starts = i === 0 || text[i - 1] === "\n";
+    const ends = end === text.length || shown.endsWith("\n") || text[end] === "\n" || text.startsWith("\r\n", end);
+    if (starts && ends) return true;
+  }
+  return false;
+}
+
+/**
  * The id of the folder grant that vouches for the file at `filePath` as read now, or null. `folderGrants` is
- * [grant id, folder pattern] for each live folder grant. The file's real path must be inside the folder's real path,
- * and its digest must be the manifest's. A relative `filePath` is read against `cwd`; with no `cwd`, it is not
- * attested.
+ * [grant id, folder pattern] for each live folder grant. `filePath` must be absolute or start with `~/`: the host
+ * resolves a relative path against a working folder the plugin cannot know. The file's real path must be inside the
+ * folder's real path, its digest must be the manifest's, and what the read showed (`seen`) must be the file's text
+ * (`shownMatches`), so the agent saw the trusted bytes wherever the host read them from (a sandbox, a remote backend).
  */
 export function attest(
   stateDir: string,
   folderGrants: Array<[string, string]>,
   filePath: unknown,
-  opts: { cwd: string | null; home: string; now?: Date },
+  opts: { home: string; seen: string | null; now?: Date },
 ): string | null {
-  if (typeof filePath !== "string" || !filePath.trim() || !folderGrants.length) return null;
+  if (typeof filePath !== "string" || !filePath.trim() || !folderGrants.length || !opts.seen) return null;
   const now = opts.now ?? new Date();
   let p = filePath.trim();
   if (p === "~" || p.startsWith("~/")) p = opts.home.replace(/\/+$/, "") + p.slice(1);
-  if (!p.startsWith("/")) {
-    if (!opts.cwd) return null;
-    p = path.join(opts.cwd, p);
-  }
+  if (!p.startsWith("/")) return null;
   const real = realpath(p);
   try {
     const st = statSync(real);
@@ -515,7 +552,15 @@ export function attest(
         : algo === "sha256"
           ? createHash("sha256").update(data).digest("hex")
           : null;
-    if (got !== null && got === want) return gid;
+    if (got !== null && got === want) {
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data);
+      } catch {
+        return null;
+      }
+      return shownMatches(opts.seen, text) ? gid : null;
+    }
   }
   return null;
 }

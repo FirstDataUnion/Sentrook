@@ -321,7 +321,8 @@ stays so.
 - **What "unchanged" means.** When you set the grant, the plugin records what the folder holds in its own state
   folder: in a git repository, the commit checked out (each tracked file's blob id); anywhere else, the sha256 of each
   file (at most 20,000 files and 200 MB). A file edited since, a new or untracked file, a symlink that leads out of the
-  folder, a read by a relative path, and a file read through a shell command rather than `read` are not trusted. Set
+  folder, a read by a relative path, a read whose text is not the file's (a sandbox reading its own copy, or a result
+  with a notice added) and a file read through a shell command rather than `read` are not trusted. Set
   the grant again after you change the folder; it replaces the old one.
 - **Following a branch.** With `--follow origin/main` in a git repository, a file is trusted when it matches the tip
   of `main` on that remote, at the address the remote had when you set the grant. The plugin asks the remote itself,

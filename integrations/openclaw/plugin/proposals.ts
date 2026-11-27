@@ -33,7 +33,7 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { destinationOk } from "./config.ts";
+import { destinationOk, resolveStateDir } from "./config.ts";
 import * as folders from "./folders.ts";
 import * as grants from "./grants.ts";
 import { bindingProblem } from "./planir.ts";
@@ -220,7 +220,7 @@ function grantItem(r: Entry): Entry | string {
     // The folder must be one the owner could trust now, named as Sentrook will record it.
     let real: string;
     try {
-      real = folders.resolve(parsed.pattern, { home: homedir() });
+      real = folders.resolve(parsed.pattern, { home: homedir(), stateDir: resolveStateDir(process.env) });
       if (parsed.follow && folders.gitTop(real) === null) return "--follow needs a git repository; this folder is not in one.";
     } catch (err) {
       if (err instanceof folders.FolderError) return err.message;
