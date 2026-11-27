@@ -24,6 +24,7 @@
     "config.ts",
     "consent.ts",
     "conversation.ts",
+    "folders.ts",
     "cronDelivery.ts",
     "decision.ts",
     "grants.ts",

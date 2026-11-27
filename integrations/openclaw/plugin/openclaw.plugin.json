@@ -94,7 +94,7 @@
         "description": "Chat role ids whose members' messages are sent as from a trusted sender: a list."
       },
       "grants": {
-        "description": "Standing grants: a list of { kind, pattern, allows?, scope?, granted_at? }; kind is destination, file, provider, repo or credential. scope is persistent when absent; a config grant has no session, so scope session is never sent (/sentrook-grant adds session grants without editing config)."
+        "description": "Standing grants: a list of { kind, pattern, allows?, scope?, granted_at? }; kind is destination, file, provider, repo, credential or folder (a folder grant in config is never sent: set it with /sentrook-grant folder). scope is persistent when absent; a config grant has no session, so scope session is never sent (/sentrook-grant adds session grants without editing config)."
       },
       "channelBindings": {
         "description": "Channels this deployment normally delivers to; sent as destination grants. /sentrook-bind adds more without editing config."

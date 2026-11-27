@@ -137,7 +137,7 @@ test("values that look set but are read differently are named", () => {
   assert.deepEqual(problemsOf({ reviewAt: 90, blockAt: "abc" }), ["blockAt: not a number from 0 to 101; using 80, or reviewAt if higher"]);
   // A grant kind Sentrook does not know never applies; scope is compared exactly as written.
   assert.deepEqual(problemsOf({ grants: [{ kind: "destinaton", pattern: "a.example" }] }), [
-    'grants[0].kind: "destinaton" is not destination, file, provider, repo or credential; this grant never applies',
+    'grants[0].kind: "destinaton" is not destination, file, provider, repo, credential or folder; this grant never applies',
   ]);
   assert.deepEqual(problemsOf({ grants: [{ kind: "destination", pattern: "a.example", scope: " persistent" }] }), [
     'grants[0].scope: " persistent" is not session or persistent; this grant is never sent',

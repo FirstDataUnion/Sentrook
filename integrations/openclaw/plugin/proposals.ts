@@ -7,11 +7,12 @@
  * the owner reads each item there, in the plugin's words, and sets it with the screen's code.
  *
  * **What it takes.** Up to `MAX_ITEMS` items, each one of:
- * - a grant, `{kind, pattern, allows?, expires?, reason}` (kind destination, file, provider, repo or credential);
+ * - a grant, `{kind, pattern, allows?, expires?, follow?, reason}` (kind destination, file, provider, repo, credential
+ *   or folder; `follow` is for a folder in a git repository, such as `origin/main`);
  * - a channel binding, `{binding, reason}`.
  * Each `reason` is one sentence of at most `MAX_REASON` characters, shown to the owner only as a quoted note. Each
  * item is checked by the code the owner's own commands use: a grant must be one `grant <kind> <pattern> --persistent
- * [--allows ...] [--expires ...]` would accept (`grants.parseGrant`), a binding one `bind add` would add that could
+ * [--allows ...] [--expires ...] [--follow ...]` would accept (`grants.parseGrant`), a binding one `bind add` would add that could
  * ever apply (`planir.bindingProblem`), and either must be one the setup screen can show (`setup.proposalItem`,
  * `setup.validItem`). An item that fails comes back to the agent with that code's error; the others are stored.
  * Session grants are refused (setup is for lasting grants, or ones with an expiry), and so are settings: the setup
@@ -29,9 +30,11 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { destinationOk } from "./config.ts";
+import * as folders from "./folders.ts";
 import * as grants from "./grants.ts";
 import { bindingProblem } from "./planir.ts";
 import { createRedactor } from "./redact.ts";
@@ -49,7 +52,7 @@ export const MAX_REASON = 200;
 /** Proposals open at once; a new one replaces the oldest. */
 export const MAX_OPEN = 3;
 
-const GRANT_FIELDS = new Set(["kind", "pattern", "allows", "expires", "reason", "scope"]);
+const GRANT_FIELDS = new Set(["kind", "pattern", "allows", "expires", "follow", "reason", "scope"]);
 const BINDING_FIELDS = new Set(["binding", "reason"]);
 
 export const NO_ITEMS = "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added.";
@@ -62,8 +65,9 @@ const ATTENDED = "Attended platforms are never proposed: only the owner adds one
 const SESSION = "Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner.";
 const NO_REASON = "Each item needs a reason: one sentence on why the owner would want it.";
 const LONG_REASON = `The reason must be at most ${MAX_REASON} characters.`;
-const NO_KIND = "A grant needs a kind: destination, file, provider, repo or credential.";
+const NO_KIND = "A grant needs a kind: destination, file, provider, repo, credential or folder.";
 const NO_PATTERN = "A grant needs a pattern, such as api.example.com.";
+const BAD_FOLLOW = "follow is a branch on a remote, such as origin/main.";
 const ONE_WORD = "The pattern must be one word, with no spaces or backticks.";
 const BAD_ALLOWS = "allows must be a list of read, write, edit, delete or exec.";
 const BAD_EXPIRES = "expires must be a lifetime such as 7d: a number with m, h or d, from 1m to 365d.";
@@ -83,7 +87,7 @@ const WILDCARD = /[*?[\]]/;
 export function description(cmd: Cmd): string {
   return (
     "Adds items to the owner's Sentrook setup list, for the owner to review and set themselves with " +
-    `${cmd("setup")}: grants (destination, file, provider, repo or credential) and channel bindings the owner ` +
+    `${cmd("setup")}: grants (destination, file, provider, repo, credential or folder) and channel bindings the owner ` +
     `told you they need, each with a short reason. At most ${MAX_ITEMS} items. Sets nothing itself; never ` +
     "settings or attended platforms, never session grants. Works only when the owner asks in a direct chat."
   );
@@ -98,15 +102,27 @@ export const PARAMETERS = {
       items: {
         type: "object",
         properties: {
-          kind: { type: "string", description: "A grant's kind: destination, file, provider, repo or credential." },
+          kind: {
+            type: "string",
+            description:
+              "A grant's kind: destination, file, provider, repo, credential or folder " +
+              "(a folder of the owner's own whose files count as theirs while unchanged).",
+          },
           pattern: {
             type: "string",
             description:
               "What the grant covers, as the grant command takes it: api.example.com, ~/notes/*, npm:@example/, " +
-              "github.com/owner/repo, or NAME@host for a key (its name only, never its value).",
+              "github.com/owner/repo, NAME@host for a key (its name only, never its value), or a folder such as " +
+              "~/src/my-repo.",
           },
           allows: { type: "array", items: { type: "string" }, description: "File grants only: read, write, edit, delete, exec." },
           expires: { type: "string", description: "How long the grant lasts, such as 4h or 7d (at most 365d)." },
+          follow: {
+            type: "string",
+            description:
+              "Folder grants in a git repository only: a branch on a remote, such as origin/main, whose files count " +
+              "as the owner's as the branch moves.",
+          },
           binding: {
             type: "string",
             description: "Instead of a grant: a chat channel a scheduled job posts to, as Sentrook saw it, such as discord:#daily-brief.",
@@ -149,7 +165,7 @@ export function checkItem(raw: unknown): Entry | string {
     .filter((k) => !fields.has(k))
     .sort();
   if (unknown.length) {
-    const takes = binding ? "a channel binding takes binding and reason" : "a grant takes kind, pattern, allows, expires and reason";
+    const takes = binding ? "a channel binding takes binding and reason" : "a grant takes kind, pattern, allows, expires, follow and reason";
     return `Unknown field "${clean(unknown[0], 40)}": ${takes}.`;
   }
   const reason = r.reason;
@@ -177,7 +193,7 @@ function bindingItem(channel: unknown): Entry | string {
 
 /** A grant as `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` takes it. */
 function grantItem(r: Entry): Entry | string {
-  const { kind, pattern, allows, expires } = r;
+  const { kind, pattern, allows, expires, follow } = r;
   if (typeof kind !== "string" || !kind || hasSpace(kind)) return NO_KIND;
   if (typeof pattern !== "string" || !pattern) return NO_PATTERN;
   if (!word(pattern)) return ONE_WORD;
@@ -190,12 +206,29 @@ function grantItem(r: Entry): Entry | string {
     if (typeof expires !== "string" || hasSpace(expires)) return BAD_EXPIRES;
     words.push(`--expires=${expires}`);
   }
+  if (follow !== undefined && follow !== null) {
+    if (typeof follow !== "string" || !follow || hasSpace(follow)) return BAD_FOLLOW;
+    words.push(`--follow=${follow}`);
+  }
   // The agent's own, stricter rule first: the grant command's refusal would offer it forms it may not propose.
   if (kind.toLowerCase() === "destination" && tooBroad(pattern)) return BROAD;
   const parsed = grants.parseGrant(words.join(" "), (sub) => sub);
   if (typeof parsed === "string") return parsed || NOT_A_GRANT;
   if (parsed.kind === "credential" && valueShaped(parsed.pattern.slice(0, parsed.pattern.indexOf("@")))) return VALUE_NAME;
   const out: Entry = { kind: parsed.kind, pattern: parsed.pattern };
+  if (parsed.kind === "folder") {
+    // The folder must be one the owner could trust now, named as Sentrook will record it.
+    let real: string;
+    try {
+      real = folders.resolve(parsed.pattern, { home: homedir() });
+      if (parsed.follow && folders.gitTop(real) === null) return "--follow needs a git repository; this folder is not in one.";
+    } catch (err) {
+      if (err instanceof folders.FolderError) return err.message;
+      throw err;
+    }
+    out.pattern = `${real}/`;
+    if (parsed.follow) out.follow = parsed.follow;
+  }
   if (parsed.allows?.length) out.allows = parsed.allows;
   if (expires !== undefined && expires !== null) out.expires = expires;
   return out;

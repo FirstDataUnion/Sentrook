@@ -526,7 +526,7 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
   let grantsText: string;
   let snoozeText: string;
   try {
-    grantsText = grants.formatGrants(cfg, grants.load(cfg.stateDir), now, CMD, null);
+    grantsText = grants.formatGrants(cfg, grants.load(cfg.stateDir), now, CMD, null, cfg.stateDir);
   } catch {
     grantsText = "Grants could not be read.";
   }

@@ -7,6 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 
 import { agentRules, reportedTool, shadowingSkills, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./config.ts";
 import * as cronDelivery from "./cronDelivery.ts";
 import * as dashboard from "./dashboard.ts";
+import * as folders from "./folders.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
@@ -117,6 +119,8 @@ export interface BeforeToolCallResult {
 
 /** Tool search's discovery tools: no side effects, and names OpenClaw keeps for itself. */
 const DISCOVERY_TOOLS = new Set(["tool_search", "tool_describe"]);
+/** OpenClaw tools that read one file whole or in part: a read `folders.attest` may vouch for. */
+const FOLDER_READ_TOOLS: ReadonlySet<string> = new Set(["read"]);
 
 /**
  * Tool search: discovery tools have no side effects, and the dispatcher (`tool_call`, `dispatch_action` from OpenClaw
@@ -495,6 +499,29 @@ const plugin = {
      * there on a call that ran without error means this plugin's `execute` never ran: the call is recorded as
      * `foreign_tool` (`FOREIGN_TEXT`, in status and verify) and every later call of that name is scanned like any other.
      */
+    /**
+     * The id of the owner's folder grant that vouches for the file this read took (`folders.attest`), or null. Only an
+     * absolute or `~/` path: OpenClaw resolves a relative one against a working folder the plugin cannot be sure of
+     * (as `agentSkills.ts` reads it), so such a read is never vouched for.
+     */
+    const trustedFolder = (cfg: PluginConfig, sid: string, params: unknown): string | null => {
+      const p = params as Record<string, unknown> | null | undefined;
+      const filePath = [p?.path, p?.file_path, p?.filePath].find((v) => typeof v === "string" && v !== "");
+      if (typeof filePath !== "string") return null;
+      const live = grants
+        .effective(cfg, store.loadGrants(), new Date(), sessionRef(sid))
+        .filter((g) => g.kind === "folder" && typeof g._id === "string")
+        .map((g): [string, string] => [g._id!, g.pattern]);
+      if (!live.length) return null;
+      try {
+        return folders.attest(cfg.stateDir, live, filePath, { cwd: null, home: homedir() });
+      } catch (err) {
+        // a read the plugin cannot check is simply not vouched for
+        api.logger.warn(`${LOG} folder check failed: ${String(err)}`);
+        return null;
+      }
+    };
+
     const foreignOwnTool = (event: any, ctx: any): void => {
       const tool = event?.toolName;
       const callId = event?.toolCallId ?? ctx?.toolCallId;
@@ -751,7 +778,12 @@ const plugin = {
             }
             const capped = capHeadTail(redacted, cfg.inputCapBytes);
             sess.inputSeq += 1;
+            const trusted =
+              !event?.error && FOLDER_READ_TOOLS.has(entry.tool)
+                ? trustedFolder(cfg, sid, event?.params ?? entry.arguments)
+                : null;
             sess.buffer.push({
+              ...(trusted ? { _trusted_grant: trusted } : {}),
               input_seq: sess.inputSeq,
               kind: "tool_result",
               call_id: entry.call_id,

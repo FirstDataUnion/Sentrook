@@ -570,6 +570,7 @@ export function relevantGrants(
   const out: Array<Record<string, unknown>> = [];
   grants.forEach((g, i) => {
     if (g.kind === "destination" && !destinationOk(g.pattern)) return;
+    if (g.kind === "folder") return; // sent only with a read it vouches for (`trustedInputs`)
     const hay = [...texts];
     if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
     const forms: Array<[string, boolean]> =
@@ -582,18 +583,55 @@ export function relevantGrants(
             : [[pats[i]!, false]];
     const always = g.kind === "credential" && opts.execCall === true;
     if (!always && !forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
-    out.push({
-      grant_ref: g.ref ?? `g_${i + 1}`,
-      kind: g.kind,
-      pattern: g.pattern,
-      ...(g.allows ? { allows: g.allows } : {}),
-      scope: g.scope ?? "persistent",
-      ...(g.granted_at ? { granted_at: g.granted_at } : {}),
-      ...(g.session_ref ? { session_ref: g.session_ref } : {}),
-      ...(g.expires_at ? { expires_at: g.expires_at } : {}),
-    });
+    out.push(sendable(g, g.ref ?? `g_${i + 1}`));
   });
   return out;
+}
+
+/** A grant as sent, with its `grant_ref`: without the plugin's own bookkeeping (`_id`). */
+function sendable(g: GrantConfig, ref: string): Record<string, unknown> {
+  return {
+    grant_ref: ref,
+    kind: g.kind,
+    pattern: g.pattern,
+    ...(g.allows ? { allows: g.allows } : {}),
+    scope: g.scope ?? "persistent",
+    ...(g.granted_at ? { granted_at: g.granted_at } : {}),
+    ...(g.session_ref ? { session_ref: g.session_ref } : {}),
+    ...(g.expires_at ? { expires_at: g.expires_at } : {}),
+  };
+}
+
+/**
+ * The inputs as sent, and the grants as sent: a read `folders.attest` vouched for (`_trusted_grant`, a folder grant's
+ * id) carries `trusted_by`, the `grant_ref` of that grant, and the grant is sent with it, numbered as `relevantGrants`
+ * numbers it. A read whose grant is gone since is sent as any other. Keys starting with `_` are never sent.
+ */
+export function trustedInputs(
+  inputs: Array<Record<string, any>>,
+  grants: GrantConfig[],
+  sent: Array<Record<string, unknown>>,
+): [Array<Record<string, any>>, Array<Record<string, unknown>>] {
+  const byId = new Map<string, [string, GrantConfig]>();
+  grants.forEach((g, i) => {
+    if (g.kind === "folder" && typeof g._id === "string") byId.set(g._id, [g.ref ?? `g_${i + 1}`, g]);
+  });
+  const outGrants = [...sent];
+  const have = new Set(sent.map((g) => g.grant_ref));
+  const outInputs = inputs.map((item) => {
+    const sentItem: Record<string, any> = Object.fromEntries(Object.entries(item).filter(([k]) => !k.startsWith("_")));
+    const found = typeof item._trusted_grant === "string" ? byId.get(item._trusted_grant) : undefined;
+    if (found && item.kind === "tool_result") {
+      const [ref, g] = found;
+      sentItem.trusted_by = ref;
+      if (!have.has(ref)) {
+        outGrants.push(sendable(g, ref));
+        have.add(ref);
+      }
+    }
+    return sentItem;
+  });
+  return [outInputs, outGrants];
 }
 
 export interface BuildInput {
@@ -725,6 +763,7 @@ export function buildPlanir(b: BuildInput): Built {
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
+  const allGrants = b.grants ?? cfg.grants.filter((g) => g.scope === "persistent");
   const planir = {
     planir_version: "2.0",
     request_id: randomUUID(),
@@ -774,7 +813,7 @@ export function buildPlanir(b: BuildInput): Built {
       ...(inputKind ? { input_kind: inputKind } : {}),
       batch: { siblings },
     },
-    grants: relevantGrants(b.grants ?? cfg.grants.filter((g) => g.scope === "persistent"), JSON.stringify(event.params ?? {}), {
+    grants: relevantGrants(allGrants, JSON.stringify(event.params ?? {}), {
       identity: provider.identity,
       home: homedir(),
       workspace: run.workspaceDir,
@@ -785,6 +824,7 @@ export function buildPlanir(b: BuildInput): Built {
     options: { packs: cfg.packs, redaction: redactor.level },
     ...(b.hostProcess && b.selfEdit ? { self_edit: b.selfEdit } : {}),
   };
+  [planir.new_inputs, planir.grants] = trustedInputs(sentInputs, allGrants, planir.grants) as [any, any];
 
   return {
     planir,

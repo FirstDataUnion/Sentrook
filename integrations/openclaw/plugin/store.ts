@@ -93,6 +93,8 @@ export interface HistoryEntry {
 }
 
 export interface BufferedInput {
+  /** The folder grant whose manifest vouched for this read (`folders.attest`): sent as `trusted_by`, never as is. */
+  _trusted_grant?: string;
   input_seq: number;
   kind: "tool_result";
   call_id: string;

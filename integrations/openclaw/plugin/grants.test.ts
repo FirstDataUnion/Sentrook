@@ -267,7 +267,7 @@ for (const [args, reply] of [
   ["destination #ops --scope persistant", 'Unknown scope "persistant": use session or persistent.'],
   ["destination #ops --scope=Persistent", 'Unknown scope "Persistent": use session or persistent.'],
   ["destination #ops --persistant", "Unknown option --persistant."],
-  ["destinaton #ops", 'Unknown grant kind "destinaton": use destination, file, provider, repo or credential.'],
+  ["destinaton #ops", 'Unknown grant kind "destinaton": use destination, file, provider, repo, credential or folder.'],
   ["credential EXAMPLE_API_KEY", '"EXAMPLE_API_KEY" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],
   ["credential EX*@api.example.invalid", '"EX*@api.example.invalid" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],
   ["credential EXAMPLE_API_KEY@*.invalid", '"EXAMPLE_API_KEY@*.invalid" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],

@@ -26,18 +26,26 @@
  * both. An expired grant is not sent, and is dropped from the file on the next change. Other patterns
  * are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
  *
+ * A `folder` grant (`grant folder <dir> [--follow origin/main]`) trusts a folder the owner keeps as their own: a file
+ * the agent reads from it while it is unchanged since then counts as the owner's own content, not outside text
+ * (`folders.ts`). It is `persistent` unless the owner asks for `session`. Setting it records what the folder holds;
+ * setting it again for the same folder replaces it and records the folder afresh. It is only ever set by command or
+ * from the setup screen: a folder grant in the plugin config is never sent, and a suggested grant is never a folder.
+ *
  * Every change is written to the traffic log as a `grants` record (none when the owner has turned the
  * traffic log off). The Hermes plugin keeps the same file format and prints the same text.
  */
 
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { credentialPatternOk, destinationOk, type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
+import * as folders from "./folders.ts";
 import { bindingProblem, HOST_TASK_KINDS } from "./planir.ts";
 import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
-export const KINDS = ["destination", "file", "provider", "repo", "credential"];
+export const KINDS = ["destination", "file", "provider", "repo", "credential", "folder"];
 /** Why the grant command refuses a destination `destinationOk` refuses; `{pattern}` is the pattern as typed. */
 export const TOO_BROAD =
   '"{pattern}" is too broad for a destination grant: a wildcard may cover only one registrable domain ' +
@@ -126,6 +134,11 @@ export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date,
   for (const pattern of cfg.channelBindings) out.push({ kind: "destination", pattern, scope: "persistent" });
   for (const [raw, g] of fileGrants(data)) {
     if (expired(raw, now) || (g.scope === "session" && bound(raw) !== sessionRef)) continue;
+    if (g.kind === "folder") {
+      if (typeof raw.id !== "string") continue;
+      // which manifest vouches for a read (`folders.attest`); never sent (`planir.relevantGrants`)
+      g._id = raw.id;
+    }
     if (g.scope === "session") g.session_ref = sessionRef;
     const at = readTime(raw.expires_at);
     if (at !== null) g.expires_at = iso(at);
@@ -162,7 +175,14 @@ function sessionOf(raw: Entry, ref: string | null): string {
 }
 
 /** The grants in force, as seen from the session `ref` (null: no current session). */
-export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Date, cmd: Cmd, ref: string | null = null): string {
+export function formatGrants(
+  cfg: PluginConfig,
+  data: GrantsFile | null,
+  now: Date,
+  cmd: Cmd,
+  ref: string | null = null,
+  stateDir: string | null = null,
+): string {
   const rows: string[][] = cfg.grants.map((g, i) => [
     `cfg-${i + 1}`,
     g.kind,
@@ -179,6 +199,9 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
     const details = g.scope === "session" ? [sessionOf(raw, ref)] : [];
     if (g.kind === "destination" && !destinationOk(g.pattern)) details.push("too broad, never sent");
     if (g.allows?.length) details.push(`allows ${g.allows.join(",")}`);
+    if (g.kind === "folder" && stateDir !== null && typeof raw.id === "string") {
+      details.push(folders.describe(folders.load(stateDir, raw.id)));
+    }
     if ("expires_at" in raw) {
       const at = readTime(raw.expires_at);
       details.push(`${expired(raw, now) ? "expired" : "expires"} ${at ? show(at) : "?"}`);
@@ -243,11 +266,13 @@ export function grantUsage(cmd: Cmd): string {
   return (
     `usage: ${cmd("grant")} <kind> <pattern> [--persistent | --scope session|persistent] ` +
     "[--session <ref>] [--allows read,write] [--expires 12h]\n" +
-    "kind is destination, file, provider, repo (github.com/<owner>/<repo>) or credential " +
-    "(NAME@host: the key and the host it is meant for); --allows is for file grants; scope defaults to " +
+    "kind is destination, file, provider, repo (github.com/<owner>/<repo>), credential " +
+    "(NAME@host: the key and the host it is meant for) or folder (a folder of your own whose files count as " +
+    "yours while unchanged; --follow origin/main to follow that branch); --allows is for file grants; scope " +
+    "defaults to " +
     "session: this session only, or the one --session names (a ref from " +
     `${cmd("history")}); cron jobs, subagents and other chats need --persistent. ` +
-    "A credential grant is persistent unless --scope session is given"
+    "A credential or folder grant is persistent unless --scope session is given"
   );
 }
 
@@ -264,6 +289,7 @@ interface ParsedGrant {
   scope: string;
   session_ref?: string | null;
   allows?: string[];
+  follow?: string;
   expiresInMs?: number;
 }
 
@@ -285,7 +311,7 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
       opts.scope = "persistent";
       continue;
     }
-    if (!["scope", "session", "allows", "expires"].includes(name)) return `Unknown option --${clean(name, 40)}.`;
+    if (!["scope", "session", "allows", "expires", "follow"].includes(name)) return `Unknown option --${clean(name, 40)}.`;
     if (value === undefined) {
       if (i >= tokens.length) return `--${name} needs a value.`;
       value = tokens[i++]!;
@@ -296,7 +322,7 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
   const kind = pos[0]!.toLowerCase();
   let pattern = pos[1]!;
   if (!KINDS.includes(kind)) {
-    return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file, provider, repo or credential.`;
+    return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file, provider, repo, credential or folder.`;
   }
   if (pattern.length > MAX_PATTERN || !printable(pattern)) {
     return `The pattern must be at most ${MAX_PATTERN} printable characters.`;
@@ -313,10 +339,22 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
     }
   }
   if (kind === "destination" && !destinationOk(pattern)) return TOO_BROAD.replace("{pattern}", clean(pattern, 80));
-  // a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
-  const scope = opts.scope ?? (kind === "credential" && opts.session === undefined ? "persistent" : "session");
+  if (opts.follow !== undefined) {
+    if (kind !== "folder") return "--follow applies to folder grants only.";
+    try {
+      folders.parseFollow(opts.follow);
+    } catch (err) {
+      if (err instanceof folders.FolderError) return err.message;
+      throw err;
+    }
+  }
+  // a credential or folder grant is persistent unless the owner asks for a session (naming one with --session asks
+  // too)
+  const scope =
+    opts.scope ?? ((kind === "credential" || kind === "folder") && opts.session === undefined ? "persistent" : "session");
   if (!SCOPES.includes(scope)) return `Unknown scope "${clean(scope, 40)}": use session or persistent.`;
   const grant: ParsedGrant = { kind, pattern, scope };
+  if (opts.follow !== undefined) grant.follow = opts.follow.trim();
   if (opts.session !== undefined) {
     if (scope !== "session") return "--session applies to session grants only.";
     if (!SESSION_REF.test(opts.session)) {
@@ -371,6 +409,35 @@ function changeLocked(stateDir: string, now: Date, fn: (data: GrantsFile) => Cha
   return result;
 }
 
+/**
+ * The folder a folder grant names (its real path, ending in `/`) and the record of what it holds now
+ * (`folders.build`), or why it cannot be trusted.
+ */
+export function recordFolder(
+  stateDir: string,
+  pattern: string,
+  follow: string | null | undefined,
+  now: Date,
+  home?: string | null,
+): [string, folders.Manifest] | string {
+  try {
+    const real = folders.resolve(pattern, { home: home || homedir(), stateDir });
+    return [`${real}/`, folders.build(real, { follow: follow ?? null, now })];
+  } catch (err) {
+    if (err instanceof folders.FolderError) return `Not trusted: ${err.message}`;
+    return `Not trusted: the folder could not be read (${clean(err instanceof Error ? err.message : err, 120)}).`;
+  }
+}
+
+/** Takes the folder grants on `pattern` out of `data` (a folder set again replaces them) and returns them. */
+export function dropFolder(data: GrantsFile, pattern: string): Entry[] {
+  const gone = data.grants.filter(
+    (g): g is Entry => !!g && typeof g === "object" && (g as Entry).kind === "folder" && (g as Entry).pattern === pattern,
+  );
+  data.grants = data.grants.filter((g) => !gone.includes(g as Entry));
+  return gone;
+}
+
 /** `grant ...` from the session `ref` (null: no current session). */
 export function addGrant(
   stateDir: string,
@@ -380,6 +447,7 @@ export function addGrant(
   now: Date,
   cmd: Cmd,
   beforeWrite: () => void,
+  home?: string | null,
 ): ChangeResult {
   const parsed = parseGrant(rest, cmd);
   if (typeof parsed === "string") {
@@ -390,13 +458,22 @@ export function addGrant(
     parsed.session_ref ??= ref;
     if (parsed.session_ref === null) return { reply: noSession(cmd), change: null };
   }
-  return change(
+  let manifest: folders.Manifest | null = null;
+  if (parsed.kind === "folder") {
+    const got = recordFolder(stateDir, parsed.pattern, parsed.follow, now, home);
+    if (typeof got === "string") return { reply: got, change: null };
+    [parsed.pattern, manifest] = got;
+  }
+  const replaced: Entry[] = [];
+  const result = change(
     stateDir,
     now,
     (data) => {
+      if (manifest !== null) replaced.push(...dropFolder(data, parsed.pattern));
       const taken = new Set(data.grants.map((g) => (g as Entry)?.id));
       let id = `gr-${randomBytes(3).toString("hex")}`;
       while (taken.has(id)) id = `gr-${randomBytes(3).toString("hex")}`;
+      if (manifest !== null) folders.save(stateDir, id, manifest);
       const { expiresInMs, ...grant } = parsed;
       const entry: Entry = { id, ...grant, granted_at: iso(now) };
       const expires = expiresInMs === undefined ? null : new Date(now.getTime() + expiresInMs);
@@ -407,14 +484,25 @@ export function addGrant(
         entry.scope !== "session" ? entry.scope : entry.session_ref === ref ? "this session only" : `session ${entry.session_ref} only`;
       const details = [where, ...(entry.allows ? [`allows ${entry.allows.join(",")}`] : [])];
       if (expires) details.push(`expires ${show(expires)}`);
+      if (manifest !== null) details.push(folders.describe(manifest));
+      if (replaced.length) details.push(`replaces ${replaced.map((g) => String(g.id)).join(", ")}`);
+      const trusted =
+        manifest !== null
+          ? " A file the agent reads from it counts as yours while it is unchanged; set it again after you change the " +
+            `folder${entry.follow ? " (it follows the branch by itself)." : "."}`
+          : "";
       const note = entry.scope === "session" ? " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)." : "";
       return {
-        reply: `Granted ${id}: ${entry.kind} ${entry.pattern} (${details.join(", ")}).${note}`,
+        reply: `Granted ${id}: ${entry.kind} ${entry.pattern} (${details.join(", ")}).${trusted}${note}`,
         change: { op: "grant", entry },
       };
     },
     beforeWrite,
   );
+  if (result.change) {
+    for (const g of replaced) if (typeof g.id === "string") folders.remove(stateDir, g.id);
+  }
+  return result;
 }
 
 /**
@@ -423,11 +511,18 @@ export function addGrant(
  * Kind, pattern and allows only; the scope is always persistent and the expiry is the hold's. Null when it is not
  * one the command would accept.
  */
-export function hintGrant(hint: unknown): Entry | null {
+export function hintGrant(hint: unknown, opts: { folder?: boolean } = {}): Entry | null {
   if (!hint || typeof hint !== "object" || Array.isArray(hint)) return null;
   const { kind, pattern, allows } = hint as Entry;
   if (typeof kind !== "string" || typeof pattern !== "string") return null;
+  // Trusting a folder records what it holds: only the owner's command or the setup screen (`folder`) sets one, never
+  // a grant Sentrook suggested.
+  const isFolder = kind.trim().toLowerCase() === "folder";
+  if (isFolder && !opts.folder) return null;
+  const follow: unknown = (hint as Entry).follow ?? null;
+  if (follow !== null && (!isFolder || typeof follow !== "string" || !follow.trim())) return null;
   const words = [kind, pattern.trim(), "--persistent"];
+  if (typeof follow === "string") words.push(`--follow=${follow.trim()}`);
   if (allows !== undefined && allows !== null) {
     // Each one known verb, exactly: no spaces, commas or anything the command line would split.
     if (!Array.isArray(allows) || !allows.every((a) => typeof a === "string" && ALLOWS.includes(a))) return null;
@@ -435,9 +530,15 @@ export function hintGrant(hint: unknown): Entry | null {
   }
   // One word each, as typed: a kind or pattern with spaces could not have been typed either.
   if (words.slice(0, 2).some((w) => !w || /\s/u.test(w))) return null;
+  if (words.slice(3).some((w) => /\s/u.test(w))) return null;
   const parsed = parseGrant(words.join(" "), (sub) => sub);
   if (typeof parsed === "string") return null;
-  return { kind: parsed.kind, pattern: parsed.pattern, ...(parsed.allows ? { allows: parsed.allows } : {}) };
+  return {
+    kind: parsed.kind,
+    pattern: parsed.pattern,
+    ...(parsed.allows ? { allows: parsed.allows } : {}),
+    ...(parsed.follow !== undefined ? { follow: parsed.follow } : {}),
+  };
 }
 
 /** Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a review always). */
@@ -580,6 +681,7 @@ export function revoke(stateDir: string, cfg: PluginConfig, rest: string, now: D
       const i = data.grants.findIndex((g) => (g as Entry)?.id === id);
       if (i < 0) return { reply: `No grant ${clean(id, 40)}; see ${cmd("grants")}.`, change: null };
       const [entry] = data.grants.splice(i, 1) as Entry[];
+      if (entry?.kind === "folder") folders.remove(stateDir, id);
       return { reply: `Revoked ${id}: ${clean(entry!.kind)} ${clean(entry!.pattern)}.`, change: { op: "revoke", entry: entry! } };
     },
     beforeWrite,

@@ -56,7 +56,7 @@ export interface Endpoints {
 }
 
 /** The grant kinds Sentrook reads; a grant of any other kind never applies. */
-export const GRANT_KINDS: readonly string[] = ["destination", "file", "provider", "repo", "credential"];
+export const GRANT_KINDS: readonly string[] = ["destination", "file", "provider", "repo", "credential", "folder"];
 
 export interface GrantConfig {
   kind: string;
@@ -70,6 +70,8 @@ export interface GrantConfig {
   expires_at?: string;
   /** The `grant_ref` to send instead of the grant's place in the list (a cron job's delivery target). */
   ref?: string;
+  /** A folder grant set by command: its id, whose manifest vouches for a read (`folders.attest`). Never sent. */
+  _id?: string;
 }
 
 export interface PluginConfig {
@@ -320,6 +322,9 @@ const GLOB = /[*?[\]]/;
 const PLATFORM_PREFIX = /^[a-z][a-z0-9_-]*:(?!\/\/)/;
 /** Why a destination grant that `destinationOk` refuses is never sent. */
 export const TOO_BROAD = "too broad";
+/** Why a folder grant in the config is never sent: trusting a folder records what it holds, which only the grant
+ * command and the setup screen do. */
+export const FOLDER_BY_COMMAND = "set folder grants with the grant command";
 
 /** `NAME@host` as Sentrook reads it (the host already lower-cased). */
 export function credentialPatternOk(pattern: string): boolean {
@@ -378,7 +383,9 @@ export function parseConfigGrants(raw: unknown): { grants: GrantConfig[]; unsent
     const [parsed] = parseGrants([g]);
     if (!parsed) continue;
     const tooBroad = parsed.kind === "destination" && !destinationOk(parsed.pattern);
-    const why = tooBroad ? TOO_BROAD : unsentScope((g as Record<string, unknown>).scope);
+    // trusting a folder records what it holds, which only the grant command and the setup screen do
+    const folder = parsed.kind === "folder";
+    const why = tooBroad ? TOO_BROAD : folder ? FOLDER_BY_COMMAND : unsentScope((g as Record<string, unknown>).scope);
     if (why) unsentGrants[grants.length] = why;
     grants.push(parsed);
   }
