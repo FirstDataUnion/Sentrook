@@ -1300,3 +1300,14 @@ def test_a_fetched_package_computed_by_the_shell_is_one_computed_package():
     from sentrook.prepare.entities import _packages_in
 
     assert _packages_in('npx "$(cat tool.txt)" --help') == ["npm:$(...)"]
+
+
+def test_config_description_without_a_destination_names_none(attack_case):
+    """A change to the agent's own setup with no destination does not say "(a destination)"."""
+    raw = _base_planir(attack_case)
+    raw["pending_call"]["tool"] = "skill_manage"
+    raw["pending_call"]["arguments"] = {"action": "create", "name": "notes"}
+    p = prepare(raw, opts(attack_case["state_seed"]))
+    assert describe(p, "modifies_agent_or_host_config").template == (
+        "Changes the agent's or host's configuration"
+    )

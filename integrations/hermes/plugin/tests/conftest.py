@@ -269,3 +269,15 @@ def review_fork(provenance, monkeypatch):
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     return state
+
+
+def without_call(text):
+    """A notice's lines with the call block (header, fenced lines) taken out, for checks of the rest of its words."""
+    from plugin import history
+
+    lines = text.splitlines()
+    if history.NOTICE_CALL_HEADER not in lines:
+        return lines
+    start = lines.index(history.NOTICE_CALL_HEADER)
+    end = lines.index("```", start + 2)
+    return lines[:start] + lines[end + 1 :]

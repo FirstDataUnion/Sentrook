@@ -6,6 +6,12 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- `/sentrook why` now shows the call itself (the tool's arguments as sent to the scanner: secrets masked, long text
+  cut), and a background-save notice shows the save it is about, so you can judge it without opening the dashboard.
+  The dashboard shows each scan's call by default too. One new setting, `hide_tool_calls`, hides calls in all three
+  places; `dashboard_show_calls` is no longer needed and does nothing. A report's summary never carries the call.
+- A held change to the agent's own skills or memory no longer reads "Changes the agent's or host's configuration a
+  destination" when it names no destination.
 - Beta: while a snooze is on, a block in a chat you attend asks you instead of stopping, whatever caused it: a floor,
   a strong signal or a rule that always blocks included. Until now only a block Sentrook marks as having no clear
   attack signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt

@@ -81,8 +81,11 @@
       "historyArgsCapBytes": {
         "description": "Largest earlier-step arguments sent in full, at least 256 bytes."
       },
+      "hideToolCalls": {
+        "description": "true or false (default false): hide the calls, with redacted arguments, that /sentrook-why, background-save notices and the dashboard show."
+      },
       "dashboardShowCalls": {
-        "description": "true or false (default false): each dashboard scan shows its call, with redacted arguments."
+        "description": "Replaced by hideToolCalls; still accepted, does nothing."
       },
       "packs": {
         "description": "Scan packs sent with each scan: a list of names (default tier1)."

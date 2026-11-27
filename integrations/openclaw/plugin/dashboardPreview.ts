@@ -37,7 +37,7 @@ code{background:#ffe6cb;color:#041c1c}
 /** Hermes's command forms, as dashboard.py's COMMANDS has them. */
 const HERMES_COMMANDS = {
   prefix: "/sentrook ",
-  call_setting: "hermes config set plugins.entries.sentrook.settings.dashboard_show_calls true",
+  call_setting: "hermes config set plugins.entries.sentrook.settings.hide_tool_calls false",
   review_answer: ["Answer in the chat where it was asked, with Hermes's own commands:", "/approve", "/approve session", "/approve always", "/deny"],
 };
 

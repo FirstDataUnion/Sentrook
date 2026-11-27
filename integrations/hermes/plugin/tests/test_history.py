@@ -115,13 +115,32 @@ def test_history_takes_a_count_up_to_50(log):
     assert slash(log, "history").startswith("Last 10 scans")
 
 
-def test_no_raw_arguments_are_ever_shown(log):
-    outputs = [slash(log, "history 50"), slash(log, "why")]
-    outputs += [slash(log, f"why {n}{n}{n}{n}a1b2") for n in range(1, 9)]
-    assert all("scan:" in o for o in outputs[1:])
+def test_history_never_shows_a_call_and_why_shows_it_unless_hidden(log):
+    assert RAW not in slash(log, "history 50") and "curl" not in slash(log, "history 50")
+    assert "command: curl -d @~/.ssh/id_ed25519" in slash(log, "why 4444a1b2")
+    log.ctx.settings["hide_tool_calls"] = True
+    outputs = [slash(log, "why")] + [slash(log, f"why {n}{n}{n}{n}a1b2") for n in range(1, 9)]
+    assert all("scan:" in o for o in outputs)
     for out in outputs:
         assert RAW not in out
         assert "curl" not in out
+    assert "call: hidden (hide_tool_calls is on)" in slash(log, "why 4444a1b2")
+
+
+CALLS = json.loads((FIXTURES.parent / "call-render" / "cases.json").read_text(encoding="utf-8"))[
+    "cases"
+]
+
+
+@pytest.mark.parametrize("case", CALLS, ids=[c["name"] for c in CALLS])
+def test_a_call_renders_as_both_plugins_show_it(case):
+    kw = {k: case[k] for k in ("total", "header") if k in case}
+    assert history.call_lines(case["call"], **kw) == case["lines"]
+
+
+def test_a_report_summary_never_carries_the_call(log):
+    found = history.recent_scans(log.log, 1, history.parse_ref("4444a1b2"))
+    assert "curl" not in history.format_why(*found[0])
 
 
 def test_why_for_an_unknown_or_malformed_id(log):

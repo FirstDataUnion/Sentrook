@@ -432,6 +432,7 @@ export function noticeText(
   retry = false,
   action = "",
   drafts: PatchDraftCount | null = null,
+  call: readonly string[] = [],
 ): string {
   const what = `${STORE_WORDS[store]}: ${inert(describe(resp, tool), 160)} (${inert(tool, 80)})`;
   // the id only means something while the traffic log keeps the scan
@@ -439,7 +440,7 @@ export function noticeText(
   const look = id ? `/sentrook-why ${id}; /sentrook-history lists every background save.` : "/sentrook-history lists every background save.";
   const scope = isJob ? "job" : "run";
   if (patchDraftNotice(outcome, tool, action)) {
-    return patchNotice(outcome as "drafted" | "draft_ignored" | "draft_failed", what, where, id, look, scope, drafts).join("\n");
+    return withCall(patchNotice(outcome as "drafted" | "draft_ignored" | "draft_failed", what, where, id, look, scope, drafts), call).join("\n");
   }
   const act = tool === "skill_workshop" && Object.hasOwn(HELD_WORKSHOP_ACTS, action) ? HELD_WORKSHOP_ACTS[action]! : null;
   const lines: Record<Announced, string[]> = {
@@ -495,7 +496,13 @@ export function noticeText(
       `More blocked saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
     ],
   };
-  return lines[outcome].join("\n");
+  return withCall(lines[outcome], call).join("\n");
+}
+
+/** A notice's lines with the call (`history.callLines`, empty when the owner hid calls) after the line naming the save. */
+function withCall(lines: string[], call: readonly string[]): string[] {
+  const at = lines.findIndex((line) => /^(Save|Saved|Draft|Tool) /.test(line) || line.startsWith("Tool:"));
+  return at < 0 || !call.length ? lines : [...lines.slice(0, at + 1), ...call, ...lines.slice(at + 1)];
 }
 
 /**
@@ -503,10 +510,17 @@ export function noticeText(
  * `hold.whereText`'s, already made inert. Built as the save notices are: fixed words, the run, and the call as a review
  * card shows it.
  */
-export function heldCallText(resp: ScanResponse, tool: string, where: string, requestId: string | null, isJob: boolean): string {
+export function heldCallText(
+  resp: ScanResponse,
+  tool: string,
+  where: string,
+  requestId: string | null,
+  isJob: boolean,
+  call: readonly string[] = [],
+): string {
   const id = requestId === null ? null : inert(requestId, 36).slice(0, 8);
   const scope = isJob ? "job" : "run";
-  return [
+  const lines = [
     "Sentrook held a tool call in one of OpenClaw's background runs: it did not run, and the run was told not to " +
       "retry it. Nobody can answer a prompt there, so it was not asked about.",
     `Run: ${where}`,
@@ -515,7 +529,8 @@ export function heldCallText(resp: ScanResponse, tool: string, where: string, re
     "The run may have ended without saving what it learned; to keep something, ask the agent for it in a chat.",
     id ? `To look at it: /sentrook-why ${id}; /sentrook-history lists the run's calls.` : "/sentrook-history lists the run's calls.",
     `More held calls in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
-  ].join("\n");
+  ];
+  return withCall(lines, call).join("\n");
 }
 
 /** The notice for a change to an existing skill sent to the drafts: kept, run live instead, or not kept. */

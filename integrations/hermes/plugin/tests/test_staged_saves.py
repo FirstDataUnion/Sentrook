@@ -31,6 +31,7 @@ from plugin import commands, dashboard, history, hold, staging
 from plugin.redact import Redactor
 
 from . import hermes_fakes
+from .conftest import without_call
 from .test_background_saves import LENIENT, NOT_LENIENT, SID, Tty
 
 #: A save the plugin's redaction changes: a password stated in prose.
@@ -302,11 +303,11 @@ def test_a_scanner_without_a_self_edit_object_stages_an_unredacted_save(h):
     assert out == STAGED and rec["decision"] == "staged"
 
 
-def test_the_skill_notice_gives_the_id_and_the_commands_and_never_the_save(h):
+def test_the_skill_notice_gives_the_id_and_the_commands_and_shows_the_save(h):
     out, rec = save(h, *STAGEABLE["skill-create"][:2])
     pid = rec["staging"]["id"]
     (text,) = notices(h)
-    assert text.splitlines() == [
+    assert without_call(text) == [
         "Sentrook held a background skill save and staged it in Hermes for you to approve, so it is not saved yet.",
         f"Run: background save, session {rec['session_ref']}",
         "Save: skill_manage: Saves a skill",
@@ -320,15 +321,26 @@ def test_the_skill_notice_gives_the_id_and_the_commands_and_never_the_save(h):
         "More staged background saves in this session are not announced for 6 hours; /skills pending and "
         "/memory pending list them all.",
     ]
-    assert "Tidy" not in text and "make tidy" not in text
+    # the save itself, marked as data, unless the owner hid calls
+    lines = text.splitlines()
+    assert lines[3] == history.NOTICE_CALL_HEADER and lines[4] == "```"
+    assert "Tidy" in text
     assert rec["notice"] == {"status": "queued", "target": "telegram"}
+
+
+def test_a_staged_notice_never_shows_the_save_when_calls_are_hidden(h):
+    h.ctx.settings["hide_tool_calls"] = True
+    save(h, *STAGEABLE["skill-create"][:2])
+    (text,) = notices(h)
+    assert "Tidy" not in text and "make tidy" not in text
+    assert history.NOTICE_CALL_HEADER not in text
 
 
 def test_the_memory_notice_says_where_the_text_is(h):
     _, rec = save(h, *STAGEABLE["memory-add"][:2])
     pid = rec["staging"]["id"]
     (text,) = notices(h)
-    lines = text.splitlines()
+    lines = without_call(text)
     assert lines[0] == (
         "Sentrook held a background memory save and staged it in Hermes for you to approve, so it is not saved yet."
     )
@@ -339,7 +351,7 @@ def test_the_memory_notice_says_where_the_text_is(h):
         f"Then approve it: /memory approve {pid}",
         f"Or reject it: /memory reject {pid}",
     ]
-    assert "short replies" not in text
+    assert "short replies" in text
 
 
 def test_one_staged_notice_per_session_in_the_quiet_period(h):
@@ -691,7 +703,7 @@ def test_a_destructive_memory_change_goes_to_hermess_own_gate(gate, name):
     assert stat.S_IMODE(os.stat(h.dir / "pending" / "memory" / f"{pid}.json").st_mode) == 0o600
     assert shown(h) == ("staged (by Hermes, self-edit)", "pending in Hermes")
     (text,) = notices(h)
-    lines = text.splitlines()
+    lines = without_call(text)
     assert lines[0] == (
         "Sentrook held a background memory save and Hermes staged it for you to approve, so it is not saved yet."
     )
@@ -701,7 +713,7 @@ def test_a_destructive_memory_change_goes_to_hermess_own_gate(gate, name):
         f"Then approve it: /memory approve {pid}",
         f"Or reject it: /memory reject {pid}",
     ]
-    assert "short" not in text
+    assert "short" not in "\n".join(lines)  # only in the call block
     status = commands.run_status("", dict(h.ctx.settings))
     assert next(x for x in status.splitlines() if x.startswith("skill review:")).endswith(
         "1 staged"
