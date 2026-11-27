@@ -27,7 +27,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ..planir.canonical import CanonicalCall, joined_text
-from ..planir.models import ToolKind
+from ..planir.models import OS, ToolKind
 from ..state.token import entity_hash, table_key
 from .entities import (
     _RUNISH_TOOL,
@@ -500,10 +500,12 @@ def _names_file(text: str, name: str) -> bool:
 
 
 #: Characters that hide text from a person reading the file: bidirectional controls, zero-width characters and
-#: joiners, invisible operators, the byte-order mark inside text, and Unicode tag characters. A rules or
+#: joiners, invisible operators, the byte-order mark inside text, variation selectors (which can carry arbitrary bytes
+#: after a visible character), fillers and interlinear marks, and Unicode tag characters. A rules or
 #: instruction file has no need for them; they are how instructions are slipped past a reviewer.
 HIDDEN_CHARS = re.compile(
-    "[\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f]"
+    "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u2064"
+    "\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\U000e0000-\U000e01ef]"
 )
 
 
@@ -527,10 +529,13 @@ def trusted_folder_read(
         return None
     if call.tool_kind is not ToolKind.FILE_READ or not call.path:
         return None
+    raw_path = call.path.strip()
+    if not (raw_path.startswith("/") or raw_path == "~" or raw_path.startswith(("~/", "$HOME/"))):
+        return None  # the host resolves a relative path against a working folder this request does not show
     grant = next((g for g in planir.grants if g.grant_ref == ref), None)
     if grant is None or grant.kind != "folder" or lapse(grant, planir) is not None:
         return None
-    root = folder_root(grant.pattern, home=home)
+    root = folder_root(grant.pattern, home=home, host_os=planir.host.os)
     if root is None:
         return None
     path = _resolved(
@@ -539,7 +544,13 @@ def trusted_folder_read(
         home=home,
         workspace_root=workspace_root,
     )
-    if not path.startswith("/") or path == root or not is_under(posixpath.normpath(path), root):
+    fold = planir.host.os in (OS.MACOS, OS.WINDOWS)
+    norm = posixpath.normpath(path)
+    if (
+        not path.startswith("/")
+        or not is_under(norm.casefold() if fold else norm, root.casefold() if fold else root)
+        or (norm.casefold() if fold else norm) == (root.casefold() if fold else root)
+    ):
         return None
     if HIDDEN_CHARS.search(new_input.content or ""):
         return None

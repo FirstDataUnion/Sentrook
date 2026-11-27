@@ -2207,10 +2207,19 @@ def on_post_approval_response(**kw: Any) -> None:
 FOLDER_READ_TOOLS = frozenset({"read_file"})
 
 
-def _trusted_folder(cfg: Any, store: Store, sid: str, args: Any) -> str | None:
-    """The id of the owner's folder grant that vouches for the file this read took (`folders.attest`), or None."""
+def _trusted_folder(cfg: Any, store: Store, sid: str, args: Any, result: str) -> str | None:
+    """The id of the owner's folder grant that vouches for the file this read took (`folders.attest`), or None.
+    `result` is the tool's result as the model saw it: `read_file` answers JSON whose `content` numbers each line."""
     path = args.get("path") if isinstance(args, dict) else None
     if not isinstance(path, str):
+        return None
+    try:
+        body = json.loads(result)
+    except ValueError:
+        return None
+    content = body.get("content") if isinstance(body, dict) else None
+    seen = folders.numbered_lines(content) if isinstance(content, str) and content else None
+    if seen is None:
         return None
     live = [
         (g["_id"], g["pattern"])
@@ -2220,7 +2229,7 @@ def _trusted_folder(cfg: Any, store: Store, sid: str, args: Any) -> str | None:
     if not live:
         return None
     try:
-        return folders.attest(cfg.state_dir, live, path, cwd=os.getcwd(), home=str(Path.home()))
+        return folders.attest(cfg.state_dir, live, path, home=str(Path.home()), seen=seen)
     except Exception as exc:  # noqa: BLE001 - a read the plugin cannot check is simply not vouched for
         logger.debug("folder check failed: %s", exc)
         return None
@@ -2276,7 +2285,7 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                 capped, truncated, _ = cap_head_tail(redacted, cfg.input_cap_bytes)
                 s["input_seq"] += 1
                 trusted = (
-                    _trusted_folder(cfg, store, sid, args if args else entry.get("arguments"))
+                    _trusted_folder(cfg, store, sid, args if args else entry.get("arguments"), text)
                     if status == "ok" and entry["tool"] in FOLDER_READ_TOOLS
                     else None
                 )

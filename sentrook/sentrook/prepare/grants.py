@@ -170,7 +170,10 @@ def lapse(grant: Grant, planir: PlanIR) -> str | None:
     `other_session`), or None when it does."""
     if grant.kind == "destination" and not destination_ok(grant.pattern):
         return "too_broad"
-    if grant.kind == "folder" and folder_root(grant.pattern, home=planir.host.home) is None:
+    if (
+        grant.kind == "folder"
+        and folder_root(grant.pattern, home=planir.host.home, host_os=planir.host.os) is None
+    ):
         return "too_broad"
     if grant.expires_at is not None and _aware(grant.expires_at) <= _aware(planir.sent_at):
         return "expired"
@@ -218,16 +221,19 @@ _HOST_FOLDERS = (".hermes", ".openclaw")
 _SYSTEM_HOST_FOLDERS = ("/etc/hermes",)
 
 
-def folder_root(pattern: str, *, home: str | None) -> str | None:
+def folder_root(pattern: str, *, home: str | None, host_os: OS = OS.UNKNOWN) -> str | None:
     """The folder a `folder` grant names, as an absolute path without a trailing `/`, or None when the pattern
     may not name a trusted folder: empty, relative, with a glob character, `/` or one level below it, the home
     folder or a folder above it, or inside the host's own folders (`~/.hermes`, `~/.openclaw`,
-    `/etc/hermes`). `~` and `$HOME` are read against `home`; without a home they name nothing. `..` is
-    resolved first, so it cannot climb into a refused folder."""
+    `/etc/hermes`). `~` and `$HOME` are read against `home`; without a home no folder is trusted. `..` is
+    resolved first, so it cannot climb into a refused folder. On a host whose filesystem ignores letter case
+    (`host_os` macOS or Windows) the comparisons do too."""
     pat = pattern.strip()
     if not pat or _GLOB_CHARS.search(pat) or not pat.isprintable():
         return None
     home_root = home.rstrip("/") if home and home.strip("/") else None
+    if home_root is None:
+        return None
     for prefix in ("~", "$HOME"):
         if pat == prefix or pat.startswith(prefix + "/"):
             if home_root is None:
@@ -242,19 +248,20 @@ def folder_root(pattern: str, *, home: str | None) -> str | None:
     parts = [p for p in root.split("/") if p]
     if len(parts) < 2:
         return None
-    if home_root is not None:
-        if root == home_root or is_under(home_root, root):
-            return None
-        if any(is_under(root, f"{home_root}/{d}") for d in _HOST_FOLDERS):
-            return None
-    if any(is_under(root, d) for d in _SYSTEM_HOST_FOLDERS):
+    fold = host_os in _CASE_FOLDING_OS
+    key, home_key = (root.casefold(), home_root.casefold()) if fold else (root, home_root)
+    if key == home_key or is_under(home_key, key):
+        return None
+    if any(is_under(key, f"{home_key}/{d}") for d in _HOST_FOLDERS):
+        return None
+    if any(is_under(key, d) for d in _SYSTEM_HOST_FOLDERS):
         return None
     return root
 
 
-def folder_ok(pattern: str, *, home: str | None) -> bool:
+def folder_ok(pattern: str, *, home: str | None, host_os: OS = OS.UNKNOWN) -> bool:
     """A `folder` grant pattern Sentrook trusts a folder on (`folder_root`)."""
-    return folder_root(pattern, home=home) is not None
+    return folder_root(pattern, home=home, host_os=host_os) is not None
 
 
 #: A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme.

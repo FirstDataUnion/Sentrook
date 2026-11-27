@@ -202,3 +202,43 @@ def test_a_trusted_read_does_not_clear_an_earlier_taint():
 )
 def test_folder_ok(pattern, ok):
     assert folder_ok(pattern, home=HOME) is ok
+
+
+# ---- review findings --------------------------------------------------------------------------------------------
+
+
+def test_a_relative_read_is_never_trusted():
+    """The host resolves a relative path against a working folder the request does not show (a `cd` moves it)."""
+    raw = read(path="jobs/month-end.md")
+    raw["host"]["workspace_root"] = REPO
+    assert_untrusted(*run_exposure(raw))
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    ["️", "\U000e0100", "­", "͏", "ㅤ", "￹", "᠋"],
+    ids=["vs16", "vs17", "shy", "cgj", "hangul filler", "interlinear", "mongolian fvs"],
+)
+def test_variation_selectors_and_other_invisible_carriers_drop_the_trust(hidden):
+    content = ORDERS.replace("Follow these", "Follow" + hidden * 20 + " these")
+    assert_untrusted(*run_exposure(read(content=content)))
+
+
+def test_without_a_home_no_folder_is_trusted():
+    assert folder_ok(f"{REPO}/", home=None) is False
+    assert folder_ok("/srv/projects/ledger/", home="") is False
+
+
+@pytest.mark.parametrize(
+    "pattern", ["/USERS/OLI", "/Users/oli/.HERMES/memories", "/Users/OLI/.openclaw/", "/users"]
+)
+def test_letter_case_does_not_get_past_the_refusals_on_macos(pattern):
+    from sentrook.planir.models import OS
+
+    assert folder_ok(pattern, home="/Users/oli", host_os=OS.MACOS) is False
+
+
+def test_on_macos_a_read_in_another_case_is_still_under_the_folder():
+    raw = read(path=JOB.upper(), grant={**FOLDER, "pattern": REPO})
+    raw["host"]["os"] = "macos"
+    assert_trusted(*run_exposure(raw))

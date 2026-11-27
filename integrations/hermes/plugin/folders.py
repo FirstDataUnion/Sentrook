@@ -27,6 +27,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -70,8 +71,16 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+#: The filesystem ignores letter case (macOS, Windows): `/Users/ME/.HERMES` is `~/.hermes`.
+CASE_FOLDS = sys.platform in ("darwin", "win32")
+
+
+def _key(path: str) -> str:
+    return path.casefold() if CASE_FOLDS else path
+
+
 def _under(path: str, root: str) -> bool:
-    root = root.rstrip("/")
+    path, root = _key(path), _key(root.rstrip("/"))
     return path == root or path.startswith(root + "/")
 
 
@@ -104,7 +113,7 @@ def resolve(pattern: str, *, home: str, state_dir: Path | None = None) -> str:
         if len(parts) < 2:
             raise FolderError(f'"{raw}" is too broad: trust one project folder, not {candidate}.')
         for h in {home.rstrip("/"), home_real}:
-            if candidate == h or _under(h, candidate):
+            if _under(h, candidate):
                 raise FolderError(
                     f'"{raw}" is your home folder or a folder above it: trust one project folder inside it.'
                 )
@@ -116,13 +125,19 @@ def resolve(pattern: str, *, home: str, state_dir: Path | None = None) -> str:
             raise FolderError(
                 f'"{raw}" holds the agent\'s own files: it can never be a trusted folder.'
             )
-        if state_dir is not None and (
-            _under(candidate, os.path.realpath(state_dir))
-            or _under(os.path.realpath(state_dir), candidate)
-        ):
-            raise FolderError(
-                f'"{raw}" holds Sentrook\'s own files: it can never be a trusted folder.'
-            )
+        if state_dir is not None:
+            state_real = os.path.realpath(state_dir)
+            if _under(candidate, state_real) or _under(state_real, candidate):
+                raise FolderError(
+                    f'"{raw}" holds Sentrook\'s own files: it can never be a trusted folder.'
+                )
+            # The host's own home (`<hermes home>/sentrook` sits in it), wherever it is configured.
+            if Path(state_real).name == "sentrook" and _under(
+                candidate, str(Path(state_real).parent)
+            ):
+                raise FolderError(
+                    f'"{raw}" holds the agent\'s own files: it can never be a trusted folder.'
+                )
     return real
 
 
@@ -143,6 +158,11 @@ def _git(top: str | None, *args: str, timeout: int = GIT_TIMEOUT) -> str:
         **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
+        # Nothing from anyone's git config: the agent can write `~/.gitconfig`, where `url.<x>.insteadOf` would
+        # point the recorded remote elsewhere; the repository's own config is set aside by `_GIT`.
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_COUNT": "0",
     }
     done = subprocess.run(  # noqa: S603 - fixed argv, no shell
         cmd,
@@ -172,23 +192,26 @@ def git_top(folder: str) -> str | None:
 def _blob_files(top: str, folder: str, commit: str) -> dict[str, str]:
     """{path relative to `folder`: blob id} for each regular file under `folder` in `commit`."""
     prefix = os.path.relpath(folder, top)
-    args = ["ls-tree", "-r", "-z", "--full-tree", commit]
+    args = ["ls-tree", "-r", "-l", "-z", "--full-tree", commit]
     if prefix != ".":
         args += ["--", prefix + "/"]
     out = _git(top, *args, timeout=60)
     files: dict[str, str] = {}
+    total = 0
     for entry in out.split("\0"):
         if not entry:
             continue
         meta, _, path = entry.partition("\t")
-        mode, kind, oid = (meta.split() + ["", "", ""])[:3]
+        mode, kind, oid, size = (meta.split() + ["", "", "", ""])[:4]
         if kind != "blob" or mode not in ("100644", "100755"):
             continue  # symlinks and submodules are never attested
         rel = path if prefix == "." else path[len(prefix) + 1 :]
         files[rel] = oid
-        if len(files) > MAX_FILES:
+        total += int(size) if size.isdigit() else 0
+        if len(files) > MAX_FILES or total > MAX_BYTES:
             raise FolderError(
-                f"The folder has more than {MAX_FILES} files: trust a smaller folder inside it."
+                f"The folder is larger than {MAX_FILES} files or {MAX_BYTES // (1024 * 1024)} MB: trust a "
+                "smaller folder inside it, or a git repository."
             )
     return files
 
@@ -408,25 +431,64 @@ def _refresh(state_dir: Path, gid: str, manifest: dict[str, Any], now: datetime)
     return manifest
 
 
+#: How Hermes marks a line it cut short in a read.
+TRUNCATED = "... [truncated]"
+_NUMBERED = re.compile(r"(\d+)\|(.*)")
+
+
+def numbered_lines(content: str) -> list[tuple[int, str]] | None:
+    """`content` as Hermes's `read_file` numbers it (`<n>|<line>` per line), or None when a line is not so numbered."""
+    out = []
+    for raw in content.split("\n"):
+        m = _NUMBERED.fullmatch(raw)
+        if m is None:
+            return None
+        out.append((int(m.group(1)), m.group(2)))
+    return out
+
+
+def seen_matches(seen: list[tuple[int, str]], text: str) -> bool:
+    """The numbered lines the read showed (`seen`) are the lines of `text`, the file as the plugin hashed it. A line
+    the host cut short (`... [truncated]`) must be the start of its line. Nothing shown, or a line out of range, is no
+    match."""
+    lines = text.splitlines()
+    if not seen:
+        return False
+    for n, shown in seen:
+        if not 1 <= n <= len(lines):
+            return False
+        line = lines[n - 1]
+        if shown == line:
+            continue
+        cut = shown.removesuffix(TRUNCATED)
+        if cut == shown or not line.startswith(cut):
+            return False
+    return True
+
+
 def attest(
     state_dir: Path,
     folder_grants: list[tuple[str, str]],
     path: Any,
     *,
-    cwd: str,
     home: str,
+    seen: list[tuple[int, str]] | None,
     now: datetime | None = None,
 ) -> str | None:
     """The id of the folder grant that vouches for the file at `path` as read now, or None. `folder_grants` is
-    (grant id, folder pattern) for each live folder grant. The file's real path must be inside the folder's real
-    path, and its digest must be the manifest's."""
-    if not isinstance(path, str) or not path.strip() or not folder_grants:
+    (grant id, folder pattern) for each live folder grant. `path` must be absolute or start with `~/`: the host
+    resolves a relative path against a working folder the plugin cannot know. The file's real path must be inside
+    the folder's real path, its digest must be the manifest's, and the lines the read showed (`seen`) must be the
+    file's, so the agent saw the trusted bytes wherever the host read them from (a sandbox, a remote backend)."""
+    if not isinstance(path, str) or not path.strip() or not folder_grants or seen is None:
         return None
     now = now or _now()
     p = path.strip()
     if p == "~" or p.startswith("~/"):
         p = home.rstrip("/") + p[1:]
-    real = os.path.realpath(p if p.startswith("/") else os.path.join(cwd, p))
+    if not p.startswith("/"):
+        return None
+    real = os.path.realpath(p)
     try:
         if not os.path.isfile(real) or os.path.getsize(real) > MAX_FILE_BYTES:
             return None
@@ -459,5 +521,9 @@ def attest(
             else None
         )
         if got is not None and got == want:
-            return gid
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            return gid if seen_matches(seen, text) else None
     return None

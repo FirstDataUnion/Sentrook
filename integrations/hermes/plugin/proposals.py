@@ -31,6 +31,7 @@ the answer is `setup_report.REFUSAL` and nothing is stored. The OpenClaw plugin 
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 from collections.abc import Callable
@@ -39,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from . import folders, grants, setup
-from .config import destination_ok
+from .config import destination_ok, resolve_state_dir
 from .planir import binding_problem
 from .redact import Redactor
 from .store import LockTimeout, Store, file_lock, read_time
@@ -274,7 +275,11 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
     if parsed["kind"] == "folder":
         # The folder must be one the owner could trust now, named as Sentrook will record it.
         try:
-            real = folders.resolve(parsed["pattern"], home=str(Path.home()))
+            real = folders.resolve(
+                parsed["pattern"],
+                home=str(Path.home()),
+                state_dir=resolve_state_dir(dict(os.environ)),
+            )
             if parsed.get("follow") and folders.git_top(real) is None:
                 return "--follow needs a git repository; this folder is not in one."
         except folders.FolderError as exc:
