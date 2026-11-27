@@ -6,6 +6,9 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
+  lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
+  "the request does not clearly ask for this call"). Shown when the scanner sends it.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the

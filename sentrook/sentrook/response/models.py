@@ -117,6 +117,33 @@ class ReliefApplied(_Model):
     )
 
 
+class GrantEffectPart(_Model):
+    """One part of the score the owner's grants did not change."""
+
+    signal: str = Field(description="The risk-tree leaf, e.g. suspicion.misalignment")
+    value: float = Field(ge=0, le=1)
+    text: str = Field(description="The part in plain words, for the owner")
+
+
+class GrantEffect(_Model):
+    """What the owner's grants did to this call's score, so the owner can see why a grant did or did not help."""
+
+    grants: list[str] = Field(description="The grants that matched this call")
+    risk_without: float = Field(
+        ge=0,
+        le=100,
+        description="The risk this call scores with the same answers and no grant (floors applied)",
+    )
+    lowered: list[str] = Field(
+        default_factory=list,
+        description="The risk-tree leaves the grants lowered; empty when they changed nothing",
+    )
+    unchanged: list[GrantEffectPart] = Field(
+        default_factory=list,
+        description="The largest parts of the score the grants did not change (at most four, highest first)",
+    )
+
+
 class GrantHint(_Model):
     """A grant the owner could set so that a call like this would usually not be reviewed next time (the next scan's
     model sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the
@@ -266,6 +293,10 @@ class Response(_Model):
     relief_applied: list[ReliefApplied] = Field(default_factory=list)
     reasons: list[Reason] = Field(
         default_factory=list, description="Ordered by contribution to the result"
+    )
+    grant_effect: GrantEffect | None = Field(
+        default=None,
+        description="What the owner's grants did to this score; null when no grant matched the call",
     )
     grant_hints: list[GrantHint] = Field(
         default_factory=list,

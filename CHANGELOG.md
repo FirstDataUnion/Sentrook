@@ -1329,3 +1329,30 @@ In an escalating session, a call with a consequence of its own took sensitivity,
 - `ContextParams.escalation_reads_impact`: the trend and the last tier come from those impacts (from the history tiers when `escalation_min_tiers` asks for more than the token keeps). `ContextParams.escalation_cap`: the lift contributes at most this much to each signal. A call scored higher on its own keeps its own value (the lift merges by max). The escalation evidence records `tier_source` and `cap` when these are on.
 - `conv-v10` is `conv-v9` with both on (`escalation_cap` 0.67). `sentrook serve` and `sentrook scan` default to it (`SENTROOK_CONVERGENCE`); `conv-v1` to `conv-v9` stay selectable, unchanged.
 - Tests: must stay silent (a merge of the session's scratch files into a new file after an owner-asked skill edit: blocked under `conv-v9`, reviewed under `conv-v10`; a skill edit that changes nothing else is not a rise), must still prompt on the rules alone and score above the benign merge (the merged file uploaded with curl, a write over `~/.ssh/authorized_keys`, a merge that reads `~/.env`), the cap never lowering a call's own score, a trend longer than the token keeps read from the history tiers, the token round trip, cap and junk entries, older and lost tokens falling back to the history tiers.
+
+### Grants: a send whose every destination the owner granted, `conv-v11` (2026-11-27)
+A matched destination grant removes its subject's distrust and untrusted origin. In the owner's own chat those are
+usually 0 already, so an owner who granted their own service, and the key that goes with it, still saw routine sends
+reviewed or blocked: the score came from the call judge's misalignment, the consequence a retry carried from an earlier
+stopped call, and the reach of any off-host send, none of which a grant touched.
+- `converge.granted_send` (parameter `granted_send`, off by default): on a send whose every host, recipient or channel
+  in a sending role (the call, a sibling, a written file, a later run) is covered by a matched `destination` grant or
+  is the host a `credential` grant ties the call's key to, with no floor, concealment and the new content's exposure
+  below 0.3, no tainted session, and nothing sensitive held but the env file the call's key comes from:
+  - the call judge's misalignment is held to 0.20 when it is below 0.5 (a send it reads as off-request keeps its full
+    value: a grant covers where, never what);
+  - a retry's carried consequence is dropped unless the owner denied a matched earlier step (a review nobody answered,
+    or the scanner's own block, is not the owner's refusal);
+  - below the same 0.5, reach is held to 0.67 and the call judge's sensitivity to 0.34 (a credential's rule-based
+    sensitivity and every floor stay).
+- `conv-v11` is `conv-v10` with it on. `sentrook serve` and `sentrook scan` default to it (`SENTROOK_CONVERGENCE`);
+  `conv-v1` to `conv-v10` stay selectable, unchanged.
+- Response: `grant_effect` (null when no grant matched): the grants that matched, the risk with the same answers and no
+  grant, the risk-tree leaves the grants lowered, and the largest leaves they left, in plain words. Both plugins' `why`
+  show it.
+- Tests: must stay silent (a key sent to its granted host from the owner's chat, two named keys in a fresh session, a
+  scheduled post to the job's granted delivery channel, a retry of a send stopped by an unanswered review or the
+  scanner); must still fire (the whole env file to an ungranted host, a look-alike of the granted host, a second
+  ungranted destination, a tainted session, a session holding other sensitive data, a send the judge reads as
+  off-request, concealment or instructions in content, a retry of a send the owner denied keeps its carry); the
+  grant effect when grants helped, when they changed nothing, and with no grant.

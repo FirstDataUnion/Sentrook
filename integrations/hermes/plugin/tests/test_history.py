@@ -255,3 +255,78 @@ def test_lines_cross_read_chunks_intact(tmp_path):
 def test_a_count_in_other_digits_is_a_usage_error(log):
     for bad in ("²", "١٢", "1234567"):
         assert slash(log, f"history {bad}").startswith("usage: /sentrook history [n]"), bad
+
+
+def _effect_scan(effect, risk=40.2):
+    return {
+        "request_id": "abcd1234-0000-4000-8000-000000000001",
+        "ts": "2026-11-27T10:00:00Z",
+        "tool": "execute_code",
+        "verdict": "allow",
+        "decision": "allowed",
+        "mode": "enforce",
+        "response": {
+            "response_version": "2.0",
+            "status": "ok",
+            "risk": risk,
+            "enforced": None,
+            "grant_effect": effect,
+        },
+    }
+
+
+def test_why_says_what_the_grants_lowered_and_did_not_cover():
+    out = history.format_why(
+        _effect_scan(
+            {
+                "grants": ["g_dest", "g_cred"],
+                "risk_without": 62.23,
+                "lowered": ["suspicion.misalignment", "consequence.reach"],
+                "unchanged": [
+                    {
+                        "signal": "suspicion.overreach",
+                        "value": 0.5,
+                        "text": "the call does more than the request asks",
+                    }
+                ],
+            }
+        ),
+        None,
+    )
+    assert "grants: g_dest, g_cred lowered the risk from 62 to 40 (misalignment, reach)" in out
+    assert "not covered by grants: the call does more than the request asks (0.50)" in out
+
+
+def test_why_says_when_a_matched_grant_changed_nothing():
+    lines = history.grant_effect_lines(
+        _effect_scan(
+            {
+                "grants": ["g_notion"],
+                "risk_without": 56,
+                "lowered": [],
+                "unchanged": [
+                    {
+                        "signal": "suspicion.misalignment",
+                        "value": 0.72,
+                        "text": "the request does not clearly ask for this call",
+                    },
+                    {
+                        "signal": "consequence.reach",
+                        "value": 1,
+                        "text": "it sends data off this machine",
+                    },
+                ],
+            },
+            risk=56,
+        )["response"]
+    )
+    assert lines == [
+        "grants: g_notion matched but did not change this score",
+        "not covered by grants: the request does not clearly ask for this call (0.72); it sends data off this machine (1.00)",
+    ]
+
+
+@pytest.mark.parametrize("bad", [None, "x", {"grants": []}, {"grants": [1, ""]}])
+def test_why_shows_no_grant_line_without_a_grant_effect(bad):
+    assert history.grant_effect_lines(_effect_scan(bad)["response"]) == []
+    assert "grants:" not in history.format_why(_effect_scan(bad), None)

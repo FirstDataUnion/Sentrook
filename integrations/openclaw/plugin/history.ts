@@ -336,6 +336,46 @@ function entityOrder(a: string, b: string): number {
   return num(a) - num(b) || (a < b ? -1 : a > b ? 1 : 0);
 }
 
+function finite(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * What the owner's grants did to this score (the response's `grant_effect`), so the owner can see why a grant did or
+ * did not help: the grants that matched, the risk without them and the parts they lowered, then the largest parts
+ * they did not cover. Empty when no grant matched, or for a scanner that does not send it.
+ */
+export function grantEffectLines(resp: ScanResponse): string[] {
+  const eff: unknown = (resp as Rec).grant_effect;
+  if (!eff || typeof eff !== "object") return [];
+  const e = eff as Rec;
+  const refs = (Array.isArray(e.grants) ? e.grants : [])
+    .filter((g: unknown): g is string => typeof g === "string" && g !== "")
+    .slice(0, 6)
+    .map((g: string) => text(g, 60));
+  if (!refs.length) return [];
+  const names = refs.join(", ");
+  const lowered = (Array.isArray(e.lowered) ? e.lowered : [])
+    .filter((s: unknown): s is string => typeof s === "string" && s !== "")
+    .slice(0, 6)
+    .map((s: string) => text((s.split(".").slice(1).join(".") || s).replace(/_/g, " "), 40));
+  const without = finite(e.risk_without);
+  const now = finite(resp.risk);
+  const head =
+    lowered.length && without !== null && now !== null
+      ? `grants: ${names} lowered the risk from ${Math.round(without)} to ${Math.round(now)} (${lowered.join(", ")})`
+      : lowered.length
+        ? `grants: ${names} lowered ${lowered.join(", ")}`
+        : `grants: ${names} matched but did not change this score`;
+  const parts: string[] = [];
+  for (const p of Array.isArray(e.unchanged) ? e.unchanged : []) {
+    if (!p || typeof p !== "object" || typeof p.text !== "string" || !p.text.trim()) continue;
+    const v = finite(p.value);
+    parts.push(text(p.text, 80) + (v !== null ? ` (${Math.min(Math.max(v, 0), 1).toFixed(2)})` : ""));
+  }
+  return parts.length ? [head, `not covered by grants: ${parts.slice(0, 4).join("; ")}`] : [head];
+}
+
 /**
  * One scan in detail. With `showCall`, the call itself (`callLines`); without it, a line saying the owner hid calls
  * when `hiddenBy` names that setting, and nothing otherwise (a report's summary never carries the call).
@@ -367,6 +407,7 @@ export function formatWhy(scan: Rec, resolution: Rec | null, showCall = false, h
     if (typeof code === "string" && code && !codes.includes(text(code, 80))) codes.push(text(code, 80));
   }
   lines.push(`reasons: ${codes.join(", ") || "none"}`);
+  lines.push(...grantEffectLines(r));
   const entities: Rec = r.entities && typeof r.entities === "object" ? r.entities : {};
   const shown = Object.keys(entities)
     .sort(entityOrder)

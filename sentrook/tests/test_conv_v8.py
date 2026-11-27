@@ -49,8 +49,8 @@ def test_conv_v8_is_conv_v7_with_the_host_relieved():
     assert a["credential_home"].pop("relieve_host") is True and a == b
     assert V8.credential_home_relieve_host and not V7.credential_home_relieve_host
     assert not V8.attended_owner_cap
-    assert ServeConfig().convergence == "conv-v10"  # conv-v8 stays selectable
-    assert ServeConfig.from_env({}).convergence == "conv-v10"
+    assert ServeConfig().convergence == "conv-v11"  # conv-v8 stays selectable
+    assert ServeConfig.from_env({}).convergence == "conv-v11"
     assert ServeConfig.from_env({"SENTROOK_CONVERGENCE": "conv-v7"}).convergence == "conv-v7"
 
 

@@ -24,6 +24,8 @@ from ..response.models import (
     ConsequenceTier,
     EntityDisplay,
     FloorApplied,
+    GrantEffect,
+    GrantEffectPart,
     Metadata,
     ProbeMeta,
     Reason,
@@ -37,6 +39,7 @@ from .attended import DEFAULT_BLOCK_LINE, relaxable, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
+from .granted_send import PART_TEXT, granted_send
 from .hints import grant_hints
 from .local_cap import REASON as LOCAL_CAP_REASON
 from .local_cap import local_cap
@@ -286,6 +289,60 @@ def exposure_unjudged(prepared: Prepared, envelopes: list[Envelope]) -> bool:
     )
 
 
+#: At most this many parts the grants did not change, of at least this value, in `grant_effect`.
+_EFFECT_PARTS = 4
+_EFFECT_MIN = 0.2
+
+
+def _grant_effect(
+    prepared: Prepared,
+    claims: list[Claim],
+    envelopes: list[Envelope],
+    relief: list[Relief],
+    merged: Merged,
+    params: ConvergenceParams,
+    *,
+    floor_risks: list[float],
+    exposure_unjudged: bool,
+) -> GrantEffect | None:
+    """What the owner's grants did to the score: the risk with the same answers and only the relief no grant gave,
+    the leaves the grants lowered, and the largest leaves they left. None when no grant matched the call.
+    `claims`: before the granted-send relief; `merged`: the final merge."""
+    matched = [ref for ref in prepared.grant_hits if prepared.grant_hits[ref]] + list(
+        prepared.call_grants
+    )
+    home = prepared.credential_home if params.credential_home else None
+    matched += [ref for _, ref in home.grants] if home is not None else []
+    matched += [r.grant_ref for r in relief if r.grant_ref is not None]
+    grants = list(dict.fromkeys(matched))
+    if not grants:
+        return None
+    bare = merge(claims, {pair for r in relief if r.grant_ref is None for pair in r.excluded})
+    without = compute(bare, envelopes, params, exposure_unjudged=exposure_unjudged).risk
+    without = max([without, *floor_risks])
+    lowered = sorted(
+        sig
+        for sig, v in bare.values.items()
+        if sig in PART_TEXT and v - merged.values.get(sig, 0.0) > 1e-9
+    )
+    left = sorted(
+        (
+            (v, sig)
+            for sig, v in merged.values.items()
+            if sig in PART_TEXT and sig not in lowered and v >= _EFFECT_MIN
+        ),
+        reverse=True,
+    )[:_EFFECT_PARTS]
+    return GrantEffect(
+        grants=grants,
+        risk_without=round(without * 100.0, 2),
+        lowered=lowered,
+        unchanged=[
+            GrantEffectPart(signal=sig, value=round(v, 4), text=PART_TEXT[sig]) for v, sig in left
+        ],
+    )
+
+
 def converge(
     prepared: Prepared,
     envelopes: list[Envelope],
@@ -358,6 +415,16 @@ def converge(
     if relief:
         merged = merge(claims, excluded)
         tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
+
+    # The owner granted every place the call sends to (`granted_send`): the claims as that relief leaves them.
+    claims_before_grants = claims
+    if params.granted_send is not None:
+        gs = granted_send(prepared, claims, merged, envelopes, params.granted_send)
+        if gs is not None:
+            claims = gs.claims
+            relief = relief + gs.relief
+            merged = merge(claims, excluded)
+            tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
     retry_unanswered = unanswered_retry(envelopes)
     cap = attended_check(
@@ -561,6 +628,17 @@ def converge(
                 entities[r.subject] = EntityDisplay(kind=ent.kind.value, display=ent.display)
     _fill_reason_text(reasons, entities)
 
+    effect = _grant_effect(
+        prepared,
+        claims_before_grants,
+        envelopes,
+        relief,
+        merged,
+        params,
+        floor_risks=[f.min_risk for f in floors],
+        exposure_unjudged=unjudged,
+    )
+
     response = Response(
         request_id=prepared.planir.request_id,
         status=status,
@@ -574,6 +652,7 @@ def converge(
             ReliefApplied(grant_ref=r.grant_ref, subject=r.subject, effect=r.effect) for r in relief
         ],
         reasons=reasons,
+        grant_effect=effect,
         grant_hints=hints,
         owner_pass=passable,
         tool_description=describe(prepared, category),
