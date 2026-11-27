@@ -28,6 +28,7 @@ There are two entry points:
    scan credentials or handle them yourself. If Sentrook is not signed in, the owner runs `hermes sentrook login` in a
    terminal on this machine; never run it yourself (Sentrook blocks it). In the owner's direct chat you can also
    call the `sentrook_setup_report` tool: it says what is set and what is missing (see "Check-in").
+   After any install or update of the plugin, every Hermes process that was already running keeps the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), the gateway and the dashboard. Until they do, `verify` fails its `running build` line and `/sentrook status` says `restart needed`.
 2. **Ask the owner what is routine**, one question per message, in plain words:
    - What do you ask me to do regularly (reports, email, code, notes, bookings)?
    - Which services, websites or APIs do I use for that? (Their host names, such as `api.example.com`.)

@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import hold, login, owner_settings, passes, skill_review
+from . import build, hold, login, owner_settings, passes, skill_review
 from .auth import (
     ConsentWithdrawn,
     clear_scan_token_cache,
@@ -87,6 +87,9 @@ def run_verify(
             f"mode={cfg.mode} review>={cfg.review_at} block>={cfg.block_at} on_scan_error={cfg.on_scan_error}",
         )
     )
+    # Failed while a running Hermes process still runs a build from before the last reinstall: the fixes installed
+    # since do not apply there until it restarts.
+    checks.append(("running build", *build.verify_check(cfg.state_dir)))
     checks.append(
         ("traffic log", True, str(cfg.traffic_log_path) if cfg.traffic_log_enabled else "off")
     )

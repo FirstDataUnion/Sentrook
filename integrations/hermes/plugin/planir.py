@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import host_turns
+from . import build, host_turns
 from .config import TOO_BROAD, PluginConfig, destination_ok, nothing_literal
 from .intent import (
     approvals_off,
@@ -512,6 +512,7 @@ def build_planir(
             "platform": "hermes",
             "platform_version": hermes_version(),
             "plugin_version": PLUGIN_VERSION,
+            "plugin_build": build.RUNNING.id,
             "workspace_root": os.getcwd(),
             "home": str(Path.home()),
             "os": {"Darwin": "macos", "Windows": "windows"}.get(_platform.system(), "linux"),

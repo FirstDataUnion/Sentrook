@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import (
+    build,
     grants,
     history,
     hold,
@@ -105,6 +106,8 @@ def run_status(
     return "\n".join(
         (
             f"Sentrook plugin {PLUGIN_VERSION}",
+            f"plugin build: {build.RUNNING.id}",
+            *((restart,) if (restart := build.restart_line(cfg.state_dir)) else ()),
             f"mode: {cfg.mode}",
             f"review at: {cfg.review_at:g}, block at: {cfg.block_at:g}",
             f"on scan error: {cfg.on_scan_error}",
