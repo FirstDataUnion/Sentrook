@@ -44,6 +44,7 @@ import path from "node:path";
 
 import { destinationOk, type PluginConfig, SHARED_SECOND_LEVEL } from "./config.ts";
 import { listCronJobs, roomPattern } from "./cronDelivery.ts";
+import * as folders from "./folders.ts";
 import * as grants from "./grants.ts";
 import { actionOf, recordsBackward, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
@@ -145,7 +146,9 @@ export function exposureFlagged(resp: unknown): boolean {
 export function keyOf(item: Entry): string {
   if (item.binding) return JSON.stringify(["binding", item.pattern]);
   const allows = Array.isArray(item.allows) && item.allows.length ? [...item.allows].sort() : null;
-  return JSON.stringify([item.kind, item.pattern, allows]);
+  const key: unknown[] = [item.kind, item.pattern, allows];
+  if (item.follow) key.push(item.follow);
+  return JSON.stringify(key);
 }
 
 /** The key of the grant an item sets: a binding is a destination grant for its channel. */
@@ -397,7 +400,15 @@ export function proposalItem(raw: unknown): Entry | null {
     return { binding: true, kind: "destination", pattern: r.pattern, reason };
   }
   if ((r.binding !== undefined && r.binding !== null && r.binding !== false) || !rawOk(r.pattern)) return null;
-  const grant = grants.hintGrant({ kind: r.kind, pattern: r.pattern, allows: r.allows });
+  const grant = grants.hintGrant(
+    {
+      kind: r.kind,
+      pattern: r.pattern,
+      allows: r.allows,
+      ...(r.follow !== undefined && r.follow !== null ? { follow: r.follow } : {}),
+    },
+    { folder: true },
+  );
   if (!grant) return null;
   return { binding: false, ...grant, minutes, reason };
 }
@@ -613,7 +624,7 @@ export function validItem(cand: Entry): Entry | null {
     if (bindingProblem(pattern)) return null;
     return { binding: true, kind: "destination", pattern, allows: null };
   }
-  const grant = grants.hintGrant(cand);
+  const grant = grants.hintGrant(cand, { folder: true });
   if (!grant || !rawOk(grant.pattern)) return null;
   return { binding: false, allows: null, ...grant };
 }
@@ -634,6 +645,15 @@ export function itemWarnings(item: Entry): string[] {
   }
   if (!item.binding && item.kind === "provider" && wholeRegistry(item.pattern)) {
     out.push("this covers a whole package registry or every server");
+  }
+  if (!item.binding && item.kind === "folder") {
+    out.push(
+      "the agent follows what these files say as your own instructions; trust only a folder you write and " +
+        "maintain yourself",
+    );
+    if (item.follow) {
+      out.push(`anyone who can push to ${item.follow} on that remote, the agent included if it can, decides what is trusted`);
+    }
   }
   return out;
 }
@@ -667,7 +687,11 @@ export function describe(item: Entry, minutes: number | null): string {
     what = `${listed[0]!.toUpperCase()}${listed.slice(1)} files matching \`${p}\``;
   } else if (item.kind === "provider") what = `Use tools from the provider \`${p}\``;
   else if (item.kind === "repo") what = `Run install scripts from the repository \`${p}\``;
-  else {
+  else if (item.kind === "folder") {
+    what = item.follow
+      ? `Count the files in \`${p}\` as your own while they match \`${item.follow}\` on its remote`
+      : `Count the files in \`${p}\` as your own while they are as they are now`;
+  } else {
     const at = p.indexOf("@");
     what = `Send the key \`${p.slice(0, at)}\` to \`${p.slice(at + 1)}\``;
   }
@@ -681,6 +705,8 @@ export interface Item {
   kind: string;
   pattern: string;
   allows: string[] | null;
+  /** A folder grant's followed branch (`origin/main`), when it has one. */
+  follow?: string;
   /** Null: until revoked or removed. */
   minutes: number | null;
   /** Where it came from, for the grants file. */
@@ -717,6 +743,7 @@ export function build(
         kind: cand.kind,
         pattern: cand.pattern,
         allows: Array.isArray(cand.allows) && cand.allows.length ? [...cand.allows] : null,
+        ...(cand.follow ? { follow: cand.follow } : {}),
         sources: [],
       });
     }
@@ -799,6 +826,7 @@ export function build(
       kind: item.kind,
       pattern: item.pattern,
       allows: item.allows,
+      ...(item.follow ? { follow: item.follow } : {}),
       minutes,
       tags: [...new Set(tags)],
       proposals: ids,
@@ -964,7 +992,7 @@ function storedItem(raw: unknown): (Entry & { tags: string[]; proposals: string[
     if (!printableWord(r.pattern) || bindingProblem(r.pattern)) return null;
     grant = { kind: "destination", pattern: r.pattern };
   } else {
-    grant = grants.hintGrant(r);
+    grant = grants.hintGrant(r, { folder: true });
     if (!grant) return null;
   }
   return { binding: r.binding === true, ...grant, minutes, tags, proposals };
@@ -1052,6 +1080,7 @@ function applyOne(
     data.bindings.push(entry);
     return [`${n}. Channel binding added: \`${p}\` (until you remove it).`, { op: "bind_add", entry }];
   }
+  if (item.kind === "folder") return applyFolder(cfg, data, item, tags, parsed, by, now, n);
   const sorted = (a: unknown) => (Array.isArray(a) && a.length ? JSON.stringify([...a].sort()) : "null");
   const want = sorted(item.allows);
   const existing = data.grants.find((g) => {
@@ -1083,6 +1112,44 @@ function applyOne(
   const allows = entry.allows ? `, allows ${entry.allows.join(",")}` : "";
   const life = until ? `expires ${show(until)}` : "until you revoke it";
   return [`${n}. Granted ${id}: ${item.kind} \`${p}\`${allows} (persistent, ${life}).`, { op: "grant", entry }];
+}
+
+/**
+ * A folder item: records what the folder holds now (`grants.recordFolder`) and replaces any folder grant on the same
+ * folder, as `grant folder` does.
+ */
+function applyFolder(
+  cfg: PluginConfig,
+  data: GrantsFile,
+  item: Entry,
+  tags: string[],
+  parsed: ApplyArgs,
+  by: Entry,
+  now: Date,
+  n: number,
+): [string, Entry | null] {
+  const got = grants.recordFolder(cfg.stateDir, item.pattern, item.follow ?? null, now);
+  if (typeof got === "string") return [`${n}. ${got}`, null];
+  const [pattern, manifest] = got;
+  const gone = grants.dropFolder(data, pattern);
+  const minutes = parsed.untilRevoked ? null : (parsed.minutes ?? item.minutes);
+  const taken = new Set([...data.grants.map((g) => (g as Entry)?.id), ...gone.map((g) => g.id)]);
+  let id = `gr-${randomBytes(3).toString("hex")}`;
+  while (taken.has(id)) id = `gr-${randomBytes(3).toString("hex")}`;
+  folders.save(cfg.stateDir, id, manifest);
+  for (const g of gone) if (typeof g.id === "string") folders.remove(cfg.stateDir, g.id);
+  const entry: Entry = { id, kind: "folder", pattern };
+  if (item.follow) entry.follow = item.follow;
+  entry.scope = "persistent";
+  entry.granted_at = iso(now);
+  const until = minutes === null ? null : new Date(now.getTime() + minutes * 60_000);
+  if (until) entry.expires_at = iso(until);
+  entry.set_by = by;
+  entry.source = tags;
+  data.grants.push(entry);
+  const life = until ? `expires ${show(until)}` : "until you revoke it";
+  const replaced = gone.length ? `, replaces ${gone.map((g) => String(g.id)).join(", ")}` : "";
+  return [`${n}. Trusted ${id}: folder \`${pattern}\` (${folders.describe(manifest)}, ${life}${replaced}).`, { op: "grant", entry }];
 }
 
 /**

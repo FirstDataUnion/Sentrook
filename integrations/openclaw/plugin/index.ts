@@ -7,6 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 
 import { agentRules, reportedTool, shadowingSkills, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./config.ts";
 import * as cronDelivery from "./cronDelivery.ts";
 import * as dashboard from "./dashboard.ts";
+import * as folders from "./folders.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as history from "./history.ts";
@@ -118,6 +120,8 @@ export interface BeforeToolCallResult {
 
 /** Tool search's discovery tools: no side effects, and names OpenClaw keeps for itself. */
 const DISCOVERY_TOOLS = new Set(["tool_search", "tool_describe"]);
+/** OpenClaw tools that read one file whole or in part: a read `folders.attest` may vouch for. */
+const FOLDER_READ_TOOLS: ReadonlySet<string> = new Set(["read"]);
 
 /**
  * Tool search: discovery tools have no side effects, and the dispatcher (`tool_call`, `dispatch_action` from OpenClaw
@@ -158,6 +162,19 @@ function resultText(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+/**
+ * The text a `read` showed the model, when its result is plain text: a string, or exactly one text block. Null for
+ * anything else (an image, several blocks, an unknown shape), which a folder grant never vouches for. `text` is the
+ * result's full text (from the result middleware when it ran).
+ */
+export function readShown(result: unknown, text: string): string | null {
+  if (typeof result === "string") return text;
+  const blocks = result && typeof result === "object" ? (result as any).content : undefined;
+  if (!Array.isArray(blocks) || blocks.length !== 1) return null;
+  const [b] = blocks;
+  return b?.type === "text" && typeof b.text === "string" ? text : null;
 }
 
 function sessionIdOf(ctx: any): string {
@@ -496,6 +513,30 @@ const plugin = {
      * there on a call that ran without error means this plugin's `execute` never ran: the call is recorded as
      * `foreign_tool` (`FOREIGN_TEXT`, in status and verify) and every later call of that name is scanned like any other.
      */
+    /**
+     * The id of the owner's folder grant that vouches for the file this read took (`folders.attest`), or null. Only an
+     * absolute or `~/` path: OpenClaw resolves a relative one against a working folder the plugin cannot be sure of
+     * (as `agentSkills.ts` reads it), so such a read is never vouched for. `seen` is what the read showed the model:
+     * OpenClaw's `read` answers the file's own text (or the lines an offset and limit picked), in one text block.
+     */
+    const trustedFolder = (cfg: PluginConfig, sid: string, params: unknown, seen: string | null): string | null => {
+      const p = params as Record<string, unknown> | null | undefined;
+      const filePath = [p?.path, p?.file_path, p?.filePath].find((v) => typeof v === "string" && v !== "");
+      if (typeof filePath !== "string" || !seen) return null;
+      const live = grants
+        .effective(cfg, store.loadGrants(), new Date(), sessionRef(sid))
+        .filter((g) => g.kind === "folder" && typeof g._id === "string")
+        .map((g): [string, string] => [g._id!, g.pattern]);
+      if (!live.length) return null;
+      try {
+        return folders.attest(cfg.stateDir, live, filePath, { home: homedir(), seen });
+      } catch (err) {
+        // a read the plugin cannot check is simply not vouched for
+        api.logger.warn(`${LOG} folder check failed: ${String(err)}`);
+        return null;
+      }
+    };
+
     const foreignOwnTool = (event: any, ctx: any): void => {
       const tool = event?.toolName;
       const callId = event?.toolCallId ?? ctx?.toolCallId;
@@ -752,7 +793,12 @@ const plugin = {
             }
             const capped = capHeadTail(redacted, cfg.inputCapBytes);
             sess.inputSeq += 1;
+            const trusted =
+              !event?.error && FOLDER_READ_TOOLS.has(entry.tool)
+                ? trustedFolder(cfg, sid, event?.params ?? entry.arguments, readShown(event?.result, text))
+                : null;
             sess.buffer.push({
+              ...(trusted ? { _trusted_grant: trusted } : {}),
               input_seq: sess.inputSeq,
               kind: "tool_result",
               call_id: entry.call_id,

@@ -699,7 +699,9 @@ def build_model(
             },
         }
     try:
-        grants_text = grants.format_grants(cfg, grants.load(cfg.state_dir), now, CMD, None)
+        grants_text = grants.format_grants(
+            cfg, grants.load(cfg.state_dir), now, CMD, None, state_dir=cfg.state_dir
+        )
     except Exception:  # noqa: BLE001 - the page still shows the scans
         grants_text = "Grants could not be read."
     try:

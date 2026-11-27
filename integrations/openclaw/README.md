@@ -300,6 +300,7 @@ session with `--session <ref>`, taking the ref from the `session` column of `/se
 | Use your team's MCP servers | `/sentrook-grant provider npm:@yourteam/ --persistent` |
 | Run install scripts from a GitHub repository you trust | `/sentrook-grant repo github.com/yourteam/tools --persistent` |
 | Use your own API key with the service it is for | `/sentrook-grant credential MY_SERVICE_TOKEN@api.myservice.example` |
+| Follow the instructions you keep in your own repository | `/sentrook-grant folder ~/src/my-jobs` (see "Trusted folders") |
 
 An agent that reads an API key from its env file and sends it to the service it belongs to is doing the normal
 thing. Sentrook already knows the keys of some common providers and the hosts they go to; for any other
@@ -332,6 +333,43 @@ github.com), `github.com/<owner>/*` for an account, `huggingface.co/<org>/<name>
 out; a release-asset download (objects.githubusercontent.com) names no repository and no grant covers it.
 
 `/sentrook-grants` lists every grant in force with its id; `/sentrook-revoke <id>` removes one set by command.
+
+### Trusted folders
+
+Sentrook treats whatever the agent reads as outside content that may try to steer it, and once a chat has read text
+that gives the agent orders, it is stricter with the calls after it. That is right for a web page, and wrong for the
+instructions you keep in your own repository: a job's runbook, your project's notes. A `folder` grant tells Sentrook
+that one folder is yours:
+
+```
+/sentrook-grant folder ~/src/my-jobs
+/sentrook-grant folder ~/src/my-jobs --follow origin/main
+```
+
+When the agent reads a file there with OpenClaw's `read` tool, by its full path or a `~/` path, and the file is
+unchanged since you trusted the folder, Sentrook reads it as your own words. It relieves nothing else: every call
+after it is still checked, nothing a file says lowers a floor, and a chat that had already read untrusted content
+stays so.
+
+- **What "unchanged" means.** When you set the grant, the plugin records what the folder holds in its own state
+  folder: in a git repository, the commit checked out (each tracked file's blob id); anywhere else, the sha256 of each
+  file (at most 20,000 files and 200 MB). A file edited since, a new or untracked file, a symlink that leads out of the
+  folder, a read by a relative path, a read whose text is not the file's (a sandbox reading its own copy, or a result
+  with a notice added) and a file read through a shell command rather than `read` are not trusted. Set
+  the grant again after you change the folder; it replaces the old one.
+- **Following a branch.** With `--follow origin/main` in a git repository, a file is trusted when it matches the tip
+  of `main` on that remote, at the address the remote had when you set the grant. The plugin asks the remote itself,
+  at most every five minutes, and the commit must have been fetched. Anyone who can push to that branch then decides
+  what is trusted: use it only for a branch you, or reviewers you trust, control, and never one the agent can push
+  to.
+- **Which folders.** Only a folder you write and maintain. The grant refuses `/`, your home folder or one above it, a
+  wildcard, a path that is not a folder, and the agent's own folders (`~/.openclaw`, `~/.hermes`) and Sentrook's.
+  Sentrook refuses the same again. Do not trust a repository you cloned from someone else, a folder of many projects
+  (`~/src`) or a downloads folder.
+- **How long.** A folder grant lasts until you revoke it unless you give `--scope session` or `--expires`. It is set
+  only with this command or from `/sentrook-setup` (where the agent may suggest one): a folder grant in the plugin
+  config is never sent, and Sentrook never suggests one on a review. `/sentrook-grants` shows what each folder grant
+  is pinned to.
 
 ### Or keep them in config
 

@@ -208,7 +208,7 @@ def test_options_scope_allows_and_expiry(term):
         ("grant destination #ops --persistant", "Unknown option --persistant."),
         (
             "grant destinaton #ops",
-            'Unknown grant kind "destinaton": use destination, file, provider, repo or credential.',
+            'Unknown grant kind "destinaton": use destination, file, provider, repo, credential or folder.',
         ),
         (
             "grant credential EXAMPLE_API_KEY",

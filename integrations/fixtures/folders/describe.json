@@ -1,0 +1,9 @@
+{
+  "about": "How the grants list describes a folder grant's record (`describe`): `manifest` is the record, or null when it is missing.",
+  "cases": [
+    { "manifest": null, "text": "content record missing: trust the folder again" },
+    { "manifest": { "kind": "git", "commit": "0123456789abcdef0123456789abcdef01234567", "files": { "a": "x", "b": "y" } }, "text": "git, pinned at 0123456789ab, 2 files" },
+    { "manifest": { "kind": "git", "commit": "0123456789abcdef0123456789abcdef01234567", "follow": { "remote": "origin", "branch": "main" }, "files": { "a": "x" } }, "text": "git, follows origin/main at 0123456789ab, 1 files" },
+    { "manifest": { "kind": "files", "built_at": "2026-11-27T12:00:00Z", "files": { "a": "x" } }, "text": "1 files as they were 2026-11-27T12:00:00Z" }
+  ]
+}

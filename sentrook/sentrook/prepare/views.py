@@ -90,7 +90,8 @@ VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
 STRIP_HISTORY = frozenset({"request_id", "action_fingerprint", "risk", "tiers", "call_id"})
-STRIP_NEW_INPUT = frozenset({"call_id"})
+#: `trusted_by` is the plugin's attestation, which preparation has already checked and acted on.
+STRIP_NEW_INPUT = frozenset({"call_id", "trusted_by"})
 #: `input_kind` is for the rule probe's parsing; the judge reads the call's own `code`.
 STRIP_PENDING_CALL = frozenset({"call_id", "host_call_id", "batch", "input_kind"})
 

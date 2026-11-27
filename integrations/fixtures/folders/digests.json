@@ -1,0 +1,17 @@
+{
+  "about": "The digest a record keeps for a file's bytes (utf-8 `text`): the git blob id for sha1 and sha256 repositories, and the sha256 of the bytes for a plain folder. A read is attested only when the digest of the bytes it finds equals the record's.",
+  "cases": [
+    {
+      "text": "",
+      "sha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256_blob": "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "text": "# Job: month-end close\n",
+      "sha1": "f3debfba1c4f2f81f225f8db5b055d0063d1b563",
+      "sha256_blob": "0ac60ece8a0c39453e784495bc1f7cfc9565a0c0cfdf43051b9a0451b2d074c4",
+      "sha256": "c6f8b5885c657e37283fee2ac98b49e2b92cb6a651993c9b2728bb71049d3ccd"
+    }
+  ]
+}

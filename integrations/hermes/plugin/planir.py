@@ -272,6 +272,38 @@ def _repo_path(pattern: str) -> str:
     return rest.split("/", 1)[1] if "/" in rest else rest
 
 
+def _sendable(g: dict[str, Any]) -> dict[str, Any]:
+    """A grant as sent: without the plugin's own bookkeeping (`_id`)."""
+    return {k: v for k, v in g.items() if not k.startswith("_")}
+
+
+def trusted_inputs(
+    inputs: list[dict[str, Any]], grants: list[dict[str, Any]], sent: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The inputs as sent, and the grants as sent: a read `folders.attest` vouched for (`_trusted_grant`, a folder
+    grant's id) carries `trusted_by`, the `grant_ref` of that grant, and the grant is sent with it, numbered as
+    `relevant_grants` numbers it. A read whose grant is gone since is sent as any other."""
+    by_id = {
+        g["_id"]: (f"g_{i + 1}", g)
+        for i, g in enumerate(grants)
+        if g.get("kind") == "folder" and isinstance(g.get("_id"), str)
+    }
+    out_grants = list(sent)
+    have = {g["grant_ref"] for g in sent}
+    out_inputs = []
+    for item in inputs:
+        sent_item = {k: v for k, v in item.items() if not k.startswith("_")}
+        found = by_id.get(item.get("_trusted_grant"))
+        if found is not None and item.get("kind") == "tool_result":
+            ref, g = found
+            sent_item["trusted_by"] = ref
+            if ref not in have:
+                out_grants.append({"grant_ref": ref, **_sendable(g)})
+                have.add(ref)
+        out_inputs.append(sent_item)
+    return out_inputs, out_grants
+
+
 def relevant_grants(
     grants: list[dict[str, Any]],
     args_text: str,
@@ -309,6 +341,8 @@ def relevant_grants(
     for i, (g, pat) in enumerate(zip(grants, pats, strict=True)):
         if g["kind"] == "destination" and not destination_ok(g["pattern"]):
             continue
+        if g["kind"] == "folder":
+            continue  # sent only with a read it vouches for (`trusted_inputs`)
         hay = list(texts)
         if g["kind"] == "provider" and identity:
             hay.append(identity.lower())
@@ -318,7 +352,7 @@ def relevant_grants(
             forms = [(_repo_path(pat), False)]
         elif g["kind"] == "credential":
             if exec_call:
-                out.append({"grant_ref": f"g_{i + 1}", **g})
+                out.append({"grant_ref": f"g_{i + 1}", **_sendable(g)})
                 continue
             # the key's name or the host it is meant for: either may be all the arguments show
             name, _, host = pat.partition("@")
@@ -326,7 +360,7 @@ def relevant_grants(
         else:
             forms = [(pat, False)]
         if any(_pieces_in(f, h, short_ok=ok) for f, ok in forms for h in hay):
-            out.append({"grant_ref": f"g_{i + 1}", **g})
+            out.append({"grant_ref": f"g_{i + 1}", **_sendable(g)})
     return out
 
 
@@ -489,6 +523,7 @@ def build_planir(
                 }
             )
 
+    all_grants = [g for g in cfg.grants if g["scope"] == "persistent"] if grants is None else grants
     window = sess["history"][-cfg.history_limit :]
     window_ids = {h["call_id"] for h in window}
     # Every tool result must refer to a call in the history window (a scanner invariant).
@@ -551,7 +586,7 @@ def build_planir(
             "batch": {"siblings": siblings},
         },
         "grants": relevant_grants(
-            [g for g in cfg.grants if g["scope"] == "persistent"] if grants is None else grants,
+            all_grants,
             json.dumps(raw_args, default=str, ensure_ascii=False),
             identity=prv["identity"],
             home=str(Path.home()),
@@ -563,6 +598,9 @@ def build_planir(
         **({"self_edit": self_edit} if self_edit is not None else {}),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }
+    planir["new_inputs"], planir["grants"] = trusted_inputs(
+        planir["new_inputs"], all_grants, planir["grants"]
+    )
     return {
         "planir": planir,
         "call_id": call_id,

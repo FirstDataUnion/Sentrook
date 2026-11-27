@@ -59,6 +59,15 @@ or by answering **Allow always** on an approval card that offers it (it sets tha
 again changes nothing unless the owner sets a grant for it. They never lower Sentrook's floors: reading secrets and sending them somewhere is
 still blocked whatever is granted.
 
+A **trusted folder** (a `folder` grant) is a repository or folder the owner writes and maintains themselves, such as
+the repository of their job instructions. When you read a file from it with OpenClaw's file-read tool and the file is
+unchanged since the owner trusted the folder, Sentrook reads it as the owner's own words, not as outside text, so it
+does not make the rest of the chat count as exposed to untrusted content. Sentrook still checks every call you make
+after reading it. A file you or anyone else changed, a new file, or one read through a command is not trusted until
+the owner trusts the folder again (a folder that follows a branch, `--follow origin/main`, follows what is pushed
+there). Never change a file in a trusted folder to make it say something new and then rely on it: it is not trusted
+once changed.
+
 ## The owner's commands
 
 `/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. They refuse in a group or channel room (a private server channel included), even from the owner, since everyone there would see the reply. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
@@ -70,7 +79,7 @@ owner type it.
 - `/sentrook-why [request_id|last]`: one scan in detail: risk, reasons, the hosts and files found, and the grant that would let calls like it through; with a held call's id, also the hold, the answers it offers and the grant Sentrook suggests.
 - `/sentrook-report [request_id|last] [--full|--github|--save]`: a report of a scan that looks wrong, to send to the Sentrook team: `--full` adds the exact request (send it privately), `--github` opens a public issue with the summary filled in, `--save` writes the report and the full record to a file to email.
 - `/sentrook-grants`: every grant in force, from config (read-only) and set by command.
-- `/sentrook-grant <kind> <pattern> [flags]`: adds a grant: destination, file, provider, repo or credential; for this session only (not cron jobs, subagents or other chats) unless `--persistent`; `--session <ref>` binds it to a session from history, `--allows read,write` (files only), `--expires 12h`.
+- `/sentrook-grant <kind> <pattern> [flags]`: adds a grant: destination, file, provider, repo, credential or folder; for this session only (not cron jobs, subagents or other chats) unless `--persistent`; `--session <ref>` binds it to a session from history, `--allows read,write` (files only), `--follow origin/main` (folders in a git repository), `--expires 12h`.
 - `/sentrook-revoke <id>`: removes a grant set by command.
 - `/sentrook-bind add|remove|list [channel]`: lists, adds or removes a channel binding: a channel this deployment normally delivers to.
 - `/sentrook-snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; in beta, a block in the owner's own chat asks instead, with a warning, except a change to Sentrook itself; never reviews Sentrook enforces or unattended runs; `off` ends it.

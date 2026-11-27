@@ -6,7 +6,8 @@ key) that the plugin cannot find in config or traffic. This tool lets it add tho
 the owner reads each item there, in the plugin's words, and sets it with the screen's code.
 
 **What it takes.** Up to `MAX_ITEMS` items, each one of:
-- a grant, `{kind, pattern, allows?, expires?, reason}` (kind destination, file, provider, repo or credential);
+- a grant, `{kind, pattern, allows?, expires?, follow?, reason}` (kind destination, file, provider, repo, credential
+  or folder; `follow` is for a folder in a git repository, such as `origin/main`);
 - a channel binding, `{binding, reason}`.
 Each `reason` is one sentence of at most `MAX_REASON` characters, shown to the owner only as a quoted note. Each item
 is checked by the code the owner's own commands use: a grant must be one `grant <kind> <pattern> --persistent
@@ -30,6 +31,7 @@ the answer is `setup_report.REFUSAL` and nothing is stored. The OpenClaw plugin 
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 from collections.abc import Callable
@@ -37,8 +39,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import grants, setup
-from .config import destination_ok
+from . import folders, grants, setup
+from .config import destination_ok, resolve_state_dir
 from .planir import binding_problem
 from .redact import Redactor
 from .store import LockTimeout, Store, file_lock, read_time
@@ -51,7 +53,7 @@ MAX_REASON = 200
 #: Proposals open at once; a new one replaces the oldest.
 MAX_OPEN = 3
 
-GRANT_FIELDS = frozenset({"kind", "pattern", "allows", "expires", "reason", "scope"})
+GRANT_FIELDS = frozenset({"kind", "pattern", "allows", "expires", "follow", "reason", "scope"})
 BINDING_FIELDS = frozenset({"binding", "reason"})
 
 NO_ITEMS = "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added."
@@ -66,8 +68,9 @@ ATTENDED = "Attended platforms are never proposed: only the owner adds one, by c
 SESSION = "Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner."
 NO_REASON = "Each item needs a reason: one sentence on why the owner would want it."
 LONG_REASON = f"The reason must be at most {MAX_REASON} characters."
-NO_KIND = "A grant needs a kind: destination, file, provider, repo or credential."
+NO_KIND = "A grant needs a kind: destination, file, provider, repo, credential or folder."
 NO_PATTERN = "A grant needs a pattern, such as api.example.com."
+BAD_FOLLOW = "follow is a branch on a remote, such as origin/main."
 ONE_WORD = "The pattern must be one word, with no spaces or backticks."
 BAD_ALLOWS = "allows must be a list of read, write, edit, delete or exec."
 BAD_EXPIRES = "expires must be a lifetime such as 7d: a number with m, h or d, from 1m to 365d."
@@ -93,7 +96,7 @@ Cmd = Callable[[str], str]
 def description(cmd: Cmd) -> str:
     return (
         "Adds items to the owner's Sentrook setup list, for the owner to review and set themselves with "
-        f"{cmd('setup')}: grants (destination, file, provider, repo or credential) and channel bindings the owner "
+        f"{cmd('setup')}: grants (destination, file, provider, repo, credential or folder) and channel bindings the owner "
         f"told you they need, each with a short reason. At most {MAX_ITEMS} items. Sets nothing itself; never "
         "settings or attended platforms, never session grants. Works only when the owner asks in a direct chat."
     )
@@ -114,14 +117,17 @@ def schema(cmd: Cmd) -> dict[str, Any]:
                         "properties": {
                             "kind": {
                                 "type": "string",
-                                "description": "A grant's kind: destination, file, provider, repo or credential.",
+                                "description": (
+                                    "A grant's kind: destination, file, provider, repo, credential or folder "
+                                    "(a folder of the owner's own whose files count as theirs while unchanged)."
+                                ),
                             },
                             "pattern": {
                                 "type": "string",
                                 "description": (
                                     "What the grant covers, as the grant command takes it: api.example.com, "
-                                    "~/notes/*, npm:@example/, github.com/owner/repo, or NAME@host for a key "
-                                    "(its name only, never its value)."
+                                    "~/notes/*, npm:@example/, github.com/owner/repo, NAME@host for a key "
+                                    "(its name only, never its value), or a folder such as ~/src/my-repo."
                                 ),
                             },
                             "allows": {
@@ -132,6 +138,13 @@ def schema(cmd: Cmd) -> dict[str, Any]:
                             "expires": {
                                 "type": "string",
                                 "description": "How long the grant lasts, such as 4h or 7d (at most 365d).",
+                            },
+                            "follow": {
+                                "type": "string",
+                                "description": (
+                                    "Folder grants in a git repository only: a branch on a remote, such as "
+                                    "origin/main, whose files count as the owner's as the branch moves."
+                                ),
                             },
                             "binding": {
                                 "type": "string",
@@ -188,7 +201,7 @@ def check_item(raw: Any) -> dict[str, Any] | str:
         takes = (
             "a channel binding takes binding and reason"
             if binding
-            else "a grant takes kind, pattern, allows, expires and reason"
+            else "a grant takes kind, pattern, allows, expires, follow and reason"
         )
         return f'Unknown field "{grants._clean(unknown[0], 40)}": {takes}.'
     reason = raw.get("reason")
@@ -222,11 +235,12 @@ def _binding(channel: Any) -> dict[str, Any] | str:
 
 def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
     """A grant as `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` takes it."""
-    kind, pattern, allows, expires = (
+    kind, pattern, allows, expires, follow = (
         raw.get("kind"),
         raw.get("pattern"),
         raw.get("allows"),
         raw.get("expires"),
+        raw.get("follow"),
     )
     if not isinstance(kind, str) or not kind or any(c.isspace() for c in kind):
         return NO_KIND
@@ -245,6 +259,10 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
         if not isinstance(expires, str) or any(c.isspace() for c in expires):
             return BAD_EXPIRES
         words.append("--expires=" + expires)
+    if follow is not None:
+        if not isinstance(follow, str) or not follow or any(c.isspace() for c in follow):
+            return BAD_FOLLOW
+        words.append("--follow=" + follow)
     # The agent's own, stricter rule first: the grant command's refusal would offer it forms it may not propose.
     if kind.lower() == "destination" and _too_broad(pattern):
         return BROAD
@@ -254,6 +272,21 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
     if parsed["kind"] == "credential" and _value_shaped(parsed["pattern"].partition("@")[0]):
         return VALUE_NAME
     out: dict[str, Any] = {"kind": parsed["kind"], "pattern": parsed["pattern"]}
+    if parsed["kind"] == "folder":
+        # The folder must be one the owner could trust now, named as Sentrook will record it.
+        try:
+            real = folders.resolve(
+                parsed["pattern"],
+                home=str(Path.home()),
+                state_dir=resolve_state_dir(dict(os.environ)),
+            )
+            if parsed.get("follow") and folders.git_top(real) is None:
+                return "--follow needs a git repository; this folder is not in one."
+        except folders.FolderError as exc:
+            return str(exc)
+        out["pattern"] = real + "/"
+        if parsed.get("follow"):
+            out["follow"] = parsed["follow"]
     if parsed.get("allows"):
         out["allows"] = parsed["allows"]
     if expires is not None:

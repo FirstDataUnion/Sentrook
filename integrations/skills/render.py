@@ -61,9 +61,9 @@ SUMMARIES: dict[str, tuple[str, str]] = {
     "grants": ("", "every grant in force, from config (read-only) and set by command"),
     "grant": (
         "<kind> <pattern> [flags]",
-        "adds a grant: destination, file, provider, repo or credential; for this session only (not cron jobs, "
+        "adds a grant: destination, file, provider, repo, credential or folder; for this session only (not cron jobs, "
         "subagents or other chats) unless `--persistent`; `--session <ref>` binds it to a session from history, "
-        "`--allows read,write` (files only), `--expires 12h`",
+        "`--allows read,write` (files only), `--follow origin/main` (folders in a git repository), `--expires 12h`",
     ),
     "revoke": ("<id>", "removes a grant set by command"),
     "bind": (

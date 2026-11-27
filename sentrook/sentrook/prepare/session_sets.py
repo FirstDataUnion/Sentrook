@@ -20,13 +20,15 @@ matched, so the bare session flag keeps its weight.
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
 from ..planir.canonical import CanonicalCall, joined_text
-from ..planir.models import ToolKind
+from ..planir.models import OS, ToolKind
 from ..state.token import entity_hash, table_key
 from .entities import (
     _RUNISH_TOOL,
@@ -34,6 +36,7 @@ from .entities import (
     EntityKind,
     Role,
     extract_call,
+    is_under,
     normalise_path,
     resolve_token,
     shell_segments,
@@ -495,6 +498,78 @@ def _names_file(text: str, name: str) -> bool:
         any(c in word for c in "*?[") and fnmatch.fnmatchcase(name, word)
         for word in _NAME_SPLIT.split(flat)
     )
+
+
+#: Characters outside the format and control categories that still hide text from a person reading the file:
+#: variation selectors (which can carry arbitrary bytes after a visible character), the combining grapheme joiner,
+#: blank fillers and the Mongolian free variation selectors.
+_HIDDEN_EXTRA = re.compile(
+    "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\ufe00-\ufe0f\uffa0\U000e0100-\U000e01ef]"
+)
+
+
+def has_hidden(text: str) -> bool:
+    """`text` holds characters that hide text from a person reading it: any format character (bidirectional controls,
+    zero-width characters and joiners, the byte-order mark, Unicode tags, ...), any control character but tab and
+    newline (escape sequences, backspace, a carriage return not ending a line), or one of `_HIDDEN_EXTRA`. A rules or
+    instruction file has no need for them; they are how instructions are slipped past a reviewer."""
+    for k, c in enumerate(text):
+        if c in "\t\n":
+            continue
+        if c == "\r" and text[k + 1 : k + 2] == "\n":
+            continue
+        if unicodedata.category(c) in ("Cf", "Cc") or _HIDDEN_EXTRA.match(c):
+            return True
+    return False
+
+
+def trusted_folder_read(
+    planir: Any,
+    new_input: Any,
+    call: CanonicalCall | None,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+) -> str | None:
+    """The file (normalised) that `new_input` read when the plugin's attestation holds, else None: the input
+    names a sent grant (`trusted_by`) that is a live `folder` grant on a folder Sentrook trusts
+    (`grants.folder_root`), it is the result of a plain file read (`call`) whose path is inside that folder,
+    its content carries no hidden characters (`has_hidden`), and it reached the scanner whole (a read cut to fit
+    the request may hide anything in the part left out). The caller adds the session guards (not
+    written or tainted in this session, no change since)."""
+    from .grants import folder_root, lapse
+
+    ref = getattr(new_input, "trusted_by", None)
+    if not isinstance(ref, str) or not ref or call is None:
+        return None
+    if call.tool_kind is not ToolKind.FILE_READ or not call.path:
+        return None
+    raw_path = call.path.strip()
+    if not (raw_path.startswith("/") or raw_path == "~" or raw_path.startswith(("~/", "$HOME/"))):
+        return None  # the host resolves a relative path against a working folder this request does not show
+    grant = next((g for g in planir.grants if g.grant_ref == ref), None)
+    if grant is None or grant.kind != "folder" or lapse(grant, planir) is not None:
+        return None
+    root = folder_root(grant.pattern, home=home, host_os=planir.host.os)
+    if root is None:
+        return None
+    path = _resolved(
+        normalise_path(call.path, home=home, workspace_root=workspace_root),
+        call,
+        home=home,
+        workspace_root=workspace_root,
+    )
+    fold = planir.host.os in (OS.MACOS, OS.WINDOWS)
+    norm = posixpath.normpath(path)
+    if (
+        not path.startswith("/")
+        or not is_under(norm.casefold() if fold else norm, root.casefold() if fold else root)
+        or (norm.casefold() if fold else norm) == (root.casefold() if fold else root)
+    ):
+        return None
+    if getattr(new_input, "truncated", False) or has_hidden(new_input.content or ""):
+        return None
+    return posixpath.normpath(path)
 
 
 def owner_config_path(

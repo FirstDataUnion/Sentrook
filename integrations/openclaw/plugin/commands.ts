@@ -130,7 +130,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     description: "Grants in force: from config (read-only) and set by command",
     run: (ctx) => {
       const cfg = configOf(ctx);
-      return grants.formatGrants(cfg, grants.load(cfg.stateDir), new Date(), CMD, refOf(ctx));
+      return grants.formatGrants(cfg, grants.load(cfg.stateDir), new Date(), CMD, refOf(ctx), cfg.stateDir);
     },
   },
   grant: {

@@ -120,6 +120,7 @@ from .session_sets import (
     is_instruction_file,
     owner_config_path,
     producer_artefacts,
+    trusted_folder_read,
 )
 from .sibling_join import Resolution, SiblingWrite, resolve_pending, sibling_writes
 from .skill_steps import skill_step_calls
@@ -1758,6 +1759,27 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 )
             ):
                 owner_instructions.add(pi.input.input_seq)
+    # A file read the plugin attests as unchanged in a folder the owner trusts (`trusted_by`): the owner's own
+    # content too, under the same guards, and only when its text hides nothing from a reader.
+    for pi in inputs:
+        if pi.input.input_seq in owner_instructions:
+            continue
+        call = hist_by_step.get(pi.step) if pi.input.kind is InputKind.TOOL_RESULT else None
+        path = trusted_folder_read(planir, pi.input, call, home=home, workspace_root=ws)
+        if (
+            path is not None
+            and call is not None
+            and not any(p in created for p in _path_spellings(path, ws))
+            and not any(
+                entity_hash(state.salt, "path", p) in prior_tainted
+                for p in _path_spellings(path, ws)
+            )
+            and not instruction_may_have_changed(
+                path, history, reader=call, home=home, workspace_root=ws
+            )
+        ):
+            owner_config.add(pi.input.input_seq)
+            owner_instructions.add(pi.input.input_seq)
 
     for pi in inputs:
         content = pi.input.content or ""

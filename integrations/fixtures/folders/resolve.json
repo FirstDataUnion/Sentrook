@@ -1,0 +1,20 @@
+{
+  "about": "Which folders a folder grant may trust, and the owner's words when it may not. `{home}` is the home folder; the cases run with ~/src/ledger-jobs (a folder holding README.md), ~/.hermes/skills and ~/.openclaw present. `error` is the whole reply after `Not trusted: `, or null when the folder is trusted.",
+  "cases": [
+    { "pattern": "~/src/ledger-jobs", "error": null },
+    { "pattern": "$HOME/src/ledger-jobs/", "error": null },
+    { "pattern": "{home}/src/ledger-jobs", "error": null },
+    { "pattern": "/", "error": "\"/\" is too broad: trust one project folder, not /." },
+    { "pattern": "~", "error": "\"~\" is your home folder or a folder above it: trust one project folder inside it." },
+    { "pattern": "$HOME", "error": "\"$HOME\" is your home folder or a folder above it: trust one project folder inside it." },
+    { "pattern": "{home}", "error": "\"{home}\" is your home folder or a folder above it: trust one project folder inside it." },
+    { "pattern": "~/src/*", "error": "\"~/src/*\" has a wildcard: name one folder, such as ~/src/my-repo." },
+    { "pattern": "src/ledger-jobs", "error": "\"src/ledger-jobs\" is not a full path: start it with / or ~/." },
+    { "pattern": "~/missing", "error": "\"~/missing\" is not a folder on this machine." },
+    { "pattern": "~/src/ledger-jobs/README.md", "error": "\"~/src/ledger-jobs/README.md\" is not a folder on this machine." },
+    { "pattern": "~/.hermes/skills", "error": "\"~/.hermes/skills\" holds the agent's own files: it can never be a trusted folder." },
+    { "pattern": "~/.openclaw", "error": "\"~/.openclaw\" holds the agent's own files: it can never be a trusted folder." },
+    { "pattern": "~/src/../.hermes/skills", "error": "\"~/src/../.hermes/skills\" holds the agent's own files: it can never be a trusted folder." },
+    { "pattern": "", "error": "Name a folder to trust." }
+  ]
+}

@@ -662,6 +662,19 @@
           "default": false,
           "title": "Truncated",
           "type": "boolean"
+        },
+        "trusted_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tool results of a file read only: the `grant_ref` of a `folder` grant under which the plugin found the file it read unchanged since the owner trusted the folder. Sentrook checks it against the request and otherwise ignores it",
+          "title": "Trusted By"
         }
       },
       "required": [

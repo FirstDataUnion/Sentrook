@@ -99,6 +99,7 @@ _GLOB = re.compile(r"[*?\[\]]")
 _PLATFORM_PREFIX = re.compile(r"[a-z][a-z0-9_-]*:(?!//)")
 #: Why a destination grant that `destination_ok` refuses is never sent.
 TOO_BROAD = "too broad"
+FOLDER_BY_COMMAND = "set folder grants with the grant command"
 
 
 def credential_pattern_ok(pattern: str) -> bool:
@@ -402,7 +403,11 @@ def parse_config_grants(raw: Any) -> tuple[list[dict[str, Any]], dict[int, str]]
         if not parsed:
             continue
         too_broad = parsed[0]["kind"] == "destination" and not destination_ok(parsed[0]["pattern"])
-        if why := (TOO_BROAD if too_broad else _unsent(g.get("scope"))):
+        # trusting a folder records what it holds, which only the grant command and the setup screen do
+        folder = parsed[0]["kind"] == "folder"
+        if why := (
+            TOO_BROAD if too_broad else FOLDER_BY_COMMAND if folder else _unsent(g.get("scope"))
+        ):
             unsent[len(grants)] = why
         grants.append(parsed[0])
     return grants, unsent
