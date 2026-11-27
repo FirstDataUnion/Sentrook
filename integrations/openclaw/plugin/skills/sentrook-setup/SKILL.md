@@ -104,7 +104,7 @@ approved.
    tells you which it did not add and why. It never takes settings, attended platforms or grants for one session only:
    explain those to the owner instead. Anywhere but the owner's direct chat it adds nothing and says
    "Setup needs the owner in a direct chat." and nothing more, so ask the owner to talk to you directly.
-2. **Tell the owner to open `/sentrook-setup`** (as a direct message to you, in the Control UI, or on the machine), with the command on its own line:
+2. **Tell the owner to open `/sentrook-setup`** (as a direct message to you, in the Control UI, or on the machine), with the command in a code block:
 
    ```
    /sentrook-setup
