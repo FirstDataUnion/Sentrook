@@ -71,7 +71,10 @@ the call, with no model and no raw text.
   fetches or runs, or a destructive target) carries sensitivity, reach and irreversibility at one step
   above the session's last consequence tier. The step moves a borderline call up about one band; a
   call already scored higher keeps its own values, and nothing is added on the suspicion side, so the
-  trend never decides intent on its own.
+  trend never decides intent on its own. With `escalation_reads_impact` the trend and the last tier are
+  the scans' impact (the consequence tier without self-modification, from the state token; the history
+  tiers when the token does not carry them), so a call that only changed the agent's own setup does not
+  lift the next one; `escalation_cap` bounds the lift.
 - A sub-agent the call starts out of the owner's sight (`visible: false`) carries reach and
   irreversibility on the spawn itself (`hidden_spawn_reach`, `hidden_spawn_irreversibility`; off at 0):
   it works with the agent's reach and nobody watching the session sees it to stop it.
@@ -107,7 +110,7 @@ from ..prepare.entities import (
 from ..prepare.fingerprint import ROLE_TAGS, Fingerprint, fingerprint
 from ..prepare.skill_steps import skills_changed
 from ..prepare.trust import Trust
-from ..state.token import entity_hash
+from ..state.token import IMPACT_CAP, entity_hash
 from .base import Contribution, Envelope, Floor
 
 PROBE_VERSION = "context/2.0.0a1"
@@ -211,6 +214,14 @@ class ContextParams:
     #: In an escalating session, a call with a consequence of its own carries sensitivity, reach and
     #: irreversibility at the session's last consequence tier plus this step (0 turns it off).
     escalation_consequence_step: float = 0.2
+    #: Read the trend and the last tier from the scans' impact (the consequence tier without
+    #: self-modification, kept in the state token) rather than the history's consequence tiers, so a call
+    #: that only changes the agent's own setup does not lift the next call's sensitivity, reach and
+    #: irreversibility. When the token does not carry the impacts, the history tiers are read.
+    escalation_reads_impact: bool = False
+    #: The most the escalation lift contributes to each of the three signals (1 = no cap). A call scored
+    #: higher on its own keeps its own value.
+    escalation_cap: float = 1.0
     #: A sub-agent started out of the owner's sight (`visible: false`): it works with the agent's own reach
     #: and nobody watching the session sees it to stop it. Contributed as reach and irreversibility on the
     #: spawn (0 = off).
@@ -1580,8 +1591,19 @@ class ContextProbe:
 
     # ------------------------------------------------------------------ flags and coverage
 
-    @staticmethod
-    def _consequence_tiers(prepared: Prepared) -> list[float]:
+    def _trend_source(self, prepared: Prepared) -> str:
+        # The token keeps IMPACT_CAP impacts: a longer trend is read from the history tiers.
+        if (
+            self.params.escalation_reads_impact
+            and prepared.state.impacts is not None
+            and max(3, self.params.escalation_min_tiers) <= IMPACT_CAP
+        ):
+            return "impact"
+        return "consequence"
+
+    def _consequence_tiers(self, prepared: Prepared) -> list[float]:
+        if self._trend_source(prepared) == "impact":
+            return list(prepared.state.impacts or [])
         return [
             float(h.tiers.consequence)
             for h in prepared.planir.history
@@ -1618,15 +1640,18 @@ class ContextProbe:
             evidence["escalation"] = {"skipped": "self_edit"}
             return []
         tiers = self._consequence_tiers(prepared)
-        record: dict[str, Any] = {
-            "last_tier": tiers[-1] if tiers else None,
-            "call_has_consequence": self._has_consequence(prepared),
-            "value": None,
-        }
+        record: dict[str, Any] = {"last_tier": tiers[-1] if tiers else None}
+        if self.params.escalation_reads_impact:
+            record["tier_source"] = self._trend_source(prepared)
+        record["call_has_consequence"] = self._has_consequence(prepared)
+        record["value"] = None
+        cap = min(1.0, self.params.escalation_cap)
+        if cap < 1.0:
+            record["cap"] = cap
         evidence["escalation"] = record
         if not tiers or not record["call_has_consequence"]:
             return []
-        value = round(min(1.0, max(0.0, tiers[-1]) + step), 4)
+        value = round(min(cap, max(0.0, tiers[-1]) + step), 4)
         record["value"] = value
         return [
             Contribution(signal=signal, value=value, reason="escalation.consequence_rising")
