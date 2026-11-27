@@ -253,7 +253,9 @@ test("the command line has no chat and runs every owner command", async () => {
 
 test("the room refusal names the owner's DM, the Control UI and the command line", () => {
   const text = roomRefusal("history");
-  assert.match(text, /^Run \/sentrook-history in your own direct message to the agent or in the Control UI, in a session no group or channel shares/);
+  assert.match(text, /^\/sentrook-history only runs in your own direct message with the agent, the Control UI \(in a session no room shares\)/);
   assert.match(text, /openclaw sentrook history on the machine/);
-  assert.match(text, /group or channel/);
+  assert.match(text, /group or server channel \(private ones too\)/);
+  assert.ok(text.length < 360, `${text.length} characters`);
+  assert.match(text, /Nothing was shown or changed\.$/);
 });
