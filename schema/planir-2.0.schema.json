@@ -444,6 +444,19 @@
           "default": null,
           "title": "Platform Version"
         },
+        "plugin_build": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The plugin's build as the running process imported it (a hash of its files, with the installed revision when known); plugin_version is the release label",
+          "title": "Plugin Build"
+        },
         "plugin_version": {
           "anyOf": [
             {

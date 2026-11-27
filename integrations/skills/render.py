@@ -174,6 +174,12 @@ HOSTS: dict[str, dict] = {
         ),
         "values": {
             "host": "Hermes",
+            "restart_after_install": (
+                "After any install or update of the plugin, every Hermes process that was already running keeps "
+                "the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), "
+                "the gateway and the dashboard. Until they do, `verify` fails its `running build` line and "
+                "`{{cmd status}}` says `restart needed`."
+            ),
             "guide_skill": "`sentrook:sentrook-guide`",
             "setup_skill": "`sentrook:sentrook-setup`",
             "settings_place": "`plugins.entries.sentrook` in Hermes's `config.yaml`",
@@ -266,6 +272,10 @@ HOSTS: dict[str, dict] = {
         ),
         "values": {
             "host": "OpenClaw",
+            "restart_after_install": (
+                "After any install or update of the plugin, the running gateway keeps the old plugin until it "
+                "restarts: the owner restarts it."
+            ),
             "guide_skill": "`sentrook-guide`",
             "setup_skill": "`sentrook-setup`",
             "settings_place": "`plugins.entries.sentrook` in `openclaw.json`",

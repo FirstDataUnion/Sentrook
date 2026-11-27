@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import types
@@ -216,6 +217,20 @@ def test_api_serves_the_model_from_the_profile_home(api, tmp_path):
     assert m["limit"] == 25
     assert [s["tool"] for s in m["scans"]] == ["web_fetch", "web_fetch"]
     assert RAW not in json.dumps(m)
+
+
+def test_api_records_the_dashboard_process_build(api, tmp_path):
+    # `hermes sentrook verify` names a dashboard still on an older build after a reinstall.
+    api.home["path"] = _home_with_log(tmp_path / "default")
+    api.build({})
+    api.build({})
+    record = json.loads(
+        (tmp_path / "default" / "sentrook" / "processes" / f"{os.getpid()}.json").read_text()
+    )
+    loaded = sys.modules["_sentrook_dashboard_plugin.build"]
+    assert record["build"] == loaded.RUNNING.id
+    assert record["plugin_dir"] == str(PLUGIN)
+    loaded.forget(tmp_path / "default" / "sentrook")
 
 
 def test_api_resolves_the_profile_per_request(api, tmp_path):

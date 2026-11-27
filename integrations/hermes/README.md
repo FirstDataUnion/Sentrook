@@ -96,6 +96,7 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 | `token mint` | The credentials were revoked or are wrong: run `hermes sentrook login` again, then restart Hermes. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
+| `running build` | A Hermes process that was running when you installed or updated the plugin still runs the old plugin (the line names it). Restart it: hermes-serve (the desktop app's backend), the gateway and the dashboard. See [Updating](#updating). |
 
 If Hermes answers `'sentrook' is not a hermes command`, the plugin is not enabled: run
 `hermes plugins enable sentrook` and restart. With `plugins.isolation: host` Hermes has no `hermes sentrook`
@@ -304,7 +305,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
-| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, where notices go, attended platforms, held calls (and the one held most often), passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
+| `status` | Plugin version and running build (and `restart needed` when a Hermes process still runs an older one), mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, where notices go, attended platforms, held calls (and the one held most often), passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
 | `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
@@ -875,7 +876,8 @@ Data Union Ltd:
 - **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
   last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `history_limit` changes the
   number).
-- **Your operating system, home and workspace folder paths, and the plugin version.** Folder paths can identify you.
+- **Your operating system, home and workspace folder paths, and the plugin version and build.** Folder paths can
+  identify you. The build is a hash of the plugin's files, with the Git revision Hermes installed when it recorded one.
   Also the platform, and whether Hermes's approvals and secret redaction are on.
 - **Hashed session IDs, and any grants you have set that could apply**: the grants and channel bindings whose
   pattern fits the call's arguments or the MCP server it calls (a `#name` also fits `channel:name`, and a
@@ -975,6 +977,13 @@ settings (see [step 2](#2-sign-in)).
 ```bash
 hermes plugins update sentrook && hermes gateway restart
 ```
+
+A Hermes process keeps the plugin it loaded when it started, so after any install or update of the plugin restart
+every Hermes process that was running, not just the gateway: hermes-serve (the desktop app's backend), the dashboard
+and any `hermes chat` still open. If you run them as services, restart all of them. Until then, `hermes sentrook
+verify` fails its `running build` line and `/sentrook status` says `restart needed`, naming each process still on
+the old plugin; such a process also logs a warning on its next scan. `/sentrook status` shows the running process's
+`plugin build`, and each scan in the traffic log carries it as `host.plugin_build`.
 
 After a Hermes update, check that `hermes plugins list` still shows `sentrook` as enabled.
 
