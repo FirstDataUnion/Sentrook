@@ -498,3 +498,46 @@ def test_shared_digests(case):
     data = case["text"].encode()
     assert folders.blob_id(data, "sha1") == case["sha1"]
     assert folders.blob_id(data, "sha256") == case["sha256_blob"]
+
+
+def test_a_folder_item_applied_from_the_setup_screen_records_the_folder(
+    repo, home, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    hermes_home = tmp_path / "hermes"
+    state = hermes_home / "sentrook"
+    state.mkdir(parents=True)
+    cfg = plugin.config.resolve_config({}, {"HOME": str(home), "HERMES_HOME": str(hermes_home)})
+    item = proposals.check_item(
+        {"kind": "folder", "pattern": "~/src/ledger-jobs", "reason": "The owner's jobs."}
+    )
+    assert proposals.save(state, [item], "s_000000000001", NOW) is not None
+    records = []
+
+    def run(args):
+        return setup.run(
+            cfg,
+            args,
+            BY,
+            NOW,
+            str,
+            records.append,
+            home=hermes_home,
+            host_cfg={},
+            code=lambda: "4821",
+        )
+
+    screen = run("")
+    assert f"Count the files in `{os.path.realpath(repo)}/` as your own" in screen
+    assert "own instructions" in screen
+    reply = run("apply 4821 1")
+    assert "Trusted gr-" in reply and "git, pinned at" in reply
+    gid, pattern = live(state)[0]
+    assert pattern == os.path.realpath(repo) + "/"
+    assert attest(state, home, repo / "jobs" / "month-end.md") == gid
+    # set again from a new screen: replaces the grant and its record
+    proposals.save(state, [item], "s_000000000001", NOW)
+    run("")
+    again = run("apply 4821 1")
+    assert "replaces " + gid in again
+    assert len(live(state)) == 1 and folders.load(state, gid) is None
