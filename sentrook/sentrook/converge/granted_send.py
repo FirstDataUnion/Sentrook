@@ -16,9 +16,10 @@ owner granted every place the call sends to, this relief also:
 **Coverage.** The call sends off the host and names at least one host, recipient or channel in a sending role; every
 such entity (in the call, a sibling, a file the call writes, or a later run's roles) is covered by a matched
 `destination` grant (a `credential` grant alone ties a key to a host, not what else is sent there). Not covered: a call,
-sibling or written file whose sends are not all written out: a shell command must be local commands and `curl` /
-`wget` with literal URLs (no `git push`, `rsync`, `scp`, `docker push`, interpreter, command substitution or address
-from a variable or config file), and Python must aim every request at a URL written in the code.
+sibling or written file whose sends are not all written out: a shell command must be local commands and `curl` with
+a short list of options and every URL written out (no `git push`, `rsync`, `scp`, `docker push`, `wget`, interpreter,
+background job, process or command substitution, proxy, redirect following or address from a variable or config file),
+and Python must aim every request at a URL written in the code.
 
 **Gate.** No floor fired; concealment is below `concealment_below` and the new content's exposure below
 `exposure_below`; the session is not tainted (before or in this scan). A session that holds sensitive data passes
@@ -98,22 +99,77 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
     return refs
 
 
-#: Shell commands that act on local data only; with `curl` and `wget` (literal URLs only) the only heads a covered
-#: command may run. Interpreters, `sed` and `awk` (which can run commands or open sockets), `xargs`, `find` and every
-#: other tool are left out: their destinations need not be written as a host.
+#: Shell commands that act on local data only; with `curl` (written URLs, a short list of options) the only heads a
+#: covered command may run. Interpreters, `sed` and `awk` (which can run commands or open sockets), `xargs`, `find`,
+#: `wget` (it follows redirects by default) and every other tool are left out: their destinations need not be written
+#: as a host.
 _LOCAL_HEADS = frozenset(
     "cat echo printf jq grep egrep fgrep head tail wc sort uniq cut tr date ls pwd cd test [ true false mkdir touch "
     "tee cp mv base64 sha256sum md5sum basename dirname realpath sleep".split()
 )
-_FETCH_HEADS = frozenset({"curl", "wget"})
-#: Options that take the address from somewhere other than the command line.
-_INDIRECT_OPTIONS = ("-K", "--config", "-i", "--input-file", "--next")
+#: curl options that take no value and send nowhere new; short ones may be clustered (`-sS`).
+_CURL_FLAGS = frozenset(
+    {
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--fail-with-body",
+        "--verbose",
+        "--compressed",
+        "--include",
+    }
+)
+_CURL_FLAG_LETTERS = frozenset("sSfvi")
+#: curl options whose value is data, a header, a method, a local file or a limit, never an address.
+_CURL_VALUE_OPTIONS = frozenset(
+    {
+        "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--json",
+        "-H", "--header", "-X", "--request", "-T", "--upload-file", "-F", "--form",
+        "-o", "--output", "-u", "--user", "-A", "--user-agent", "-m", "--max-time",
+        "--connect-timeout", "--retry", "-w", "--write-out", "-b", "--cookie", "-c", "--cookie-jar",
+    }
+)  # fmt: skip
+_CURL_SHORT_VALUE = frozenset(o[1] for o in _CURL_VALUE_OPTIONS if len(o) == 2)
+_LITERAL_URL = re.compile(r"https?://[A-Za-z0-9.-]+(?::\d+)?(?:[/?#][^\s$`{}]*)?\Z", re.IGNORECASE)
+#: Background jobs, process substitution, command substitution and socket paths: what a segment split does not see.
+_SHELL_HIDDEN = re.compile(r"(?<![&>])&(?![&>])|[<>]\(|\$\(|`|/dev/(?:tcp|udp)/|/inet/")
+
+
+def _curl_known(args: list[str]) -> bool:
+    """Every option is on the short list and every other argument is a URL written out in full."""
+    urls = 0
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _CURL_FLAGS:
+            pass
+        elif a.startswith("--"):
+            name = a.split("=", 1)[0]
+            if name not in _CURL_VALUE_OPTIONS:
+                return False
+            if "=" not in a:
+                i += 1
+        elif a.startswith("-") and len(a) > 1:
+            letters = a[1:]
+            if set(letters) <= _CURL_FLAG_LETTERS:
+                pass
+            elif letters[0] in _CURL_SHORT_VALUE:
+                if len(letters) == 1:
+                    i += 1  # the value is the next token; attached (`-HX: y`) otherwise
+            else:
+                return False
+        elif _LITERAL_URL.match(a):
+            urls += 1
+        else:
+            return False  # curl reads any other argument as a URL, even without a scheme
+        i += 1
+    return urls > 0
 
 
 def _shell_routes_known(command: str) -> bool:
-    """Every simple command is a local one, or a `curl` / `wget` whose URLs are written out: no command substitution,
-    no address from a variable or a config file, no socket path."""
-    if "$(" in command or "`" in command or re.search(r"/dev/(?:tcp|udp)/|/inet/", command):
+    """Every simple command is a local one, or a `curl` whose options are on the short list and whose URLs are
+    written out: nothing run in the background or through process or command substitution, no socket path."""
+    if _SHELL_HIDDEN.search(command):
         return False
     segments = shell_segments(command)
     if not segments:
@@ -122,13 +178,7 @@ def _shell_routes_known(command: str) -> bool:
         head = posixpath.basename(tokens[0]).lower()
         if head in _LOCAL_HEADS:
             continue
-        if head not in _FETCH_HEADS:
-            return False
-        args = tokens[1:]
-        if any(a.startswith(_INDIRECT_OPTIONS) for a in args):
-            return False
-        urls = [a for a in args if re.match(r"(?i)https?://", a)]
-        if not urls or any("$" in u or "{" in u for u in urls):
+        if head != "curl" or not _curl_known(tokens[1:]):
             return False
     return True
 

@@ -1337,7 +1337,8 @@ reviewed or blocked: the score came from the call judge's misalignment, the cons
 stopped call, and the reach of any off-host send, none of which a grant touched.
 - `converge.granted_send` (parameter `granted_send`, off by default): on a send whose every host, recipient or channel
   in a sending role (the call, a sibling, a written file, a later run) is covered by a matched `destination` grant,
-  and every send is written out (a shell command of local commands and `curl` / `wget` with literal URLs; Python whose
+  and every send is written out (a shell command of local commands and `curl` with a short list of options and every URL
+  written in full, no background job or process substitution; Python whose
   every request is aimed at a URL written in the code, read as code), with no floor, concealment and the new content's exposure
   below 0.3, no tainted session, and nothing sensitive held but the env file the call's key comes from:
   - the call judge's misalignment is held to 0.20 when it is below 0.5 (a send it reads as off-request keeps its full
