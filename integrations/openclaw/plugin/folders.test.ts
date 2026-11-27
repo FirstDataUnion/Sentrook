@@ -532,7 +532,12 @@ t("a read of a trusted file is sent with trusted_by and the folder grant; anothe
   // the scanner's own models check these too (SENTROOK_PLANIR_DUMP, as index.test.ts writes it)
   const dump = process.env.SENTROOK_PLANIR_DUMP;
   if (dump) {
-    const prior = existsSync(dump) ? JSON.parse(readFileSync(dump, "utf8")) : [];
+    let prior: unknown[] = [];
+    try {
+      prior = JSON.parse(readFileSync(dump, "utf8"));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
     writeFileSync(dump, JSON.stringify([...prior, ...h.scans]));
   }
 });

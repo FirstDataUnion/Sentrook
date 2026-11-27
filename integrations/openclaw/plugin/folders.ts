@@ -27,6 +27,8 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  constants as fsConstants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -329,20 +331,49 @@ function fileManifest(folder: string, now: Date): Manifest {
         continue;
       }
       if (!st.isFile()) continue; // symlinks and anything else are never attested
-      total += st.size;
-      if (count >= LIMITS.maxFiles || total > LIMITS.maxBytes) {
-        throw new FolderError(
+      const tooBig = () =>
+        new FolderError(
           `The folder is larger than ${LIMITS.maxFiles} files or ${Math.floor(LIMITS.maxBytes / (1024 * 1024))} MB: trust a ` +
             "smaller folder inside it, or a git repository.",
         );
+      if (count >= LIMITS.maxFiles) throw tooBig();
+      const data = readRegular(p, LIMITS.maxBytes - total);
+      if (data === null) {
+        // replaced by something other than a regular file since the listing, or too large
+        if (total + st.size > LIMITS.maxBytes) throw tooBig();
+        continue;
       }
-      files[path.relative(folder, p)] = createHash("sha256").update(readFileSync(p)).digest("hex");
+      total += data.length;
+      files[path.relative(folder, p)] = createHash("sha256").update(data).digest("hex");
       count++;
     }
     for (const d of dirs) walk(d);
   };
   walk(folder);
   return { version: 1, folder, kind: "files", algo: "sha256", built_at: iso(now), files };
+}
+
+/**
+ * A regular file's bytes, read through one open descriptor so the checks and the read see the same file (never a
+ * symlink, and nothing swapped in between). Null if it is not a regular file or is larger than `max`.
+ */
+function readRegular(p: string, max: number): Buffer | null {
+  let fd: number;
+  try {
+    fd = openSync(p, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > max) return null;
+    const data = readFileSync(fd);
+    return data.length > max ? null : data;
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -524,12 +555,6 @@ export function attest(
   if (p === "~" || p.startsWith("~/")) p = opts.home.replace(/\/+$/, "") + p.slice(1);
   if (!p.startsWith("/")) return null;
   const real = realpath(p);
-  try {
-    const st = statSync(real);
-    if (!st.isFile() || st.size > LIMITS.maxFileBytes) return null;
-  } catch {
-    return null;
-  }
   let data: Buffer | null = null;
   for (const [gid, pattern] of folderGrants) {
     const root = realpath(pattern.replace(/\/+$/, "") || "/");
@@ -541,12 +566,8 @@ export function attest(
     const want = Object.hasOwn(manifest.files, rel) ? manifest.files[rel] : undefined;
     if (typeof want !== "string") continue;
     if (data === null) {
-      try {
-        data = readFileSync(real);
-      } catch {
-        return null;
-      }
-      if (data.length > LIMITS.maxFileBytes) return null;
+      data = readRegular(real, LIMITS.maxFileBytes);
+      if (data === null) return null;
     }
     const algo = String(manifest.algo ?? "");
     const got =
