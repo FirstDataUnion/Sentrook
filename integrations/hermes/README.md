@@ -148,8 +148,8 @@ suggests a grant after checking that, with it, the same call would score below t
 one for a known-bad or look-alike host, for something that content the agent read put in front of it, for a file
 being sent out of a session that has read content trying to instruct the agent, or for a call with a clear attack
 signal, and it suggests trusting a new tool provider only when you asked for the work in your own chat. It suggests
-a grant only for a call that came from your own message or from a cron job Hermes started itself; a group chat,
-someone else's message, a subagent or a webhook gets none. A cron job's suggestion reaches you only through its held
+a grant only for a call that came from your own message (in a direct chat, or in a group or channel you write in)
+or from a cron job Hermes started itself; someone else's message, a subagent or a webhook gets none. A cron job's suggestion reaches you only through its held
 call: `/sentrook why <id>` names the grant, the job it came from and the command that sets it; answering the hold never
 sets it, so you decide whether to trust it for every job. A suggestion is a good guess, not a promise: Sentrook's judge sees the
 grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), answering
@@ -402,7 +402,7 @@ matches another call. It is harmless; remove such entries by hand if you like.
 
 A chat you attend here is your own message on the main agent: a direct message from a sender listed in
 `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, or one of your local front ends (the terminal, the TUI, the
-desktop app or an editor over ACP). A group or channel, a sender you did not list, a sub-agent and the background
+desktop app or an editor over ACP). A group or channel (your own messages there included), a sender you did not list, a sub-agent and the background
 review are not, and neither is a run where Hermes approves prompts by itself (approvals off, YOLO, a gateway started
 with `HERMES_YOLO_MODE=1`, `hermes -z`, or `hermes chat -q` and other single-query runs with
 `approvals.single_query_mode: approve`). On email, SMS, IRC and ntfy, where anyone can claim a sender's address or
@@ -542,14 +542,28 @@ it connects to a gateway on another machine), an editor connected over ACP and t
 server, cron, webhooks and A2A peers, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)).
 
+### Group chats and server channels
+
+Your own message in a group chat, server channel or thread counts as yours when you are listed individually in
+`<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`: Sentrook scores it as your request, as in a direct message.
+Messages from other members still count as someone else's, and so do the recent channel messages Hermes puts in front
+of yours (`[Recent channel messages]`, thread context): they are sent as content the agent read, not as your words.
+
+A review there asks in the channel, where Hermes shows its approval prompt. Anyone Hermes admits to the channel
+(listed users, allowed roles, allow-all, paired users) can press its buttons, so the answer is not known to be yours,
+and some things stay for a direct message or the terminal: a snooze does not apply and a block stays a block;
+**Always** and **Session** never set a suggested grant (the prompt shows the command instead); **Session** covers only
+the exact action; a subagent's reviews are held for you; and owner commands (`/sentrook …` other than `status` and
+`help`) are refused. A private channel counts as a group too.
+
 A subagent you start from your own direct message on a chat platform, the TUI or the desktop app is attended too:
 Hermes shows its approval prompt in that chat (on a chat platform also after your turn has ended, while the
 subagent still runs), and you answer it there as you would any other. A prompt nobody answers in time, one Hermes cannot show or withdraws,
 or one the subagent's own thread answers because no chat could show it, holds the call instead, bound to the chat
 that started the subagent. In the local terminal and over ACP Hermes answers a subagent's prompts itself, so there a
 subagent's reviews are held, and so they are everywhere while `delegation.subagent_auto_approve` is on (Hermes would
-approve them with nobody asked). A subagent of a cron job, a webhook, the API server, a group chat or someone else's
-message, and a subagent of such a subagent, is unattended. If a UI in front of the API server shows Hermes's approval
+approve them with nobody asked). A subagent of a cron job, a webhook, the API server, a group chat (your own message there included) or
+someone else's message, and a subagent of such a subagent, is unattended. If a UI in front of the API server shows Hermes's approval
 prompts, add it with `/sentrook attended add api_server --confirm` (see [Attended platforms](#attended-platforms)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 
@@ -575,13 +589,15 @@ Details: /sentrook why 3f9c2a1b
   address or other target is covered only when it is repeated exactly.
 - When you asked for the work in your own chat, **Session** also covers the rest of the job in that chat for 12
   hours: a later call of the same tool about the same parties (the hosts and files the review's reasons and its
-  description of the call name), scoring no higher, goes through without asking, even when it writes a different
-  output file. It still asks when the later call adds a warning the answered one did not have (for example content
-  that tried to change the agent's task or that the call uses, a target only such content named, a secret carried
-  into the request, a look-alike or known-bad party, a remote delete, a retry after a refusal), and for another
-  party, a higher score, another tool, another chat or a block. What the session has been reading (documents with
-  instructions in them) does not count as new on its own; it still raises the score.
-  The prompt says which applies: "also covers the same parties at no higher risk", or "covers only this exact
+  description of the call name), scoring at most 10 points higher than the call you answered and below the block
+  line, goes through without asking, even when it writes a different output file. It still asks when the later call
+  adds a warning the answered one did not have (for example content that tried to change the agent's task or that
+  the call uses, a target only such content named, a secret carried into the request, a look-alike or known-bad
+  party, a remote delete, a retry after a refusal), and for another party, a score more than 10 points higher,
+  another tool, another chat or a block. What the session has been reading (documents with instructions in them) and
+  the session's rising consequence trend do not count as new on their own; they still raise the score. The 10
+  points count from the call you answered, not from a call Session let through since.
+  The prompt says which applies: "also covers the same parties at a similar risk", or "covers only this exact
   action" when the review named no party or the answer is not known to be yours (a group chat, someone else's
   message, a subagent). **Always** covers only the same action, as above.
 - Where a grant would cover calls like this, the prompt says what **Session** (for this chat) and **Always** (for 30

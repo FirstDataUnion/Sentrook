@@ -242,6 +242,16 @@ export function gaps(state: ReportState): string[] {
   return out;
 }
 
+/** The gap for channel bindings that no message send in the log would carry (`setup.unreachedBindings`). */
+export function bindingGaps(unreached: number): string[] {
+  if (!unreached) return [];
+  return [
+    `${n(unreached, "channel binding")} ${unreached === 1 ? "matches" : "match"} no message send in the log, so ` +
+      `${unreached === 1 ? "it relieves" : "they relieve"} nothing: verify lists ${unreached === 1 ? "it" : "them"}; ` +
+      "write a binding as the sends write the channel.",
+  ];
+}
+
 /**
  * The report from the host's settings (`state`), the grants in force (`setup.inForce`) and the traffic log's evidence
  * over `days` (`setup.readEvidence`; not available with the log off).
@@ -284,7 +294,7 @@ export function render(
   if (state.shadowed_skills?.length) {
     lines.push(`- Skills that outrank the plugin's own: ${state.shadowed_skills.map((s) => q(s, 60)).join(", ")}.`);
   }
-  lines.push("", "Gaps:", ...rows(gaps(state)));
+  lines.push("", "Gaps:", ...rows([...gaps(state), ...bindingGaps(setup.unreachedBindings(force, ev).length)]));
   if (!ev.available) {
     lines.push("", "Sentrook's traffic log is off; only settings are shown.");
     return lines.join("\n");

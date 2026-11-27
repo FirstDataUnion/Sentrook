@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import build, hold, login, owner_settings, passes, skill_review
+from . import build, grants, hold, login, owner_settings, passes, setup, skill_review
 from .auth import (
     ConsentWithdrawn,
     clear_scan_token_cache,
@@ -25,8 +25,18 @@ from .auth import (
     resolve_oidc_credentials,
 )
 from .commands import COMMANDS, OwnerGate, dispatch
-from .config import resolve_config
+from .config import PluginConfig, resolve_config
 from .grants import binding_problems_summary, unsent_summary
+
+
+def unreached_summary(cfg: PluginConfig, now: datetime) -> str:
+    """The channel bindings in force (config and command) that no message send in the traffic log would
+    carry (`setup.unreached_bindings`); "" with the log off, no send in it, or every binding carried."""
+    if not cfg.traffic_log_enabled:
+        return ""
+    ev = setup.read_evidence(cfg.traffic_log_path, cfg.review_at, now)
+    force = setup.in_force(cfg, grants.load(cfg.state_dir), now)
+    return ", ".join(grants._clean(p, 60) for p in setup.unreached_bindings(force, ev))
 
 
 def run_verify(
@@ -103,12 +113,14 @@ def run_verify(
         )
     )
     problems = binding_problems_summary(cfg)
+    unreached = unreached_summary(cfg, datetime.now(UTC))
     checks.append(
         (
             "channel bindings",
             True,
             f"{len(cfg.channel_bindings)} in config"
-            + (f"; cannot apply: {problems}" if problems else ""),
+            + (f"; cannot apply: {problems}" if problems else "")
+            + (f"; no message send in the traffic log matches: {unreached}" if unreached else ""),
         )
     )
     # Reported, not failed: without a notice target a held call still waits; the owner is just not told.

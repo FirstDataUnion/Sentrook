@@ -9,6 +9,24 @@ since the version the catalog pins.
 - `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
   lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
   "the request does not clearly ask for this call"). Shown when the scanner sends it.
+- `hermes sentrook verify` lists the channel bindings no message send in the traffic log would carry (a binding is sent
+  only with a send that shows its channel, so one written another way relieves nothing), and the setup report counts
+  them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
+  (`user:<id>`, `dm:<id>`). The setup skill says to write a binding with its platform, as `send_message` names the
+  target.
+- Your own message in a group chat or server channel now counts as yours when you are listed individually in
+  `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, as the OpenClaw plugin already does: routine work you ask for
+  from a private channel is scored like a direct message instead of as someone else's request. Other members still
+  count as someone else, and the recent channel messages Hermes puts in front of your message are sent as content the
+  agent read, never as your words. Reviews there still ask in the channel; because anyone the bot admits can answer
+  there, a snooze, remembered Session answers, grants set by approving and a subagent's prompts stay for a direct
+  message or the terminal, and owner commands are still refused in channels.
+- **Session** on a review now also covers a later call of the same tool about the same parties that scores up to 10
+  points higher than the call you answered (never at or above the block line), and one that newly carries only the
+  session's rising consequence trend. A score moves a few points between near-identical calls of one job, so the
+  same job asked again. Every other new warning, a retry after a refusal included, still asks. The 10 points count
+  from your answer, not from a call Session let through. The prompt now says "also covers the same parties at a
+  similar risk". Passes on held calls are unchanged: no higher score and no new warning.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the

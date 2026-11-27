@@ -3,7 +3,9 @@
 Hermes passes a command handler nothing but its raw arguments, so the sender comes from the
 gateway's session context, as for scans. The owner is:
 - a direct message from a sender individually on `<PLATFORM>_ALLOWED_USERS` or
-  `GATEWAY_ALLOWED_USERS` (the same rule as `intent.sender_of`);
+  `GATEWAY_ALLOWED_USERS` (the same rule as `intent.sender_of`). The same sender in a group chat or
+  server channel is refused: anyone who can read or post there sees the change, and may answer what
+  it asks;
 - the local terminal: the `hermes sentrook` CLI, or a slash command whose session Hermes reports
   (`ctx.session_surface()`) as the CLI, TUI or desktop app. The API server sends slash commands to
   the model as text, and cron and webhook runs do not dispatch them. Recheck this on every Hermes
@@ -42,7 +44,11 @@ def owner_of(
     if platform in LOCAL_PLATFORMS:
         return {"owner": True, "basis": ["local_terminal"], "platform": platform}
     sender = sender_of(platform, facts, None, env)
-    return {"owner": sender["relation"] == "owner", "basis": sender["basis"], "platform": platform}
+    return {
+        "owner": sender["relation"] == "owner" and "group_chat" not in sender["basis"],
+        "basis": sender["basis"],
+        "platform": platform,
+    }
 
 
 def sender_ref(user_id: str, salt: str) -> str | None:

@@ -31,7 +31,7 @@ There are two entry points:
 ## Just installed
 
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
-   the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the machine, say once, in one or two sentences, that setup goes best there: the owner commands setup ends with (such as `/sentrook setup apply`) are refused in group chats and server channels, and a long setup is easier to follow there. Give the
+   the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the machine, say once, in one or two sentences, that setup goes best there: the owner commands setup ends with (such as `/sentrook setup apply`) are refused in group chats and server channels, and a long setup is easier to follow there. If the owner works with you from a group or server channel, also say: their own messages there count as theirs when they are listed in Hermes's allowed users, other members' messages and the channel history do not, and reviews there ask in the channel, where anyone the bot lets in can answer, so a snooze and remembered answers only work in a direct message or the terminal. Give the
    command to open it, then carry on here if the owner prefers.
 2. **Check that it works.** Run `hermes sentrook verify` (you may run it, and `hermes sentrook status`). Every line should start with
    `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
@@ -100,7 +100,8 @@ approved.
 4. **Close with one line:** "If your regular work gets blocked later, ask me to help set up a grant for it."
 
 - For a channel binding, use the channel exactly as Sentrook saw it: the owner finds it under `entities` in
-  `/sentrook why <id>` for a scan of that job.
+  `/sentrook why <id>` for a scan of that job. On Hermes, write it with its platform, as `send_message` names the target: `discord:#daily-brief` or `discord:<channel id>`. If `hermes sentrook verify` or the setup report says a binding
+  matches no message send in the log, it relieves nothing as written: suggest it again in the form above.
 - Afterwards, `/sentrook grants` lists every grant in force and `/sentrook revoke <id>` removes one.
 
 ## Trusted folders
