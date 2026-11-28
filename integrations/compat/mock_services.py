@@ -163,7 +163,12 @@ class Handler(BaseHTTPRequestHandler):
             step = (
                 msg["tool_calls"][0]["function"]["arguments"] if msg.get("tool_calls") else "answer"
             )
-            self._record({"model_step": step})
+            offered = [
+                (t.get("function") or {}).get("name")
+                for t in req.get("tools") or []
+                if isinstance(t, dict)
+            ]
+            self._record({"model_step": step, "tools": offered})
             if req.get("stream"):
                 self._stream(req, msg)
             else:
