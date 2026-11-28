@@ -8,5 +8,6 @@ chat apps" section: for each chat app OpenClaw has on, whether Sentrook's approv
 approver, WhatsApp and Signal `approvals.plugin`). The `sentrook-setup` skill's approval-card step now reads it and
 covers every chat app you use. The agent sends you to `/sentrook-setup` only after its proposal tool has added the
 items; if its setup tools are missing it says so and gives you exact owner commands instead of guessing; it runs
-only `openclaw sentrook verify` and `status`, with a long enough timeout to wait for them. `/sentrook-setup` with
+only `openclaw sentrook verify` and `status`, and if one times out (OpenClaw's plugin commands are often slow to
+start) it asks you to run it in a terminal and send it the result. `/sentrook-setup` with
 nothing on the list now says that Sentrook found nothing new and the agent added nothing.

@@ -392,10 +392,9 @@ HOSTS: dict[str, dict] = {
                 "which names such a setting."
             ),
             "cli_wait": (
-                "On OpenClaw an `openclaw sentrook` command can take half a minute or more to start: run it with a "
-                "timeout of at least 90 seconds and wait for it to finish. If it still has not finished, carry on "
-                "with the setup report and ask the owner to run it in a terminal; slow is not broken, so never tell "
-                "the owner Sentrook hangs."
+                "OpenClaw's plugin commands are often slow to start, so this one may time out. If it does, tell the "
+                "owner that this is a common OpenClaw slowness, not a fault in Sentrook, and ask them to run it in a "
+                "terminal on this machine and send you what it prints."
             ),
             "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
             "chat_app_reason": (

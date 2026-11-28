@@ -33,7 +33,7 @@ There are two entry points:
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
    the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine, say once, in one or two sentences, that setup goes best there: until step 4 shows that approval cards reach this chat app, a step Sentrook asks about here is refused, which could leave you both stuck; once they do, cards work here as anywhere. Give the
    command to open it, then carry on here if the owner prefers.
-2. **Check that it works.** Run `openclaw sentrook verify` (you may run it, and `openclaw sentrook status`). On OpenClaw an `openclaw sentrook` command can take half a minute or more to start: run it with a timeout of at least 90 seconds and wait for it to finish. If it still has not finished, carry on with the setup report and ask the owner to run it in a terminal; slow is not broken, so never tell the owner Sentrook hangs. Every line
+2. **Check that it works.** Run `openclaw sentrook verify` (you may run it, and `openclaw sentrook status`). OpenClaw's plugin commands are often slow to start, so this one may time out. If it does, tell the owner that this is a common OpenClaw slowness, not a fault in Sentrook, and ask them to run it in a terminal on this machine and send you what it prints. Every line
    should start with `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `openclaw sentrook login` in a terminal on this machine; never run it yourself (Sentrook
