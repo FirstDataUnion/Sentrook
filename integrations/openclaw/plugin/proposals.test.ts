@@ -601,7 +601,7 @@ test("an expired proposal is gone from the screen", async () => {
   await h.run(tool, args);
   const now = new Date();
   assert.ok(h.screen(now).includes("`api.example.com`"));
-  assert.equal(h.screen(new Date(now.getTime() + 24 * 3600_000 + 60_000)), "Sentrook setup: nothing to set up right now.");
+  assert.equal(h.screen(new Date(now.getTime() + 24 * 3600_000 + 60_000)), "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review.");
 });
 
 test("the setup skill hands over with a proposal", () => {

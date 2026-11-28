@@ -459,7 +459,10 @@ def test_an_expired_proposal_is_gone_from_the_screen(h):
     now = datetime.now(UTC)
     assert "`api.example.com`" in screen(h, now)
     later = screen(h, now + timedelta(hours=24, minutes=1))
-    assert later == "Sentrook setup: nothing to set up right now."
+    assert (
+        later
+        == "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review."
+    )
 
 
 def test_the_setup_skill_hands_over_with_a_proposal():

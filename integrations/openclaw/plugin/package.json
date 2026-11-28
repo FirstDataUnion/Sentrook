@@ -16,6 +16,7 @@
     "dashboardView.js",
     "assets/icon.png",
     "alwaysAllow.ts",
+    "approvalRoutes.ts",
     "approvalPolicy.ts",
     "auth.ts",
     "backgroundSave.ts",

@@ -275,7 +275,7 @@ test("nothing to set up", () => {
   const oc = mkdtempSync(path.join(tmpdir(), "sentrook-setup-"));
   const cfg = resolveConfig({}, { OPENCLAW_STATE_DIR: oc });
   const src = { openclawDir: oc, hostConfig: {} };
-  assert.equal(setup.run(cfg, "", BY, NOW, CMD, () => undefined, () => undefined, src), "Sentrook setup: nothing to set up right now.");
+  assert.equal(setup.run(cfg, "", BY, NOW, CMD, () => undefined, () => undefined, src), "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review.");
   assert.equal(new Store(cfg.stateDir).loadSetup().code, null);
   assert.ok(setup.run(cfg, "apply 0000", BY, NOW, CMD, () => undefined, () => undefined, src).startsWith("That is not the code on the setup screen"));
 });

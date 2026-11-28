@@ -18,6 +18,7 @@ import {
   resolveSecretString,
 } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
+import { approvalRoutes } from "./approvalRoutes.ts";
 import * as bg from "./backgroundSave.ts";
 import { CMD, OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import {
@@ -423,6 +424,13 @@ const plugin = {
         trusted: (() => {
           const t = trustOf(cfg);
           return { chats: Object.fromEntries(t.chats), users: trust.userCount(t) };
+        })(),
+        approval_routes: (() => {
+          try {
+            return approvalRoutes(hostConfig());
+          } catch {
+            return null;
+          }
         })(),
       };
       const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);

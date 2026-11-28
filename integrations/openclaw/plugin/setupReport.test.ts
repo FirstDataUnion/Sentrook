@@ -265,6 +265,8 @@ test("the owner's own message in a direct chat gets the report", async () => {
   assert.ok(t.includes("No traffic yet."));
   assert.ok(t.includes("- Notices of held calls: none (no notify target is set;"));
   assert.ok(!t.includes("Attended platforms"));
+  // OpenClaw's own config has no chat app on in this harness (approvalRoutes.test.ts reads the routes)
+  assert.ok(t.includes("Approval cards in chat apps:\n- No chat app is on."));
   assert.equal(h.scans.length, 0); // not scanned as a risky call
   const [rec] = h.records();
   assert.deepEqual([rec.outcome, rec.days, rec.session_ref], ["answered", 14, sessionRef("S1")]);

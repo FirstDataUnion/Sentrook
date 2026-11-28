@@ -243,6 +243,7 @@ HOSTS: dict[str, dict] = {
             ),
             "owner_commands_where_short": "in a direct message to you, or on the machine",
             "cli_prefix_host": "hermes",
+            "cli_wait": "Wait for it to finish; do not stop it early.",
             "local_places": (
                 "the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the "
                 "machine"
@@ -380,10 +381,16 @@ HOSTS: dict[str, dict] = {
             ),
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
             "cli_prefix_host": "openclaw",
+            "cli_wait": (
+                "On OpenClaw an `openclaw sentrook` command can take half a minute or more to start: run it with a "
+                "timeout of at least 90 seconds and wait for it to finish. If it still has not finished, carry on "
+                "with the setup report and ask the owner to run it in a terminal; slow is not broken, so never tell "
+                "the owner Sentrook hangs."
+            ),
             "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
             "chat_app_reason": (
-                "a step Sentrook checks needs an approval card, and until step 4 is done the card may not reach this "
-                "chat, so a blocked step could leave you both stuck"
+                "until step 4 shows that approval cards reach this chat app, a step Sentrook asks about here is "
+                "refused, which could leave you both stuck; once they do, cards work here as anywhere"
             ),
             "approval_route": (
                 "OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app "

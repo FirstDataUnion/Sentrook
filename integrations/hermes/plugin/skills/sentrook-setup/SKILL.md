@@ -33,8 +33,8 @@ There are two entry points:
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
    the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the machine, say once, in one or two sentences, that setup goes best there: the owner commands setup ends with (such as `/sentrook setup apply`) are refused in group chats and server channels, and a long setup is easier to follow there. If the owner works with you from a group or server channel, also say: their own messages there count as theirs when they are listed in Hermes's allowed users, other members' messages and the channel history do not (unless the owner trusts the chat or the person: see "Group chats"), and reviews there ask in the channel, where anyone the bot lets in can answer, so a snooze and remembered grants only work in a direct message or the terminal. Give the
    command to open it, then carry on here if the owner prefers.
-2. **Check that it works.** Run `hermes sentrook verify` (you may run it, and `hermes sentrook status`). Every line should start with
-   `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
+2. **Check that it works.** Run `hermes sentrook verify` (you may run it, and `hermes sentrook status`). Wait for it to finish; do not stop it early. Every line
+   should start with `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `hermes sentrook login` in a terminal on this machine; never run it yourself (Sentrook
    blocks it). After any install or update of the plugin, every Hermes process that was already running keeps the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), the gateway and the dashboard. Until they do, `verify` fails its `running build` line and `/sentrook status` says `restart needed`.
@@ -43,7 +43,11 @@ There are two entry points:
    where Sentrook refuses it, and not here, if this is the terminal or app). Do this first, even if the rest of setup waits: a scheduled job whose calls
    are held otherwise fails without telling anyone. If `hermes sentrook verify` or `hermes sentrook status` warns that held calls are
    waiting with no notice target, say so. If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook notify here` as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test notice there, and `/sentrook notify status` says whether it arrived. Until then a scheduled job's held-call notice goes only to the job's own delivery chat, or to the owner's direct message where Sentrook can find one; other notices are not sent, and the call waits.
-4. **Make sure approval cards reach the owner.** Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, **Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that they wrote from a direct message and that their account is on the platform's allowed users.
+4. **Make sure approval cards reach the owner.** Do this step every time, wherever you are talking. In the owner's
+   direct chat, call the `sentrook_setup_report` tool and read "Approval cards in chat apps": one line for each chat
+   app Hermes has on, saying whether a review there reaches the owner. Tell the owner, one short line per chat app
+   they use, whether cards reach them there; for each that does not, give the command the report names, in a code
+   block, for the owner to run in a terminal on this machine. If you cannot call the report: Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, **Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that they wrote from a direct message and that their account is on the platform's allowed users.
 5. **Work out what is routine yourself.** Look, do not ask:
    - your scheduled jobs: `hermes cron list` (what they do, where they post);
    - your skills and MCP servers: `hermes skills list`, `hermes mcp list`;
@@ -91,11 +95,12 @@ approved.
    | A person the owner knows | `{"trusted_sender": "discord:2345678901", "reason": "..."}` |
    | A short job, for an afternoon | `{"kind": "destination", "pattern": "*.client.example", "expires": "4h", "reason": "..."}` |
 
-   The tool only adds the items to the list; it sets nothing. It checks each item as the owner's own commands would and
+   The tool only adds the items to the list; it sets nothing. Go on to step 2 only once it has answered "Added N
+   items"; until then nothing is on the list, so never tell the owner something is there. It checks each item as the owner's own commands would and
    tells you which it did not add and why. It never takes settings, attended platforms or grants for one session only:
    explain those to the owner instead. Anywhere but the owner's direct chat it adds nothing and says
    "Setup needs the owner in a direct chat." and nothing more, so ask the owner to talk to you directly.
-2. **Tell the owner to open `/sentrook setup`** (in a direct message to you, or on the machine), with the command in a code block:
+2. **Then tell the owner to open `/sentrook setup`** (in a direct message to you, or on the machine), with the command in a code block:
 
    ```
    /sentrook setup
@@ -106,6 +111,30 @@ approved.
    owner to check each item before they set it: a grant lets calls like it through without asking.
 3. **Offer to explain any item** in one plain sentence, if the owner wants.
 4. **Close with one line:** "If your regular work gets blocked later, ask me to help set up a grant for it."
+
+### If the setup tools are missing
+
+If `sentrook_setup_report` or `sentrook_propose_setup` is not among your tools, or calling it says the tool is
+unknown, say so to the owner in one sentence. Whether someone is the owner is Hermes's call, not yours: the tools'
+absence does not mean the owner is someone else. Ask the owner to run `hermes sentrook verify` in a terminal on this machine:
+it names a setting that hides the tools. Meanwhile give the owner one command per item they kept, each in its own
+code block, to send as a direct message to you or to run as `hermes sentrook <command>` in a terminal:
+
+| Item | Command |
+| --- | --- |
+| A service you send to | `/sentrook grant destination api.example.com --persistent` |
+| A folder you keep notes in | `/sentrook grant file ~/notes/* --allows read,write --persistent` |
+| An API key and its service | `/sentrook grant credential EXAMPLE_API_KEY@api.example.com` |
+| Their own MCP servers | `/sentrook grant provider npm:@example/ --persistent` |
+| A repository or folder they write and maintain themselves | `/sentrook grant folder ~/src/my-repo` |
+| A chat channel a scheduled job posts to | `/sentrook bind add discord:#daily-brief` |
+| A group chat where the owner knows every member | `/sentrook trust-chat add discord:1234567890 --confirm` |
+| A person the owner knows | `/sentrook trust-user add discord:2345678901 --confirm` |
+
+Write each exactly in these forms, with the owner's own values; never another verb or option. Never run them
+yourself: Sentrook blocks them.
+
+### Notes
 
 - For a channel binding, use the channel exactly as Sentrook saw it: the owner finds it under `entities` in
   `/sentrook why <id>` for a scan of that job. On Hermes, write it with its platform, as `send_message` names the target: `discord:#daily-brief` or `discord:<channel id>`. If `hermes sentrook verify` or the setup report says a binding
@@ -205,6 +234,8 @@ a direct message. Sentrook refuses these commands in a group, from the owner too
 ## What you never do
 
 - Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook dismiss`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, `/sentrook trust-chat add`, `/sentrook trust-chat remove`, `/sentrook trust-user add`, `/sentrook trust-user remove`, `/sentrook setup apply`, or their `hermes sentrook` forms. Only the owner runs them.
+- Of the `hermes sentrook` commands, run only `hermes sentrook verify` and `hermes sentrook status`. Sentrook blocks every other one,
+  even one that only reads, such as `hermes sentrook grants`: for what is set, call the `sentrook_setup_report` tool.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never change Hermes's approval settings (no `config set`, `config patch` or `config unset`, and no edit of its

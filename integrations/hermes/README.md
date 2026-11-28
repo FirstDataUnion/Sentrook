@@ -448,7 +448,9 @@ The plugin also gives the agent one read-only tool, `sentrook_setup_report`, whi
 It tells the agent what is set and what is missing, the grants Sentrook suggested on reviews you approved at least
 twice (marked covered when a grant already lets them through), the reviews you approved at least twice with nothing
 to suggest (by tool), and the API key names Sentrook saw sent only to their own service, over the last 14 days (up
-to 30), with the same rule as `/sentrook setup`: your own message, no steering content flagged in that chat. It
+to 30), with the same rule as `/sentrook setup`: your own message, no steering content flagged in that chat. It also
+says, for each platform Hermes's gateway connects, whether Sentrook's approval buttons reach you there (chat
+platforms need nothing; Feishu needs its card callback; the API server and webhooks hold reviews for you). It
 changes nothing.
 
 It never shows the grants themselves (only how many of each kind are in force), any call's arguments or request text,

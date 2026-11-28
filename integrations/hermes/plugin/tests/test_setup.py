@@ -322,7 +322,10 @@ def test_no_attended_item_ever_appears(scene):
 def test_nothing_to_set_up(tmp_path):
     cfg = resolve_config({}, {"HERMES_HOME": str(tmp_path)})
     reply = setup.run(cfg, "", WHO, NOW, CMD, lambda r: None, home=tmp_path, host_cfg={})
-    assert reply == "Sentrook setup: nothing to set up right now."
+    assert (
+        reply
+        == "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review."
+    )
     assert Store(cfg.state_dir).load_setup()["code"] is None
     assert setup.run(
         cfg, "apply 0000", WHO, NOW, CMD, lambda r: None, home=tmp_path, host_cfg={}

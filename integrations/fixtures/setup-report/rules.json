@@ -72,24 +72,24 @@
     }
   ],
   "gaps": [
-    {"state": {"notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "unsent_grants": 0, "shadowed_skills": null}, "gaps": []},
-    {"state": {"notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "held_waiting": 3, "unsent_grants": 0, "shadowed_skills": null}, "gaps": []},
+    {"state": {"approval_routes": null, "notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "unsent_grants": 0, "shadowed_skills": null}, "gaps": []},
+    {"state": {"approval_routes": null, "notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "held_waiting": 3, "unsent_grants": 0, "shadowed_skills": null}, "gaps": []},
     {
-      "state": {"held_waiting": 1, "unsent_grants": 0, "shadowed_skills": null},
+      "state": {"approval_routes": null, "held_waiting": 1, "unsent_grants": 0, "shadowed_skills": null},
       "gaps": [
         "1 held call is waiting and no notice target is set: the owner is told only where a fallback reaches them. Set a notice target first, from the owner's own direct message to the agent.",
         "No notice target: a held call's notice goes only to its job's own delivery chat, or to the owner's direct message where the plugin can find one; otherwise the call is held silently."
       ]
     },
     {
-      "state": {"held_waiting": 3, "unsent_grants": 0, "shadowed_skills": null},
+      "state": {"approval_routes": null, "held_waiting": 3, "unsent_grants": 0, "shadowed_skills": null},
       "gaps": [
         "3 held calls are waiting and no notice target is set: the owner is told only where a fallback reaches them. Set a notice target first, from the owner's own direct message to the agent.",
         "No notice target: a held call's notice goes only to its job's own delivery chat, or to the owner's direct message where the plugin can find one; otherwise the call is held silently."
       ]
     },
     {
-      "state": {"scan_ok": false, "credentials_missing": ["SENTROOK_SCAN_CLIENT_ID"], "mode": "observe", "unsent_grants": 2, "traffic_log": false, "shadowed_skills": []},
+      "state": {"approval_routes": null, "scan_ok": false, "credentials_missing": ["SENTROOK_SCAN_CLIENT_ID"], "mode": "observe", "unsent_grants": 2, "traffic_log": false, "shadowed_skills": []},
       "gaps": [
         "The scan service settings are invalid: every call fails closed until they are fixed.",
         "The scan credentials are missing: no call can be scanned until the owner sets them.",
@@ -98,7 +98,9 @@
         "2 config grants are never sent: a grant in the config has no session, so one scoped to a session applies nowhere.",
         "The traffic log is off: Sentrook cannot count the reviews the owner approved or show what it has seen."
       ]
-    }
+    },
+    {"state": {"approval_routes": [{"app": "slack", "ok": true, "text": "cards show in the chat; nothing to set up."}, {"app": "irc", "ok": null, "text": "Sentrook cannot tell whether cards reach the owner there."}], "notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "unsent_grants": 0, "shadowed_skills": null}, "gaps": []},
+    {"state": {"approval_routes": [{"app": "slack", "ok": true, "text": "cards show in the chat; nothing to set up."}, {"app": "whatsapp", "ok": false, "text": "..."}, {"app": "signal", "ok": false, "text": "..."}], "notice": {"target": "a direct message on telegram", "source": "/sentrook-notify here"}, "unsent_grants": 0, "shadowed_skills": null}, "gaps": ["Approval cards do not reach the owner in whatsapp, signal: a review there cannot be answered. \"Approval cards in chat apps\" says what the owner runs."]}
   ],
   "unreached_bindings": [
     {

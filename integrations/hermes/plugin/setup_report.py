@@ -43,7 +43,13 @@ from pathlib import Path
 from typing import Any
 
 from . import grants, history, hold, setup
-from .intent import APP_PLATFORMS, ATTENDED_PLATFORMS, LOCAL_PLATFORMS, UNATTENDED_PLATFORMS
+from .intent import (
+    APP_PLATFORMS,
+    ATTENDED_PLATFORMS,
+    LOCAL_PLATFORMS,
+    NON_CHAT_PLATFORMS,
+    UNATTENDED_PLATFORMS,
+)
 
 TOOL = "sentrook_setup_report"
 TOOLSET = "sentrook"
@@ -95,6 +101,53 @@ def days_of(args: Any) -> int:
     if isinstance(raw, float) and not raw.is_integer():
         return DEFAULT_DAYS
     return min(int(raw), MAX_DAYS)
+
+
+# ---- approval cards in chat apps ----------------------------------------------------------------------------------
+
+_BUTTONS = (
+    "Hermes shows the approval buttons in the chat itself; nothing to set up. Only accounts on the platform's "
+    "allowed users can press them."
+)
+
+
+def approval_routes(
+    connected: list[str] | tuple[str, ...],
+    attended_platforms: frozenset[str] | set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Whether Sentrook's approval prompts reach the owner on each platform Hermes's gateway connects, for the report:
+    a chat platform shows Hermes's buttons with nothing to set up (Feishu needs its card callback first); nobody
+    answers on the API server or webhooks, so a review there is held for the owner; anything else Sentrook cannot
+    tell. `ok` as in the OpenClaw report: never false here, since no Hermes setting turns the buttons off."""
+    out: list[dict[str, Any]] = []
+    for p in sorted({str(c) for c in connected if c}):
+        if p == "feishu":
+            out.append(
+                {
+                    "app": p,
+                    "ok": None,
+                    "text": "the app needs its card callback set up first (Hermes's Feishu guide).",
+                }
+            )
+        elif (p in NON_CHAT_PLATFORMS or p in UNATTENDED_PLATFORMS) and p not in attended_platforms:
+            out.append(
+                {
+                    "app": p,
+                    "ok": None,
+                    "text": "nobody answers prompts there: a review is held for the owner's allow or deny.",
+                }
+            )
+        elif p in ATTENDED_PLATFORMS or p in APP_PLATFORMS or p in attended_platforms:
+            out.append({"app": p, "ok": True, "text": _BUTTONS})
+        else:
+            out.append(
+                {
+                    "app": p,
+                    "ok": None,
+                    "text": "Sentrook cannot tell whether cards reach the owner there.",
+                }
+            )
+    return out
 
 
 # ---- who may call ------------------------------------------------------------------------------------------------
@@ -296,6 +349,14 @@ def gaps(state: dict[str, Any]) -> list[str]:
             "Another skill has the name of one Sentrook ships, so the agent loads it instead; the owner should "
             "remove or rename it unless they wrote it."
         )
+    unreached = [
+        hold.inert(r["app"], 40) for r in state.get("approval_routes") or [] if r.get("ok") is False
+    ]
+    if unreached:
+        out.append(
+            f"Approval cards do not reach the owner in {', '.join(unreached)}: a review there cannot be answered. "
+            '"Approval cards in chat apps" says what the owner runs.'
+        )
     return out
 
 
@@ -359,6 +420,12 @@ def render(
     if state.get("shadowed_skills"):
         names = ", ".join(_q(s, 60) for s in state["shadowed_skills"])
         lines.append(f"- Skills that outrank the plugin's own: {names}.")
+    routes = state.get("approval_routes")
+    if routes is not None:
+        lines += ["", "Approval cards in chat apps:"]
+        lines += [f"- {hold.inert(r['app'], 40)}: {r['text']}" for r in routes] or [
+            "- No chat app is on."
+        ]
     unreached = len(setup.unreached_bindings(force, ev))
     lines += ["", "Gaps:", *_rows([*gaps(state), *binding_gaps(unreached)])]
     if not ev.available:

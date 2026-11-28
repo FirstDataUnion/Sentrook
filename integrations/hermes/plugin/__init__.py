@@ -1387,6 +1387,9 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
         "shadowed_skills": None,
         "traffic_log": cfg.traffic_log_enabled,
         "held_waiting": hold.waiting(cfg.state_dir, now),
+        "approval_routes": setup_report.approval_routes(
+            hold.connected_platforms(), owner_settings.attended_of(cfg)
+        ),
     }
     data = grants.load(cfg.state_dir)
     force = setup.in_force(cfg, data, now)

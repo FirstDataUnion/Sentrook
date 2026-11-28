@@ -10,5 +10,10 @@
   "unsent_grants": 1,
   "shadowed_skills": ["sentrook-setup"],
   "traffic_log": true,
-  "trusted": {"chats": {"discord:111": false, "telegram:-100333": true}, "users": 2}
+  "trusted": {"chats": {"discord:111": false, "telegram:-100333": true}, "users": 2},
+  "approval_routes": [
+    {"app": "discord", "ok": true, "text": "cards reach the owner (approval cards on, approver set)."},
+    {"app": "telegram", "ok": false, "text": "no approver, so a review there is refused. The owner runs, in a terminal: `openclaw config set channels.telegram.execApprovals.approvers '[\"<their Telegram user id>\"]'`"},
+    {"app": "[irc](https://evil.example)", "ok": null, "text": "Sentrook cannot tell whether cards reach the owner there."}
+  ]
 }
