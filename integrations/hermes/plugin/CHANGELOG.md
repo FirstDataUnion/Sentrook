@@ -4,7 +4,7 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
-## 2.0.0-beta.18
+## 2.0.0-beta.19
 
 - The `sentrook-guide` skill's "Working well with Sentrook" section adds one habit: when the agent asks you to
   confirm something, it writes out in that message what it will do (the service or place, and what it will send,
@@ -93,6 +93,9 @@ since the version the catalog pins.
   Sentrook's own folders; it is persistent by default, set only by command or from `/sentrook setup` (never from the
   settings or a suggestion), and `grants` shows what each is pinned to. The setup skill now asks which repositories
   you maintain and can propose folder items (`sentrook_propose_setup` takes `kind: folder` and `follow`).
+
+## 2.0.0-beta.18
+
 - Beta: while a snooze is on, a block in a chat you attend asks you instead of stopping, whatever caused it: a floor,
   a strong signal or a rule that always blocks included. Until now only a block Sentrook marks as having no clear
   attack signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt
