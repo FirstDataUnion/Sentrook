@@ -529,7 +529,7 @@ def test_env_file_comments_without_values_and_masked_lines_hold_nothing():
 def test_a_comment_with_a_value_in_it_shows_a_value():
     assert_fires(
         ex(f"grep -E 'KEY|#' {ENV} | sed 's/=.*/=***/'"),
-        "EXAMPLE_API_KEY=***\n# old key: aB3dE5fG7hJ9kL2m\n",
+        "EXAMPLE_API_KEY=***\n# the old one was aB3dE5fG7hJ9kL2m\n",
     )
 
 
