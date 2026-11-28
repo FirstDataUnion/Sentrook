@@ -267,7 +267,17 @@ def gaps(state: dict[str, Any]) -> list[str]:
     if state["mode"] == "observe":
         out.append("Mode is observe: Sentrook scores and logs calls but never asks or blocks.")
     if not state["notice"].get("target"):
-        out.append("No notice target: calls held on scheduled jobs are held silently.")
+        held = state.get("held_waiting") or 0
+        if held:
+            out.append(
+                f"{_n(held, 'held call')} {'is' if held == 1 else 'are'} waiting and no notice target is set: the "
+                "owner is told only where a fallback reaches them. Set a notice target first, from the owner's own "
+                "direct message to the agent."
+            )
+        out.append(
+            "No notice target: a held call's notice goes only to its job's own delivery chat, or to the owner's direct "
+            "message where the plugin can find one; otherwise the call is held silently."
+        )
     if state["unsent_grants"]:
         n = state["unsent_grants"]
         out.append(

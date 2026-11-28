@@ -11,7 +11,7 @@ Setup:
 - Skills that outrank the plugin's own: "sentrook-setup".
 
 Gaps:
-- No notice target: calls held on scheduled jobs are held silently.
+- No notice target: a held call's notice goes only to its job's own delivery chat, or to the owner's direct message where the plugin can find one; otherwise the call is held silently.
 - 1 config grant is never sent: a grant in the config has no session, so one scoped to a session applies nowhere.
 - The traffic log is off: Sentrook cannot count the reviews the owner approved or show what it has seen.
 - Another skill has the name of one Sentrook ships, so the agent loads it instead; the owner should remove or rename it unless they wrote it.

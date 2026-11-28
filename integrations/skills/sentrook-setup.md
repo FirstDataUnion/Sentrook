@@ -38,8 +38,13 @@ There are two entry points:
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `{{cli login}}` in a terminal on this machine; never run it yourself (Sentrook
    blocks it). {{restart_after_install}}
-3. **Make sure approval cards reach the owner.** {{approval_route}}
-4. **Work out what is routine yourself.** Look, do not ask:
+3. **Notices, before anything else is set.** Ask the owner to send `{{cmd notify}} here`
+   as a direct message to you in the chat app where they want to hear about held calls (not in a group or channel,
+   where Sentrook refuses it, and not here, if this is the terminal or app). Do this first, even if the rest of setup waits: a scheduled job whose calls
+   are held otherwise fails without telling anyone. If `{{cli verify}}` or `{{cli status}}` warns that held calls are
+   waiting with no notice target, say so. If they ask why: {{notice_explain}}
+4. **Make sure approval cards reach the owner.** {{approval_route}}
+5. **Work out what is routine yourself.** Look, do not ask:
    - your scheduled jobs: `{{cli_prefix_host}} cron list` (what they do, where they post);
    - your skills and MCP servers: `{{cli_prefix_host}} skills list`, `{{cli_prefix_host}} mcp list`;
    - in the owner's direct chat, the `sentrook_setup_report` tool: what is set, and what Sentrook has seen and the
@@ -48,13 +53,11 @@ There are two entry points:
 
    From that, draft the items for "Hand over": the services you send to, the folders you work in, the API key names
    you use (names only), the channels your jobs post to, your MCP servers.
-5. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
+6. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
    why you think it is routine. Ask which to keep, and: "Is there anything else you ask me to do regularly that
    should not need approval?" If your work reads instructions from a repository or folder (a job's instructions,
    project notes), also ask whether the owner writes and maintains it themselves; if so, it can be a trusted folder
    (see "Trusted folders"). Only the owner can say this: never assume it.
-6. **Notices.** Ask the owner to send `{{cmd notify}} here` as a direct message to you in the chat app where they want
-   to hear about held calls (not here, if this is the terminal or app). If they ask why: {{notice_explain}}
 7. **Hand over** (next section). Explain attended chats only if the owner runs scheduled jobs or asks:
    {{attended_explain}}
 
