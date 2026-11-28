@@ -1,5 +1,255 @@
 # @firstdataunion/sentrook-openclaw
 
+## 2.0.0-beta.15
+
+### Minor Changes
+
+- 751e2c9: Trusted chats and users. `/sentrook-trust-chat add <platform>:<chat id> --confirm` marks a group chat or server
+  channel where you know every member as trusted, and `/sentrook-trust-user add <platform>:<user id> --confirm` a person
+  you know (`list` and `remove` too; `trustedChats` and `trustedSenders` in the config do the same, and `trustedSenders`
+  now takes `<platform>:<user id>` as well as a bare id). Their messages are sent to the scanner as from someone you
+  trust, not a stranger, and never as yours: grants, settings and every Sentrook command stay yours, a trusted turn never
+  sets a grant when its review is approved, and the scanner's floors apply as before. A thread or topic in a trusted chat
+  is covered; a direct chat is never a trusted chat. Each command warns first and needs `--confirm`, runs only where the
+  other owner commands run (never in a group or channel), and is logged by platform only.
+  
+  Reviews in a trusted chat are answered as OpenClaw allows there. A chat added with `--owner-only` (or `owner_only:
+  true` in the config) holds a review on anyone's turn but yours for you instead: the agent says in the chat that it is
+  waiting, you get a notice where `/sentrook-notify here` sends them, and `/sentrook-allow <id>` lets that exact call
+  through once.
+  
+  The agent's setup proposals can now include a trusted chat or user, shown on `/sentrook-setup` with its warning and
+  set from there; the setup report counts the trusted chats and users and lists the group chats the agent was used in.
+
+### Patch Changes
+
+- 8ba56c8: Held calls: `/sentrook-allow <id>` on a held call of a cron job now runs the job again straight away, instead of
+  waiting for its next scheduled run. The plugin sets a one-use pass bound to the new run and starts it with
+  `openclaw cron run <job> --json` as a child process (the gateway's own OpenClaw, else `openclaw` on the PATH), with no
+  extra prompt; it never runs the held call itself. The pass serves only the run that command returns, as the job's
+  running receipt in OpenClaw's job store names it. When that run ends (`agent_end`, else the job's next scan), you get
+  one line on where notices go: the call went through, the run did not make it, or it made a different call (held as
+  `h-…`); a pass that run did not use ends with it. One run per held call.
+  
+  Nothing is started, and the pass waits for the job's next scheduled run, when the job is gone, finished, disabled,
+  running, or changed since the hold (a digest of its definition is kept on the hold), when OpenClaw refuses the run, or
+  in observe mode; the reply says which. When the held run had already sent or written something before the held call,
+  plain `allow` waits for the next run and the notice offers `/sentrook-allow <id> now`, which starts the whole job again
+  with a warning that it repeats what it already did. `/sentrook-allow <id> later` keeps the wait-for-the-next-run answer.
+  The notice, the replies and the outcome line are the same text as the Hermes plugin's.
+- 4f4f096: **Allow always** is now offered on a review of an MCP tool call you asked for yourself, even when no grant would cover
+  it, and it covers that tool on that server for 30 days, in any session: a later call of the same tool on the same
+  server (its configured address or package), whatever page or file it writes, at most 10 points higher and below the
+  block line, with no new warning, goes through without asking. Before, the card offered only **Allow once** there, so
+  every call of an MCP write tool asked again. Another tool, another server, a host, recipient or channel the answered
+  call did not name, a floor, a rule that always asks or a block still asks; a group chat is offered no **Allow
+  always**. The card says so, `/sentrook-grants` lists these answers and `/sentrook-revoke <id>` removes one.
+- 2c4fcf9: If you withdraw consent on the FIDU portal, the identity service stops accepting this machine's scan credentials.
+  Sentrook then tells you once, where notices go and in observe mode too, that scans stopped and how to connect again
+  (`openclaw sentrook login`), switch to observe mode or uninstall, instead of a scan-failure notice per job. It is sent once for
+  these credentials, also across restarts; signing in again or setting new credentials resets it. Calls are handled
+  as for any credential problem: asked where you can answer, blocked where nobody can (and with `onScanError: allow` too), run
+  in observe mode; the prompt, the agent's message and `verify` say consent was withdrawn.
+  
+  `openclaw sentrook login` now prints what each check sends and to whom, the privacy policy, the terms and how to stop, with the
+  terms version you accepted (and when) if the identity service gives it.
+- c837463: A destination grant over a whole public suffix is refused. A destination may use a wildcard on a host or a mail domain
+  only as `*.` and one registrable domain (`*.example.com`, `*.example.co.uk`, `*.myname.github.io`), or as `*.` and a
+  name that never resolves on the public internet (`*.lan`, `*.local`, `*.internal`, `*.test`, `*.example` and the
+  like). `/sentrook-grant destination *.com` is refused with the reason, and so is a wildcard over another top-level
+  domain or a common shared suffix where anyone can get a name (`*.co.uk`, `*.ne.jp`, `*.github.io`, `*.vercel.app`,
+  `*.amazonaws.com`; the common ones, not every one), or inside a name (`api*.example.com`), as Sentrook ignores such a
+  grant: it would let calls reach sites run by strangers. A wildcard in a channel's name (`discord:#daily-*`) or before
+  an `@` (`*@example.com`) is still taken. Such a grant in `openclaw.json`, or one already in the grants file, is never
+  sent: `/sentrook-grants`, `/sentrook status` and `openclaw sentrook verify` list it as too broad, and the other grants
+  still apply. A channel binding like it is listed as too broad and never sent. A credential grant's host follows the
+  same list of shared suffixes. A wildcard address such as `192.168.1.*` is refused too, and one already in the config
+  is listed as too broad and never sent: write the exact hosts instead. A bare name with a wildcard such as `daily-*` is
+  refused as a destination, as it would match hosts too: write `#daily-*` or `discord:#daily-*` for channel names.
+- ea1ddde: The `sentrook-guide` skill's "Working well with Sentrook" section adds one habit: when the agent asks you to confirm
+  something, it writes out in that message what it will do (the service or place, and what it will send, write or
+  change), since Sentrook reads the agent's last message beside a short reply such as "yes" to see what you agreed to.
+- ea9d9d6: `/sentrook-dismiss <id>` (or `/sentrook-dismiss all`) takes a held call off the waiting list without answering it, as
+  if it had expired now. It works on any hold, including one that offers no answer (a run with no source, or a hold
+  from an earlier version) and one you would rather not deny for 30 days. The call never runs and nothing is set: no
+  pass, denial or grant, and a call like it is held again with a notice. Each dismissed call is recorded in the traffic
+  log with the resolution `hold_dismissed`, and `/sentrook-history` shows its review as `dismissed`. Like the other
+  answers, it is for the owner only and the agent is told never to run it.
+  
+  The dashboard's **Waiting for you** section now folds: click its heading to fold it away, and the tab remembers that
+  in your browser until something newer is waiting. It shows the first three items with the rest behind **Show more**,
+  and names `/sentrook-dismiss` on each held call and `/sentrook-dismiss all` when more than one is waiting.
+- c03ff84: An unattended run keeps the scanner's `cap.local_code` ceiling, as it keeps the ceiling on a retry of a review nobody
+  answered, so both plugins decide the same from the same response. The scanner sets it only for Hermes `execute_code`
+  programs today.
+- 1842c1b: Held calls on runs that are not cron jobs now bind to where the run came from. A heartbeat's hold is bound to its
+  agent (`ctx.agentId`), and a subagent's to its parent session (the requester session the spawn hooks report). Such a
+  hold offers `/sentrook-allow <id>` (a one-use pass for the next matching call from the same source within 7 days;
+  nothing is started), `/sentrook-allow <id> always` where offered, and `/sentrook-deny <id>`, each bound to that
+  source; the notice and the replies name it, and `/sentrook-passes` lists each pass by its source. The same call from
+  another agent's heartbeat or another parent session is held again. A webhook or event run keeps allow alone, bound
+  to the exact arguments: OpenClaw gives plugins no hook or mapping id, and the run's ids are new for every request.
+  Sources are never read from the prompt or the call, and the stored ref is a hash. The texts are the same as the
+  Hermes plugin's.
+- d5ce557: With no notify target set, a held call's notice (and a run's end line, and the line on how a started run went) no
+  longer goes nowhere: it goes to the chat the cron job delivers its own output to (an `announce` delivery that names
+  its `channel` and `to`), else to your direct message when `commands.ownerAllowFrom` names exactly one owner on a
+  channel OpenClaw has configured. It never goes to a chat the job does not deliver to, and it ends with a line saying
+  where it went and how to set a target. While calls are held with no target set, `/sentrook status` warns, `verify`
+  fails its held-call notices check and the setup report lists it as its first gap. The setup skill now asks for
+  `/sentrook-notify here` right after checking the install.
+- 349f915: On OpenClaw 2026.11.3 or newer, where tool search's dispatcher is named `dispatch_action` (it was `tool_call`, which
+  OpenClaw still accepts), the dispatcher is again not scanned itself: only the call it runs is, once, as before. Until
+  now each such call was scanned twice, once as a `dispatch_action` call of unknown kind and once as itself, the plugin's
+  own setup tools got a scan of their dispatcher that could raise a review, and the history sent with a scan showed the
+  bare dispatcher instead of the call it ran. A dispatcher beside the call being scanned is shown as the call it runs,
+  under either name. Both names are handled on every supported OpenClaw (2026.9.5 or newer). A call by either name
+  is skipped only when it names a tool the way the dispatcher takes it; any other call by that name (another plugin's
+  or a client's tool of the same name) is scanned like any call.
+- dc7a53b: A read of the plugin's own `sentrook-setup` or `sentrook-guide` skill now counts as a read of the agent's own skills
+  again on OpenClaw 2026.11, which runs plugin code from a copy of the installed folder: the plugin also accepts the
+  folder OpenClaw installed it in (where `~/.openclaw/plugin-skills/` points), with the same checks as before (the text
+  the plugin loaded, a regular file, no link leading elsewhere). Before, the skill's instructions counted as content
+  steering the agent, so a setup chat asked about calls it should not have. The `sentrook-setup` skill also tells the
+  agent never to read Sentrook's folder or traffic log and to call the `sentrook_setup_report` tool instead.
+- 746b64d: Every owner command (`/sentrook-history`, `/sentrook-why`, `/sentrook-report`, `/sentrook-grants`, `/sentrook-grant`,
+  `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`,
+  `/sentrook-passes`, `/sentrook-notify` and `/sentrook-setup`) now refuses in a group or channel room, even from the
+  owner. OpenClaw decides the owner by the sender, not the room, and keeps a command and its reply in the room's
+  transcript, so recent scans, hosts, file paths, reasons and grants were shown to everyone there. As `/sentrook-setup`
+  already did, they also refuse in a chat the plugin cannot tell from a room (a chat channel with no session key), and
+  in the agent's main session while `session.groupScope` routes rooms into it, from the Control UI too, since that
+  transcript is the rooms'. A thread or topic counts as the chat it is in, so one in your own DM still works. The reply
+  says to run the command in your own direct message to the agent or the Control UI, in a session no room shares, or as
+  `openclaw sentrook <command>` on the machine; each refusal is recorded in the traffic log with the reason
+  `group_chat` or `unknown_chat`.
+- e519487: An owner command sent in a group or channel room now gets a shorter reply that starts with where it does run (your
+  own direct message with the agent, the Control UI or the machine) and says a private server channel counts as a room
+  too. The refusal for someone who is not the owner also says a group chat or server channel,
+  even a private one, never runs an owner command.
+- 6a60455: A channel binding or a cron job's delivery grant written with its platform (`discord:<channel id>`) now applies to a
+  send that names only the account it posts as (`{action: send, target: "channel:<id>", accountId: <a Discord
+  account>}`), as OpenClaw's message tool often writes one. Until now such a grant was sent only when the call named the
+  platform in its own `channel` argument, so a scheduled job announcing to its own channel was still held. The plugin
+  takes the platform from the account (`channels.<platform>.accounts.<id>` in OpenClaw's config, ids compared without
+  case; an account on two platforms gives none), else, with no account or the implicit `default` one, from the session's
+  own chat platform, and sends it to the scanner as `pending_call.send_platform`. It counts only for the platform-prefix
+  form: a bare id is then sent only as a channel target (`channel:<id>`, `group:`, `thread:`) or a whole argument, never
+  for a direct message (`user:<id>`, `dm:<id>`), also when the send names its platform. `openclaw sentrook verify` lists
+  the channel bindings no message send in the traffic log would carry, the setup report counts them as a gap, and the
+  setup skill says which form to write on OpenClaw.
+- 8ecc06e: A Google Drive, Docs or Sheets file or folder id is no longer redacted as a secret where the call names Google. Since a
+  value that looks random under a key is redacted, an id in a Drive query (`parents='<id>'`) or in a script that works on
+  documents (`const PLAN = "<id>"` beside `documentId`, `textRun`, a Google API host or client library, or a Drive or Docs
+  tool such as `drive_files_list` or `docs_get`) became a placeholder: the scanner could not see which document or folder
+  the call reads or writes, and counted the id as a secret being sent. Such an id now stays when its own text, or for a
+  value in a call's arguments its own object, names Google. A value of that shape with nothing naming Google, any value
+  under a credential key, a key with a secret word in it (`SESSION_KEY`, `Authorization`, `connect.sid`, `cookie`, `hmac`) or a custom `X-`
+  header, and every other random value are redacted as before.
+- 6f1672c: A credential field's name is no longer redacted as if it were a secret. In text, a value after a password, token or
+  API-key key that names such a field or stands in for one (`api_key:api_secret` quoted from an API's docs,
+  `password: your_password`, `apiKey=apiSecret`, `token: xxxxxxxx`) or is a short lower-case word (`password=changeme`)
+  stays, so a call that quotes documentation is not scored as sending a secret. Values with a digit, mixed case or a
+  symbol, vendor shapes such as `sk-live-…` and `ghp_…`, and longer values are redacted as before, and so is any value
+  under a credential key in a parsed object.
+- 52eff45: A command piped from, substituted or run straight after a password or token is no longer hidden inside its
+  placeholder. An unquoted value after a key or in a sentence (`TOKEN=<value>|curl …|sh`, `TOKEN=<value>$(…)`,
+  `TOKEN=<value>;curl$IFS/x|sh`, `password: <value>;curl …`) used to run on through the `|`, `$(`, `;` or `&` and the
+  command after it, so the scanner never saw that command. A value now ends at `$(`, and at a `|` followed by a command:
+  a word with more after it on its line (`|curl …`, `|7z x`), a word before `;` or `&&` and
+  another command (`|reboot;echo …`), or a command led by a symbol (`|$(…)`, `|$SHELL`, `|(…)`, `|{curl,…}`,
+  `|./run.sh`, `|/bin/sh`). A value written `key: <value>` or in a sentence now ends where one written `key=<value>`
+  does. Anywhere else `|` and `$` stay part of the value (`password=<value>|<rest>`, `pa$sword`), and so do a `|` after
+  an opening quote and a lone word after a `|` at the end of a line (`TOKEN=<value>|sh`), as a password's tail would be,
+  and so does a word with a glob or a `$@`-style parameter inside it after a `|` (`|c*rl …`, `|cu$@rl …`).
+  Backticks, `<` and `>` already ended a value.
+- 59f3e83: A quoted example value that only stands in for a secret is no longer redacted as if it were one, so docs and notes
+  that show a token file's shape can be saved into a skill or memory without being scored as saving a secret. Kept under
+  any key: the word `REDACTED` and a mask of `*`, `•` or `·` (`"••••••••"`). Kept only in a quoted value under a token
+  or key that does not name a password: a token cut short with an ellipsis after at most ten token characters
+  (`"access_token": "ya29.a0..."`, `"refresh_token": "1//0g..."`), and a short phrase that says what it is
+  (`"short-lived token"`, `"your api key"`). Still redacted as before: a full token, with or without an ellipsis;
+  anything under a password (`"password": "<short value>..."`, a passphrase); a phrase that does not say what the value
+  is; a value after a command-line flag, `mysql -p` or `sshpass -p`; an unquoted value before an ellipsis; and any value
+  under a credential key in a parsed object.
+- 1409602: A password or token with `&`, `,` or `;` in it is now redacted whole. After a key in an assignment, an `.env` line or
+  a quoted value (`password=<value>&<rest>`, `export DB_PASSWORD=…`, `password='…'`) the value used to end at the first
+  of these characters, so the rest of it left the machine as written, and the same password written `password: …` got
+  another placeholder. What follows a value is still kept where it is something else: another parameter in a link's
+  query or a form body (`?password=…&page=2`, `user=a&password=…&remember=1`), the next key of a list or a connection
+  string (`a=1,b=2`, `;Initial Catalog=…`), an HTML entity (`&quot;`), and a command or statement after the value (`…;
+  echo ok`, `…;npm publish`, `…&&next`, `…;$(…)`, `…;./run.sh`, `…;return x`), so the scanner still sees it; in double
+  quotes a value ends where `$(` starts. A lone command word at the end of a line after a value (`TOKEN=…;make`) is read
+  as part of the value, as a password's tail would be.
+- 6443f9e: The `sentrook-guide` skill has a new section, "Working well with Sentrook", on shaping work so Sentrook can judge it
+  clearly: fetch web pages and APIs with OpenClaw's own web tools rather than HTTP in code; keep code local (a code or
+  shell call that reads local files does not also reach the network); install packages once, early, in a chat with the
+  owner, not in cron jobs, heartbeats or subagents; keep a task's files in one work directory; refer to keys by name;
+  and when a call is held or blocked, tell the owner and point to `/sentrook-why` rather than try it again in a new
+  shape. It says plainly that this is about clear scans, never about getting past a check.
+- 57b2c43: `/sentrook-setup` and the setup report count a chat as having read content that tried to steer the agent only when
+  one of its scans gave an `exposure.*` reason: the scanner's own line for it, and every later call of a chat it judged
+  tainted carries one. The exposure scores alone no longer count, since almost any content scores a little, so the
+  screen warned about nearly every proposal from the agent and left out reviews you approved in ordinary chats.
+- fbcd2d1: The setup skill now starts by making sure approval cards reach your chat apps: it reads `commands.ownerAllowFrom` and
+  each app's `execApprovals` and gives you the `openclaw config set` commands to run in a terminal (Discord needs its
+  cards switched on, WhatsApp and Signal need `approvals.plugin` forwarding to the chat the request came from). It never changes those settings
+  itself. It suggests doing the first setup in the Control UI or `openclaw tui`, works out what is routine from the
+  agent's own cron jobs, skills, MCP servers and the setup report instead of asking you a list of questions, shows a
+  short list to keep or drop, and ends with how to get help when regular work is blocked later. The install guide has a
+  new section, "Approval cards in chat apps".
+- 3e43c07: When you answer the agent with a short message (300 characters or less, such as "yes", "go with A" or "try again"),
+  each call of that run also sends the agent's last message before it, so the scanner can see what you agreed to
+  instead of reading your reply alone. It is sent as the agent's words, never as your request, redacted and cut to 2,000
+  characters (start and end), and only with `allowConversationAccess`. It is not sent with a longer message, someone
+  else's message, a scheduled run or a sub-agent.
+- 3061552: `/sentrook-why` now shows the call itself (the tool's arguments as sent to the scanner: secrets masked, long text
+  cut), and a background-save notice shows the save it is about, marked as data, so you can judge it without opening the
+  dashboard. The dashboard shows each scan's call by default too. One new setting, `hideToolCalls`, hides calls in all
+  three places; `dashboardShowCalls` is no longer needed and does nothing. A report's summary never carries the call.
+- a5463ce: Beta: while a snooze is on, a block in a chat you attend asks you instead of stopping, whatever caused it: a floor, a
+  strong signal or a rule that always blocks included. Until now only a block Sentrook marks as having no clear attack
+  signal asked, so a false alarm with a floor left no way past but switching Sentrook to observe. That prompt keeps its
+  wording ("Would be blocked, but a snooze is on."). Any other block gets a stronger warning: it names why it would be
+  blocked and says "A snooze is on: allow only if you asked for exactly this call." Both are at critical severity, offer
+  **Allow once** and **Deny** only, and ask again on the next call; the stronger one suggests no grant, and while the
+  snooze lasts an action asked about either way asks with the stronger warning again even when it is scored later as an
+  ordinary review. The stronger one needs a complete scan: when one of Sentrook's checks failed, the block stays a
+  block. A change to Sentrook itself (its files, settings or log, turning the plugin off, stopping the gateway, a
+  Sentrook command only you should run, loosening the host's approvals), and any block that may be one, stays a block
+  during a snooze; so does a block with a floor or a strong signal on email, SMS, IRC or ntfy, where anyone can claim a
+  sender. Nothing changes on unattended runs, for other senders, in group rooms, in observe mode, on
+  scan errors or without a snooze. The snooze reply, `/sentrook-snooze status`, the guide and the agent skill say so.
+  The traffic log marks such a prompt with `relaxed_strong: true`.
+  
+  A turn OpenClaw starts with trigger `user` whose input came from another session (`sessions_send` from another agent)
+  or from the host itself is no longer read as your own message, even with an owner-flagged requester: it never reaches
+  a snooze prompt, a snoozed review there asks, and approving never sets a suggested grant. Cron runs are unchanged.
+- 178a6c3: A subagent's run is now sent as a subagent's. OpenClaw starts a subagent's run (session `agent:<id>:subagent:<uuid>`)
+  with trigger `user` and no provenance, so the plugin sent it as the owner's message and asked: under a cron job too,
+  and the prompt never reached anyone, because OpenClaw refuses a plugin's approval request from a subagent's run (its
+  gateway identity has no approvals scope) and the call was blocked with no notice. Such a run is now sent as trigger
+  `subagent`, and a review in it is held for the owner, bound to the parent session, with the usual notice: whether
+  the subagent was started by a cron job, a heartbeat, an event run, someone else's message or the owner's own chat,
+  and whatever `approval.scheduledIntentKinds` says. Blocks stay blocks.
+- 9c1b91b: The local traffic log keeps records for 30 days. As it writes (at most once an hour), the plugin deletes older records
+  from `traffic.jsonl` and its rotated copy `traffic.jsonl.1`: a file holding only older records is deleted, and one that
+  holds both is rewritten without them. `/sentrook-history`, `/sentrook-why`, `/sentrook-report` and the dashboard show
+  what is inside those 30 days.
+- 8de3436: Trusted folders: `/sentrook-grant folder <dir>` trusts a folder you write and maintain, such as the repository your
+  jobs' instructions live in. A file the agent reads from it with the `read` tool, unchanged since you set the grant, is
+  sent with `trusted_by`, and Sentrook reads it as your own words: it no longer makes the chat count as exposed to
+  untrusted content. Nothing else is relieved. The plugin records the folder when you set the grant (in a git repository
+  the commit checked out; elsewhere each file's sha256); an edited, new or untracked file, or one reached through a
+  symlink out of the folder, is not trusted. `--follow origin/main` follows that branch's tip on the remote, asked of the
+  remote itself. The grant refuses `/`, the home folder and above, wildcards and the agent's and Sentrook's own folders;
+  it is persistent by default, set only by command or from `/sentrook-setup` (never from the settings or a suggestion),
+  and `/sentrook-grants` shows what each is pinned to. The setup skill now asks which repositories you maintain and can
+  propose folder items (`sentrook_propose_setup` takes `kind: folder` and `follow`).
+- 0f82ac6: `/sentrook-why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
+  lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
+  "the request does not clearly ask for this call"). Shown when the scanner sends it.
+
 ## 2.0.0-beta.14
 
 ### Patch Changes
