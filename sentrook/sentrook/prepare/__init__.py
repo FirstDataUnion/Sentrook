@@ -122,6 +122,9 @@ from .session_sets import (
     producer_artefacts,
     trusted_folder_read,
 )
+from .shown_output import LIST as SHOWN_LIST
+from .shown_output import SHELL as SHOWN_SHELL
+from .shown_output import shows_value
 from .sibling_join import Resolution, SiblingWrite, resolve_pending, sibling_writes
 from .skill_steps import skill_step_calls
 from .steering import steering_marks, steers
@@ -1424,6 +1427,35 @@ def mark_kernel_clear(
         c.kernel_clear = True
 
 
+def _outputs_showing_nothing(planir: PlanIR) -> dict[str, frozenset[str]]:
+    """The calls whose returned output this request carries whole (an `ok` tool result, not cut), each with the ways
+    of reading it (`shell`, `list`) under which it shows no value (`shown_output`): a sensitive read that reaches
+    the session only through such an output holds nothing."""
+    from ..aira.lists import load_lists
+
+    placeholder = str(load_lists().get("egress", "placeholder", "open", default="⟦secret"))
+    commands: dict[str, str] = {}
+    for h in planir.history:
+        args = h.arguments if isinstance(h.arguments, dict) else {}
+        text = args.get("command") or args.get("code") or ""
+        commands[h.call_id] = text if isinstance(text, str) else ""
+    clean: dict[str, set[str]] = {}
+    for i in planir.new_inputs:
+        if i.kind is not InputKind.TOOL_RESULT or not i.call_id:
+            continue
+        # a dropped or cut output, or a failed call's, may hide what the call printed
+        whole = i.content is not None and i.status is ResultStatus.OK and not i.truncated
+        kinds = {
+            k
+            for k in (SHOWN_SHELL, SHOWN_LIST)
+            if whole
+            and not shows_value(i.content or "", placeholder, k, commands.get(i.call_id, ""))
+        }
+        # a call with several results shows nothing only when none of them does
+        clean[i.call_id] = clean[i.call_id] & kinds if i.call_id in clean else kinds
+    return {cid: frozenset(k) for cid, k in clean.items() if k}
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -1462,6 +1494,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 for i in planir.new_inputs
                 if i.kind is InputKind.TOOL_RESULT and i.call_id
             },
+            nothing_shown=_outputs_showing_nothing(planir),
         )
         if state.fresh:
             coverage.append(

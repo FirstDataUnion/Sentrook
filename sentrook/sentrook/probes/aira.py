@@ -37,6 +37,7 @@ from ..aira import AIRA_VERSION
 from ..aira.analysis import analyse
 from ..aira.detectors import PACK_TIER1, Context, Finding, call_label, run_detectors
 from ..aira.lists import Lists, load_lists
+from ..aira.output_only import only_shows
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
@@ -181,6 +182,10 @@ class AiraProbe:
         calls.extend(prepared.siblings)
         resolved_evidence: list[dict[str, Any]] = []
         pending_paths: list[str] = []
+        #: Each counted finding that marks the session as holding sensitive data: whether it is the pending
+        #: call's own and only a read (`output_only_read`).
+        sensitive_by: list[bool] = []
+        shows_only: str | None = None
         for call in calls:
             a = analyse(call, prepared, self.lists, local=local)
             findings, skipped_here = run_detectors(a, ctx)
@@ -188,6 +193,7 @@ class AiraProbe:
             label = call_label(call)
             is_sibling = call.source == "sibling"
             if call is prepared.pending:
+                shows_only = only_shows(a)
                 # What the call reads, runs, sends or writes; not its cwd or a path a message names.
                 pending_paths = [p.value for p in a.paths if p.roles - {Role.MENTIONED}]
             feeds = is_sibling and bool(
@@ -237,6 +243,8 @@ class AiraProbe:
                     # A command a skill holds has not run: it sets no session flag and no floor.
                     continue
                 floors.extend(f.floors)
+                if SessionFlag.HOLDS_SENSITIVE in f.flags:
+                    sensitive_by.append(call is prepared.pending and _only_a_read(f))
                 for flag in f.flags:
                     if flag not in flags:
                         flags.append(flag)
@@ -297,6 +305,10 @@ class AiraProbe:
             "skipped_classes": skipped,
             "findings": evidence_findings,
         }
+        if sensitive_by and all(sensitive_by) and shows_only:
+            # The call reads sensitive data and can only print it (or send a key to its own service): the read
+            # reaches the session only through the output it returns (`state.token.PendingMarks`).
+            evidence["output_only_read"] = shows_only
         if written_evidence is not None:
             evidence["written_file"] = written_evidence
         if resolved_evidence:
@@ -314,6 +326,12 @@ class AiraProbe:
             marks=marks,
             evidence=evidence,
         )
+
+
+def _only_a_read(finding: Finding) -> bool:
+    """A finding that marks the session sensitive only because the call reads a credential: the read itself (C1), or
+    an env file whose key the call sends only to its own service (the plain send, C2 without a sensitive source)."""
+    return finding.cls == "C1" or finding.rule.startswith("C2.send.")
 
 
 def counts_for_the_batch(finding: Finding) -> bool:
