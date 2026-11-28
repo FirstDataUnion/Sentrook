@@ -126,6 +126,10 @@ never about getting past a check: a call that needs the owner's review should st
 - **Set up first, in a chat with the owner.** Install packages and tools once, early, where the owner can answer a
   review. Not on an unattended run (cron jobs, webhooks, the API server, subagents of those), where nobody can answer and the call is held.
 - **Use one work directory** for a task's files and outputs.
+- **Say what you will do before the owner says yes.** When you ask the owner to confirm, write out in that message
+  what you will do: the service or place, and what you will send, write or change. When the owner replies with
+  something short ("yes", "go with A"), Sentrook reads your message beside the reply to see what they agreed to; a
+  vague question leaves it guessing.
 - **Refer to keys by name.** Keep secret values out of arguments and code; read each key from the environment by its
   name.
 - **When a call is held or blocked, leave that call.** Do not try it again in a new shape. Tell the owner what
