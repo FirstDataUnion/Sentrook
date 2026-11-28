@@ -31,10 +31,10 @@ There are two entry points:
 ## Just installed
 
 1. **Where you are talking.** If this chat is a chat app (Telegram, Discord, Slack, WhatsApp and so on) and not
-   the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine, say once, in one or two sentences, that setup goes best there: a step Sentrook checks needs an approval card, and until step 4 is done the card may not reach this chat, so a blocked step could leave you both stuck. Give the
+   the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine, say once, in one or two sentences, that setup goes best there: until step 4 shows that approval cards reach this chat app, a step Sentrook asks about here is refused, which could leave you both stuck; once they do, cards work here as anywhere. Give the
    command to open it, then carry on here if the owner prefers.
-2. **Check that it works.** Run `openclaw sentrook verify` (you may run it, and `openclaw sentrook status`). Every line should start with
-   `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
+2. **Check that it works.** Run `openclaw sentrook verify` (you may run it, and `openclaw sentrook status`). OpenClaw's plugin commands are often slow to start, so this one may time out. If it does, tell the owner that this is a common OpenClaw slowness, not a fault in Sentrook, and ask them to run it in a terminal on this machine and send you what it prints. Every line
+   should start with `ok` and the policy should say `mode=enforce`. Explain any `FAIL` line in one sentence and send the owner to the
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `openclaw sentrook login` in a terminal on this machine; never run it yourself (Sentrook
    blocks it). After any install or update of the plugin, the running gateway keeps the old plugin until it restarts: the owner restarts it.
@@ -43,7 +43,11 @@ There are two entry points:
    where Sentrook refuses it, and not here, if this is the terminal or app). Do this first, even if the rest of setup waits: a scheduled job whose calls
    are held otherwise fails without telling anyone. If `openclaw sentrook verify` or `openclaw sentrook status` warns that held calls are
    waiting with no notice target, say so. If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held, drafted or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook-notify here` as a direct message to you on the chat where they want them (not in a group or channel). Until then a scheduled job's held-call notice goes only to the job's own delivery chat, or to the owner's direct message where Sentrook can find one; other notices are not sent, and the call waits.
-4. **Make sure approval cards reach the owner.** OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app is set up for them; until then, a call Sentrook asks about there is refused. Read what is set with `openclaw config get commands.ownerAllowFrom`, `openclaw config get channels.<app>.execApprovals` and `openclaw config get approvals.plugin`. The owner's approver account comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or the app's `execApprovals.approvers`. For each chat app the owner uses that is not set, give the owner the commands, to run in a terminal on this machine:
+4. **Make sure approval cards reach the owner.** Do this step every time, wherever you are talking. In the owner's
+   direct chat, call the `sentrook_setup_report` tool and read "Approval cards in chat apps": one line for each chat
+   app OpenClaw has on, saying whether a review there reaches the owner. Tell the owner, one short line per chat app
+   they use, whether cards reach them there; for each that does not, give the command the report names, in a code
+   block, for the owner to run in a terminal on this machine. If you cannot call the report: OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app is set up for them; until then, a call Sentrook asks about there is refused. Read what is set with `openclaw config get commands.ownerAllowFrom`, `openclaw config get channels.<app>.execApprovals` and `openclaw config get approvals.plugin`. The owner's approver account comes from `commands.ownerAllowFrom` (OpenClaw fills it when the owner approves the first pairing) or the app's `execApprovals.approvers`. For each chat app the owner uses that is not set, give the owner the commands, to run in a terminal on this machine:
 
    - Discord (off until enabled):
 
@@ -113,11 +117,12 @@ approved.
    | A person the owner knows | `{"trusted_sender": "discord:2345678901", "reason": "..."}` |
    | A short job, for an afternoon | `{"kind": "destination", "pattern": "*.client.example", "expires": "4h", "reason": "..."}` |
 
-   The tool only adds the items to the list; it sets nothing. It checks each item as the owner's own commands would and
+   The tool only adds the items to the list; it sets nothing. Go on to step 2 only once it has answered "Added N
+   items"; until then nothing is on the list, so never tell the owner something is there. It checks each item as the owner's own commands would and
    tells you which it did not add and why. It never takes settings, attended platforms or grants for one session only:
    explain those to the owner instead. Anywhere but the owner's direct chat it adds nothing and says
    "Setup needs the owner in a direct chat." and nothing more, so ask the owner to talk to you directly.
-2. **Tell the owner to open `/sentrook-setup`** (as a direct message to you, in the Control UI, or on the machine), with the command in a code block:
+2. **Then tell the owner to open `/sentrook-setup`** (as a direct message to you, in the Control UI, or on the machine), with the command in a code block:
 
    ```
    /sentrook-setup
@@ -128,6 +133,31 @@ approved.
    owner to check each item before they set it: a grant lets calls like it through without asking.
 3. **Offer to explain any item** in one plain sentence, if the owner wants.
 4. **Close with one line:** "If your regular work gets blocked later, ask me to help set up a grant for it."
+
+### If the setup tools are missing
+
+If `sentrook_setup_report` or `sentrook_propose_setup` is not among your tools, or calling it says the tool is
+unknown, say so to the owner in one sentence. Whether someone is the owner is OpenClaw's call, not yours: the tools'
+absence does not mean the owner is someone else. OpenClaw offers them only on the owner's own turns, and a tool profile or an allow or deny list in its config can hide them: ask the owner to run `openclaw sentrook verify` in a terminal on this machine, which names such a setting. Meanwhile give the owner one command per
+item they kept, each in its own code block, to send as a direct message to you:
+
+| Item | Command |
+| --- | --- |
+| A service you send to | `/sentrook-grant destination api.example.com --persistent` |
+| A folder you keep notes in | `/sentrook-grant file ~/notes/* --allows read,write --persistent` |
+| An API key and its service | `/sentrook-grant credential EXAMPLE_API_KEY@api.example.com` |
+| Their own MCP servers | `/sentrook-grant provider npm:@example/ --persistent` |
+| A repository or folder they write and maintain themselves | `/sentrook-grant folder ~/src/my-repo` |
+| A chat channel a scheduled job posts to | `/sentrook-bind add discord:#daily-brief` |
+| A group chat where the owner knows every member | `/sentrook-trust-chat add discord:1234567890` |
+| A person the owner knows | `/sentrook-trust-user add discord:2345678901` |
+
+Write each exactly in these forms, with the owner's own values; never another verb or option. A trust command
+replies with what trusting means and the form to confirm it; let the owner read that. In a terminal on this machine
+the same command is `openclaw sentrook grant destination api.example.com --persistent` and so on (the words after the command
+name unchanged), with any path holding `*` in quotes. Never run them yourself: Sentrook blocks them.
+
+### Notes
 
 - For a channel binding, use the channel exactly as Sentrook saw it: the owner finds it under `entities` in
   `/sentrook-why <id>` for a scan of that job. On OpenClaw, write it with its platform, `discord:<channel id>` or `discord:#daily-brief`: it then applies to a send that names that platform, posts as an account the config has on it, or comes from a session on it. If a job's sends name none of these, write it as the send's own target, `channel:<channel id>`. If `openclaw sentrook verify` or the setup report says a binding
@@ -232,6 +262,8 @@ a direct message. Sentrook refuses these commands in a group, from the owner too
 ## What you never do
 
 - Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-dismiss`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-trust-chat add`, `/sentrook-trust-chat remove`, `/sentrook-trust-user add`, `/sentrook-trust-user remove`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
+- Of the `openclaw sentrook` commands, run only `openclaw sentrook verify` and `openclaw sentrook status`. Sentrook blocks every other one,
+  even one that only reads, such as `openclaw sentrook grants`: for what is set, call the `sentrook_setup_report` tool.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never change OpenClaw's approval settings (no `config set`, `config patch` or `config unset`, and no edit of its

@@ -1052,7 +1052,9 @@ def render(
 ) -> str:
     n = len(items)
     if not n:
-        lines = ["Sentrook setup: nothing to set up right now."]
+        lines = [
+            "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review."
+        ]
     else:
         lines = [
             f"Sentrook setup: {n} item{'' if n == 1 else 's'}. Sentrook describes each one from what it found; "

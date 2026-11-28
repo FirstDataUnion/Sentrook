@@ -459,16 +459,21 @@ def test_an_expired_proposal_is_gone_from_the_screen(h):
     now = datetime.now(UTC)
     assert "`api.example.com`" in screen(h, now)
     later = screen(h, now + timedelta(hours=24, minutes=1))
-    assert later == "Sentrook setup: nothing to set up right now."
+    assert (
+        later
+        == "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review."
+    )
 
 
 def test_the_setup_skill_hands_over_with_a_proposal():
     skill = (Path(plugin.__file__).parent / "skills" / "sentrook-setup" / "SKILL.md").read_text()
     hand = skill[skill.index("## Hand over") : skill.index("## Check-in")]
-    assert f"`{proposals.TOOL}`" in hand and "Tell the owner to open `/sentrook setup`" in hand
+    assert f"`{proposals.TOOL}`" in hand and "Then tell the owner to open `/sentrook setup`" in hand
     assert "Offer to explain any item" in hand and REFUSAL in hand
-    # no grant or bind command for the owner to paste
-    assert "/sentrook grant destination" not in skill and "/sentrook bind add" not in skill
+    # no grant or bind command for the owner to paste, except in the fallback for when the setup tools are missing
+    fallback = hand.index("### If the setup tools are missing")
+    outside = skill.replace(hand[fallback : hand.index("### Notes")], "")
+    assert "/sentrook grant destination" not in outside and "/sentrook bind add" not in outside
 
 
 def test_a_credential_name_shaped_like_a_key_value_is_refused():

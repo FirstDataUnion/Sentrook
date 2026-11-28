@@ -601,14 +601,16 @@ test("an expired proposal is gone from the screen", async () => {
   await h.run(tool, args);
   const now = new Date();
   assert.ok(h.screen(now).includes("`api.example.com`"));
-  assert.equal(h.screen(new Date(now.getTime() + 24 * 3600_000 + 60_000)), "Sentrook setup: nothing to set up right now.");
+  assert.equal(h.screen(new Date(now.getTime() + 24 * 3600_000 + 60_000)), "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review.");
 });
 
 test("the setup skill hands over with a proposal", () => {
   const skill = readFileSync(path.join(import.meta.dirname, "skills", "sentrook-setup", "SKILL.md"), "utf8");
   const hand = skill.slice(skill.indexOf("## Hand over"), skill.indexOf("## Check-in"));
-  assert.ok(hand.includes(`\`${proposals.TOOL}\``) && hand.includes("Tell the owner to open `/sentrook-setup`"));
+  assert.ok(hand.includes(`\`${proposals.TOOL}\``) && hand.includes("Then tell the owner to open `/sentrook-setup`"));
   assert.ok(hand.includes("Offer to explain any item") && hand.includes(REFUSAL));
-  // no grant or bind command for the owner to paste
-  assert.ok(!skill.includes("/sentrook-grant destination") && !skill.includes("/sentrook-bind add"));
+  // no grant or bind command for the owner to paste, except in the fallback for when the setup tools are missing
+  const fallback = hand.indexOf("### If the setup tools are missing");
+  const outside = skill.replace(hand.slice(fallback, hand.indexOf("### Notes")), "");
+  assert.ok(fallback > 0 && !outside.includes("/sentrook-grant destination") && !outside.includes("/sentrook-bind add"));
 });

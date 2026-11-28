@@ -6,6 +6,14 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.19
 
+- The setup report the agent reads (`sentrook_setup_report`) has a new "Approval cards in chat apps" section: one
+  line per platform Hermes's gateway connects, saying whether Sentrook's approval buttons reach you there (chat
+  platforms need nothing; Feishu needs its card callback; the API server and webhooks hold reviews for you).
+- The `sentrook-setup` skill: the approval-card step reads that section and covers every chat app you use, not only
+  the one you are setting up from; the agent sends you to `/sentrook setup` only after its proposal tool has added
+  the items; if its setup tools are missing it says so and gives you exact owner commands instead of guessing; it
+  runs only `hermes sentrook verify` and `status` (Sentrook blocks the others, even read-only ones) and waits for them.
+- `/sentrook setup` with nothing on the list now says that Sentrook found nothing new and the agent added nothing.
 - Trusted chats can now be a whole Discord server: `/sentrook trust-chat add discord:server:<server id> --confirm`
   (or the same text in `trusted_chats`) covers every channel and thread in it, including ones created later. A message
   matches when Hermes reports that server for it; direct messages from its members are not covered, and a channel id

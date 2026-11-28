@@ -243,6 +243,12 @@ HOSTS: dict[str, dict] = {
             ),
             "owner_commands_where_short": "in a direct message to you, or on the machine",
             "cli_prefix_host": "hermes",
+            "cli_wait": "Wait for it to finish; do not stop it early.",
+            "tools_missing_hint": (
+                "Hermes offers both tools in every chat, so a missing one means the running Hermes has an older "
+                "plugin or none: ask the owner to run `{{cli verify}}` in a terminal on this machine and, after an "
+                "update, to restart Hermes's services."
+            ),
             "local_places": (
                 "the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the "
                 "machine"
@@ -380,10 +386,20 @@ HOSTS: dict[str, dict] = {
             ),
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
             "cli_prefix_host": "openclaw",
+            "tools_missing_hint": (
+                "OpenClaw offers them only on the owner's own turns, and a tool profile or an allow or deny list in "
+                "its config can hide them: ask the owner to run `{{cli verify}}` in a terminal on this machine, "
+                "which names such a setting."
+            ),
+            "cli_wait": (
+                "OpenClaw's plugin commands are often slow to start, so this one may time out. If it does, tell the "
+                "owner that this is a common OpenClaw slowness, not a fault in Sentrook, and ask them to run it in a "
+                "terminal on this machine and send you what it prints."
+            ),
             "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
             "chat_app_reason": (
-                "a step Sentrook checks needs an approval card, and until step 4 is done the card may not reach this "
-                "chat, so a blocked step could leave you both stuck"
+                "until step 4 shows that approval cards reach this chat app, a step Sentrook asks about here is "
+                "refused, which could leave you both stuck; once they do, cards work here as anywhere"
             ),
             "approval_route": (
                 "OpenClaw shows Sentrook's approval cards in Discord, Telegram, WhatsApp and Signal only once that app "

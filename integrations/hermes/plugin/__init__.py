@@ -1387,6 +1387,7 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
         "shadowed_skills": None,
         "traffic_log": cfg.traffic_log_enabled,
         "held_waiting": hold.waiting(cfg.state_dir, now),
+        "approval_routes": _approval_routes(cfg),
     }
     data = grants.load(cfg.state_dir)
     force = setup.in_force(cfg, data, now)
@@ -1395,6 +1396,14 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
     return setup_report.render(
         state, force, ev, now, days, capped=log is not None and setup_report.log_capped(log)
     )
+
+
+def _approval_routes(cfg: PluginConfig) -> list[dict[str, Any]] | None:
+    """The report's approval-card lines; None (the section left out) when Hermes's gateway config cannot be read."""
+    connected = hold.connected_platforms_or_none()
+    if connected is None:
+        return None
+    return setup_report.approval_routes(connected, owner_settings.attended_of(cfg))
 
 
 def _trusted_state(cfg: PluginConfig) -> dict[str, Any]:

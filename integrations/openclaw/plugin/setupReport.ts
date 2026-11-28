@@ -8,8 +8,10 @@
  *    bindings in force everywhere by kind (never the list: the list says where data flows unreviewed), config grants
  *    never sent, whether the scan credentials are present (never their values), and any skill outside the plugin
  *    with the name of one it ships, which OpenClaw loads instead (`agentSkills.shadowingSkills`).
- * 2. **Gaps** in plain words.
- * 3. From the traffic log, over the last `days` (default `DEFAULT_DAYS`, at most `MAX_DAYS`): the grants Sentrook
+ * 2. **Approval cards in chat apps:** for each chat app the host has on, whether a review there reaches the owner,
+ *    and the command the owner runs when it does not (`approvalRoutes.ts`).
+ * 3. **Gaps** in plain words.
+ * 4. From the traffic log, over the last `days` (default `DEFAULT_DAYS`, at most `MAX_DAYS`): the grants Sentrook
  *    suggested on reviews the owner approved again and again, with how many and the last, marked covered when a grant
  *    in force already covers one; the approved reviews with nothing to suggest, by tool; and the keys the scanner saw
  *    sent only to their own service (`setup.ownServiceKeys`). The rule is the setup screen's (`setup.readEvidence`):
@@ -172,6 +174,18 @@ export interface ReportState {
   held_waiting?: number | null;
   /** The trusted chats (`platform:chat id` -> reviews held for the owner) and the number of trusted users (trust.ts). */
   trusted?: { chats: Record<string, boolean>; users: number } | null;
+  /**
+   * Whether Sentrook's approval cards reach the owner in each chat app the host has on (`approvalRoutes.ts`; Hermes
+   * `approval_routes.py`): `ok` true when they do, false when a review there cannot reach the owner (the text says
+   * what the owner runs), null when Sentrook cannot tell or nobody answers there by design. Null: not read.
+   */
+  approval_routes?: ApprovalRoute[] | null;
+}
+
+export interface ApprovalRoute {
+  app: string;
+  ok: boolean | null;
+  text: string;
 }
 
 const q = (s: unknown, cap: number) => JSON.stringify(inert(s, cap));
@@ -255,6 +269,13 @@ export function gaps(state: ReportState): string[] {
         "remove or rename it unless they wrote it.",
     );
   }
+  const unreached = (state.approval_routes ?? []).filter((r) => r.ok === false).map((r) => inert(r.app, 40));
+  if (unreached.length) {
+    out.push(
+      `Approval cards do not reach the owner in ${unreached.join(", ")}: a review there cannot be answered. ` +
+        '"Approval cards in chat apps" says what the owner runs.',
+    );
+  }
   return out;
 }
 
@@ -318,6 +339,10 @@ export function render(
   lines.push(`- Traffic log: ${state.traffic_log ? "on" : "off"}.`);
   if (state.shadowed_skills?.length) {
     lines.push(`- Skills that outrank the plugin's own: ${state.shadowed_skills.map((s) => q(s, 60)).join(", ")}.`);
+  }
+  if (state.approval_routes != null) {
+    const routes = state.approval_routes.map((r) => `${inert(r.app, 40)}: ${r.text}`);
+    lines.push("", "Approval cards in chat apps:", ...(routes.length ? routes.map((r) => `- ${r}`) : ["- No chat app is on."]));
   }
   lines.push("", "Gaps:", ...rows([...gaps(state), ...bindingGaps(setup.unreachedBindings(force, ev).length)]));
   if (!ev.available) {

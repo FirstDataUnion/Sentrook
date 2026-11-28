@@ -569,3 +569,52 @@ def test_the_report_counts_the_bindings_no_send_would_carry_and_verify_names_the
     assert setup_report.binding_gaps(2)[0] in text
     assert c["unreached"][0] not in text  # the report never lists bindings
     assert cli.unreached_summary(cfg, now) == ", ".join(c["unreached"])
+
+
+# ---- approval cards in chat apps ---------------------------------------------------------------------------------
+
+
+def test_chat_platforms_need_nothing_set_up_for_approval_buttons():
+    routes = setup_report.approval_routes(["discord", "telegram", "slack"])
+    assert [(r["app"], r["ok"]) for r in routes] == [
+        ("discord", True),
+        ("slack", True),
+        ("telegram", True),
+    ]
+    assert all("nothing to set up" in r["text"] and "allowed users" in r["text"] for r in routes)
+
+
+def test_feishu_api_server_and_unknown_platforms_are_not_called_reached():
+    routes = {
+        r["app"]: r
+        for r in setup_report.approval_routes(["feishu", "api_server", "webhook", "pigeon"])
+    }
+    assert routes["feishu"]["ok"] is None and "card callback" in routes["feishu"]["text"]
+    assert (
+        routes["api_server"]["ok"] is None and "held for the owner" in routes["api_server"]["text"]
+    )
+    assert routes["webhook"]["ok"] is None
+    assert routes["pigeon"]["ok"] is None and "cannot tell" in routes["pigeon"]["text"]
+    # never false: no Hermes setting turns the buttons off, so no gap
+    assert setup_report.gaps(
+        {**STATE, "approval_routes": list(routes.values())}
+    ) == setup_report.gaps({**STATE, "approval_routes": None})
+
+
+def test_an_api_server_the_owner_marked_attended_shows_the_buttons():
+    [route] = setup_report.approval_routes(["api_server"], {"api_server"})
+    assert route["ok"] is True
+
+
+def test_nothing_connected_reads_as_no_chat_app():
+    assert setup_report.approval_routes([]) == []
+
+
+def test_an_unreadable_gateway_config_leaves_the_section_out(monkeypatch, tmp_path):
+    from plugin import hold
+
+    cfg = resolve_config({"state_dir": str(tmp_path)}, {"HOME": str(tmp_path)})
+    monkeypatch.setattr(hold, "connected_platforms_or_none", lambda: None)
+    assert plugin._approval_routes(cfg) is None
+    monkeypatch.setattr(hold, "connected_platforms_or_none", lambda: ["discord"])
+    assert [r["app"] for r in plugin._approval_routes(cfg)] == ["discord"]

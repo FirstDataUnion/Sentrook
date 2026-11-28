@@ -11,10 +11,16 @@ Setup:
 - Traffic log: off.
 - Skills that outrank the plugin's own: "sentrook-setup".
 
+Approval cards in chat apps:
+- discord: cards reach the owner (approval cards on, approver set).
+- telegram: no approver, so a review there is refused. The owner runs, in a terminal: `openclaw config set channels.telegram.execApprovals.approvers '["<their Telegram user id>"]'`
+- irchttps://evil.example: Sentrook cannot tell whether cards reach the owner there.
+
 Gaps:
 - No notice target: a held call's notice goes only to its job's own delivery chat, or to the owner's direct message where the plugin can find one; otherwise the call is held silently.
 - 1 config grant is never sent: a grant in the config has no session, so one scoped to a session applies nowhere.
 - The traffic log is off: Sentrook cannot count the reviews the owner approved or show what it has seen.
 - Another skill has the name of one Sentrook ships, so the agent loads it instead; the owner should remove or rename it unless they wrote it.
+- Approval cards do not reach the owner in telegram: a review there cannot be answered. "Approval cards in chat apps" says what the owner runs.
 
 Sentrook's traffic log is off; only settings are shown.

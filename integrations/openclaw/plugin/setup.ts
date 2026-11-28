@@ -1022,7 +1022,7 @@ export function render(items: Item[], notes: string[], ev: Evidence, code: strin
   const lines = [
     n
       ? `Sentrook setup: ${n} item${plural(n)}. Sentrook describes each one from what it found; read them before you set any.`
-      : "Sentrook setup: nothing to set up right now.",
+      : "Sentrook setup: nothing to set up right now. Sentrook found nothing new, and the agent has added nothing for you to review.",
   ];
   if (!ev.available) lines.push("Evidence unavailable: the traffic log is off, so no reviews you approved are counted.");
   items.forEach((item, i) => {

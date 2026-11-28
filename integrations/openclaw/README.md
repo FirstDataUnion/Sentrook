@@ -526,7 +526,9 @@ It tells the agent what is set and what is missing (a skill of the same name as 
 Sentrook suggested on reviews you approved at least twice (marked covered when a grant already lets them through), the
 reviews you approved at least twice with nothing to suggest (by tool), and the API key names Sentrook saw sent only to
 their own service, over the last 14 days (up to 30), with the same rule as `/sentrook-setup`: your own message, no
-steering content flagged in that chat. It changes nothing.
+steering content flagged in that chat. It also says, for each chat app OpenClaw has on, whether Sentrook's approval
+cards reach you there, read from OpenClaw's config (see [Approval cards in chat apps](#approval-cards-in-chat-apps)),
+with the command to run when they do not. It changes nothing.
 
 It never shows the grants themselves (only how many of each kind are in force), any call's arguments or request text,
 key values, or anything from a group room or another sender; every name from a tool call is shown as plain text, and
