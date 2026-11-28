@@ -19,7 +19,11 @@ such entity (in the call, a sibling, a file the call writes, or a later run's ro
 sibling or written file whose sends are not all written out: a shell command must be local commands and `curl` with
 a short list of options and every URL written out (no `git push`, `rsync`, `scp`, `docker push`, `wget`, interpreter,
 background job, process or command substitution, proxy, redirect following or address from a variable or config file),
-and Python must aim every request at a URL written in the code.
+and Python must aim every request at a URL written in the code. Nor is it covered when the call, a sibling, a written
+file or any earlier step of the session sets a proxy (`https_proxy=`, `ProxyHandler`, `proxies=`) or names curl's
+config file, or a shell step loads variables with `source` / `.`: HTTP clients read both, so a send written out to a
+granted host may still go through somewhere else. This reads the session history the plugin sends (a recent window
+of steps, arguments capped); a proxy set before that window is not seen.
 
 **Gate.** No floor fired; concealment is below `concealment_below` and the new content's exposure below
 `exposure_below`; the session is not tainted (before or in this scan). A session that holds sensitive data passes
@@ -31,6 +35,7 @@ Grants sanction where data goes; this never clears session flags and never lower
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 from collections.abc import Iterable
@@ -71,8 +76,9 @@ class GrantedSend:
     relief: list[Relief]
 
 
-def covering_grants(prepared: Prepared) -> list[str] | None:
-    """The grant refs that cover every place the call sends to, or None when the call is not a fully granted send."""
+def covering_grants(prepared: Prepared, extra: dict[str, str] | None = None) -> list[str] | None:
+    """The grant refs that cover every place the call sends to, or None when the call is not a fully granted send.
+    `extra`: entity id -> grant ref for a destination grant the owner has not set yet (a hint's re-score)."""
     sends = [
         e
         for e in prepared.entities
@@ -82,7 +88,7 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
     ]
     if not sends or not sends_off_host(prepared.pending, prepared.entities.pending()):
         return None
-    if not _routes_known(prepared):
+    if not _routes_known(prepared) or _proxy_configured(prepared):
         return None
     kinds = {g.grant_ref: g.kind for g in prepared.planir.grants}
     by_entity: dict[str, list[str]] = {}
@@ -90,6 +96,8 @@ def covering_grants(prepared: Prepared) -> list[str] | None:
         if kinds.get(ref) == "destination":
             for eid in eids:
                 by_entity.setdefault(eid, []).append(ref)
+    for eid, ref in (extra or {}).items():
+        by_entity.setdefault(eid, []).append(ref)
     refs: list[str] = []
     for ent in sends:
         found = by_entity.get(ent.id)
@@ -183,6 +191,43 @@ def _shell_routes_known(command: str) -> bool:
     return True
 
 
+#: A proxy variable named, or curl's config file: HTTP clients (curl, Python's urllib and requests) read both, so a send
+#: written out to a granted host may still go through somewhere else. Read after quotes and backslashes are removed,
+#: as the shell would (`'https_pro''xy'`, `.cur\lrc`), and a bare name counts (`read https_proxy`, `export
+#: https_proxy`).
+_PROXY_SETTING = re.compile(
+    r"(?i)(?<![a-z0-9])(?:https?|all|ftp|socks\d?|no)_proxy(?![a-z0-9])|curlrc|curl_home|proxyhandler|proxies\s*="
+)
+_QUOTING = re.compile(r"[\"'\\]")
+#: Shell commands that load variables from a file the arguments do not show.
+_SOURCING_HEADS = frozenset({"source", "."})
+
+
+def _sources_a_file(text: str) -> bool:
+    return any(tokens and tokens[0] in _SOURCING_HEADS for tokens in shell_segments(text))
+
+
+def _proxy_configured(prepared: Prepared) -> bool:
+    """The call, its siblings, a file it writes or any earlier step of the session names a proxy variable or curl's
+    config file, sets a proxy in code, or (for a shell step) loads variables from a file with `source` or `.`."""
+    from ..probes.aira import written_file_call
+
+    calls = [prepared.pending, *prepared.siblings, *prepared.resolved]
+    texts = [json.dumps(c.raw, default=str) for c in calls]
+    shell = [c.command or "" for c in calls if c.tool_kind is ToolKind.EXEC and not is_code_call(c)]
+    written = written_file_call(prepared)
+    if written is not None:
+        texts.append(written.command or "")
+    for h in prepared.planir.history:
+        texts.append(json.dumps(h.arguments, default=str))
+        cmd = h.arguments.get("command") if isinstance(h.arguments, dict) else None
+        if h.tool_kind is ToolKind.EXEC and isinstance(cmd, str):
+            shell.append(cmd)
+    if any(_PROXY_SETTING.search(_QUOTING.sub("", t)) for t in texts):
+        return True
+    return any(_sources_a_file(t) for t in shell)
+
+
 def _routes_known(prepared: Prepared) -> bool:
     """Every place the call, its siblings and a file it writes can send to is written out, so the entities show
     them all: a tool's own destination arguments, a shell command of local commands and literal `curl` / `wget`
@@ -270,10 +315,12 @@ def granted_send(
     merged: Merged,
     envelopes: list[Envelope],
     p: GrantedSendParams,
+    *,
+    extra: dict[str, str] | None = None,
 ) -> GrantedSend | None:
     """`claims` and `merged`: after the other relief. None when the call is not a fully granted send, the gate does
-    not hold, or no part changes a claim."""
-    refs = covering_grants(prepared)
+    not hold, or no part changes a claim. `extra`: as for `covering_grants`."""
+    refs = covering_grants(prepared, extra)
     if refs is None or not _gate(prepared, merged, envelopes, p):
         return None
     ref = refs[0]

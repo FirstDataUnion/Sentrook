@@ -13,6 +13,9 @@ since the version the catalog pins.
   went and how to set a target. While calls are held with no target set, `status` warns, `verify` fails its held-call
   notices check and the setup report lists it as its first gap. The setup skill now asks for `/sentrook notify here`
   right after checking the install.
+- `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
+  lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
+  "the request does not clearly ask for this call"). Shown when the scanner sends it.
 - `hermes sentrook verify` lists the channel bindings no message send in the traffic log would carry (a binding is sent
   only with a send that shows its channel, so one written another way relieves nothing), and the setup report counts
   them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
@@ -36,9 +39,6 @@ since the version the catalog pins.
   same job asked again. Every other new warning, a retry after a refusal included, still asks. The 10 points count
   from your answer, not from a call Session let through. The prompt now says "also covers the same parties at a
   similar risk". Passes on held calls are unchanged: no higher score and no new warning.
-- `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
-  lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
-  "the request does not clearly ask for this call"). Shown when the scanner sends it.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the

