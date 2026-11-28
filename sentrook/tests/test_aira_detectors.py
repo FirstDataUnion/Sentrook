@@ -957,6 +957,21 @@ def _floor(env: Envelope, reason: str):
         (ex("rm -rf ~/.openclaw/sentrook"), "guardrail.state_dir_write"),
         (ex("mv ~/.openclaw/sentrook ~/.openclaw/sentrook.bak"), "guardrail.state_dir_write"),
         (ex("echo '[]' > ~/.openclaw/sentrook/grants.json"), "guardrail.state_dir_write"),
+        # The agent adding itself, or a chat, to the owner's trusted list.
+        (
+            ex(
+                """python3 -c "import json;p='/home/me/.hermes/sentrook/settings.json';d=json.load(open(p));"""
+                """d['trusted_chats']=[{'chat':'discord:1'}];json.dump(d,open(p,'w'))\"""",
+                platform="hermes",
+            ),
+            "guardrail.state_dir_write",
+        ),
+        (
+            ex(
+                """sed -i 's/"trusted_senders": \\[/&{"user":"discord:9"},/' ~/.hermes/sentrook/settings.json"""
+            ),
+            "guardrail.state_dir_write",
+        ),
         (ex(": > ~/.openclaw/sentrook/operator.jsonl"), "guardrail.log_tamper"),
         (
             ex("truncate -s 0 ~/.hermes/sentrook/operator-2026.jsonl", platform="hermes"),
@@ -1196,6 +1211,15 @@ def test_c4star_file_tools_take_the_floor():
             "patch",
             "file_edit",
             {"path": "~/.hermes/sentrook/state.json", "old_string": "a", "new_string": "b"},
+            platform="hermes",
+        )
+    )
+    _floor(env, "guardrail.state_dir_write")
+    _, env = run(
+        planir(
+            "write_file",
+            "file_write",
+            {"path": "~/.hermes/sentrook/settings.json", "content": '{"trusted_chats": []}'},
             platform="hermes",
         )
     )
@@ -2480,3 +2504,79 @@ def test_c3_code_from_an_unlisted_host_carries_the_agents_read_access():
     # Install from a URL on an unlisted host, the same.
     p, env = run(ex("pip install git+https://harbornote.example/tools/helper.git"))
     assert of(env, SENS, "code.unvetted_source") and "code.install_from_url" in reasons(env)
+
+
+# ---- trust settings: only the owner trusts a chat or a person ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        planir(
+            "edit",
+            "file_edit",
+            {
+                "path": "~/.openclaw/openclaw.json",
+                "edits": [
+                    {
+                        "oldText": '"trustedSenders": []',
+                        "newText": '"trustedSenders": [], "trustedChats": ["discord:1"]',
+                    }
+                ],
+            },
+        ),
+        planir(
+            "patch",
+            "file_edit",
+            {
+                "path": "~/.hermes/config.yaml",
+                "old_string": "      hide_tool_calls: false",
+                "new_string": "      hide_tool_calls: false\n      trusted_chats: [discord:1]",
+            },
+            platform="hermes",
+        ),
+        planir(
+            "patch",
+            "file_edit",
+            {
+                "path": "~/.hermes/config.yaml",
+                "old_string": "      mode: enforce",
+                "new_string": "      mode: enforce\n      trusted_senders: [discord:9]",
+            },
+            platform="hermes",
+        ),
+        ex("echo SENTROOK_TRUSTED_CHATS=discord:1 >> ~/.hermes/.env", platform="hermes"),
+        ex("printf 'TRUSTED_SENDERS=discord:9\\n' >> ~/.hermes/.env", platform="hermes"),
+        ex(
+            "openclaw config set plugins.entries.sentrook-openclaw.config.trustedChats "
+            "'[\"discord:1\"]'"
+        ),
+    ],
+)
+def test_adding_trust_through_the_host_config_or_env_takes_the_floor(raw):
+    # A member of a group asking the agent to trust them or their chat: every route but the owner's own command
+    # takes the floor, whoever answers the review.
+    _, env = run(raw)
+    _floor(env, "guardrail.config_entry")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ex("echo EXAMPLE_API_KEY_NAME_ONLY= >> ~/.hermes/.env", platform="hermes"),
+        planir(
+            "patch",
+            "file_edit",
+            {
+                "path": "~/.hermes/config.yaml",
+                "old_string": "model: a",
+                "new_string": "model: b",
+            },
+            platform="hermes",
+        ),
+        planir("write", "file_write", {"path": "~/proj/.env", "content": "PORT=8080\n"}),
+    ],
+)
+def test_other_config_and_env_edits_take_no_trust_floor(raw):
+    _, env = run(raw)
+    assert "guardrail.config_entry" not in reasons(env)

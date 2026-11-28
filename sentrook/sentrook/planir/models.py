@@ -94,6 +94,8 @@ class SenderBasis(TolerantStrEnum):
     HOST_OWNER_FLAG = "host_owner_flag"
     PLUGIN_ALLOWLIST_SENDER = "plugin_allowlist:sender"
     PLUGIN_ALLOWLIST_ROLE = "plugin_allowlist:role"
+    #: A member of a chat the owner marked as trusted (every member there is trusted, none is the owner).
+    PLUGIN_ALLOWLIST_CHAT = "plugin_allowlist:chat"
     HOST_ALLOWLIST_DM = "host_allowlist_dm"
     GROUP_CHAT = "group_chat"
     HOST_OPEN_ACCESS = "host_open_access"

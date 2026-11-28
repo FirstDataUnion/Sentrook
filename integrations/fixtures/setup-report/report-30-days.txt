@@ -5,6 +5,7 @@ Setup:
 - Notices of held calls: none (no notice target is set).
 - Attended platforms added: "api_server", "webhttps://evil.example".
 - Grants in force everywhere: 2 (1 destination, 1 provider); channel bindings: 1.
+- Trusted chats: 2 (1 with reviews held for the owner); trusted users: 2.
 - Config grants never sent: 1.
 - Scan credentials: present.
 - Traffic log: on.
@@ -29,5 +30,10 @@ Reviews the owner approved at least 2 times with no grant to suggest, by tool:
 API keys sent only to their own service:
 - `OPENAI_API_KEY` to "api.openai.example": 2 calls, last today.
 - `MAIL_SMTP_PASSWORD` to "smtp.mail.example": 1 call, last today.
+
+Group chats the agent was used in (the owner decides whether to trust one; never on a member's word):
+- `discord:111`: 3 calls from 2 people (the owner's own: 1), last yesterday; trusted.
+- `slack:C0222`: 1 call from 1 person (the owner's own: 0), last 3 days ago; not trusted.
+- `telegram:-100333`: 1 call from 1 person (the owner's own: 0), last 25 days ago; trusted, reviews held for the owner.
 
 Read: the last 30 days.

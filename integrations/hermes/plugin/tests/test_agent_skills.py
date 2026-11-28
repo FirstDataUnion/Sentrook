@@ -68,8 +68,8 @@ def test_the_hosts_fill_the_same_placeholders():
 
 
 #: A chat command on Hermes: `/sentrook <verb>`; never the dashed OpenClaw spelling.
-HERMES_CHAT = re.compile(r"/sentrook(?:\s+([a-z]+)|-([a-z]+))")
-HERMES_CLI = re.compile(r"hermes sentrook ([a-z]+)")
+HERMES_CHAT = re.compile(r"/sentrook(?:\s+([a-z-]+)|-([a-z-]+))")
+HERMES_CLI = re.compile(r"hermes sentrook ([a-z-]+)")
 
 
 @pytest.mark.parametrize("template", list(render.TEMPLATES))

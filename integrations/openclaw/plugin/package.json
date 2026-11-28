@@ -49,6 +49,7 @@
     "snooze.ts",
     "store.ts",
     "traffic.ts",
+    "trust.ts",
     "verify.ts",
     "openclaw.plugin.json",
     "README.md",

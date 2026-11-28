@@ -26,6 +26,7 @@ import {
 } from "./approvalPolicy.ts";
 import { resolveSetting, type SkillReviewSetting } from "./selfEdit.ts";
 import { DEFAULT_ON_SCAN_ERROR, type OnScanError, resolveOnScanError } from "./scanErrorPolicy.ts";
+import { chatProblem, parseConfigChats, type TrustedChat } from "./trust.ts";
 
 export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
 export const DEFAULT_ROOKERY_URL = "https://rookery.firstdataunion.org";
@@ -93,8 +94,11 @@ export interface PluginConfig {
    */
   hideToolCalls: boolean;
   packs: string[];
+  /** Sender ids (`platform:user id`, or a bare id as before) whose messages are sent as trusted (trust.ts). */
   trustedSenders: string[];
   trustedRoles: string[];
+  /** Group chats whose members' messages are sent as trusted; `ownerOnly` holds their reviews for the owner. */
+  trustedChats: TrustedChat[];
   /** Grants from the plugin config; a scan also sends the bindings and the grants set by command. */
   grants: GrantConfig[];
   /** Config grants that are never sent, by index in `grants`: why (`too broad`, `no session`, `unknown scope "x"`). */
@@ -446,6 +450,7 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     packs: list(cfg.packs).length ? list(cfg.packs) : ["tier1"],
     trustedSenders: list(cfg.trustedSenders ?? env.SENTROOK_TRUSTED_SENDERS),
     trustedRoles: list(cfg.trustedRoles ?? env.SENTROOK_TRUSTED_ROLES),
+    trustedChats: parseConfigChats(cfg.trustedChats ?? env.SENTROOK_TRUSTED_CHATS),
     ...parseConfigGrants(cfg.grants),
     // Where a scheduled job or route is expected to deliver; sent as destination grants, so a cron
     // delivery to its usual channel is sanctioned even though the channel is not in the prompt.
@@ -493,7 +498,9 @@ type Spec =
   /** `none`: what is used when no item is read (else nothing). */
   | { kind: "list"; commas: boolean; item?: Spec; none?: string }
   | { kind: "object"; fields: Record<string, Spec> }
-  | { kind: "grants" };
+  | { kind: "grants" }
+  /** `trustedChats`: `platform:chat id` text (comma-separated too) or `{ chat, owner_only }` items. */
+  | { kind: "chats" };
 
 const TEXT: Spec = { kind: "text" };
 const SECRET: Spec = { kind: "secret" };
@@ -572,6 +579,7 @@ const SETTINGS: Record<string, Spec> = {
   packs: NAMES,
   trustedSenders: NAMES,
   trustedRoles: NAMES,
+  trustedChats: { kind: "chats" },
   grants: { kind: "grants" },
   channelBindings: NAMES,
   skillReview: { kind: "choice", values: ["allow", "review"], caseless: true, effect: "read as allow", notText: "read as allow" },
@@ -700,6 +708,19 @@ function checkValue(v: unknown, spec: Spec, at: string, out: string[]): void {
       }
       checkFields(v as Record<string, unknown>, spec.fields, `${at}.`, out);
       return;
+    case "chats": {
+      if (blank(v)) return;
+      const items = typeof v === "string" ? [v] : Array.isArray(v) ? v : null;
+      if (items === null) {
+        out.push(`${at}: not a list; ignored`);
+        return;
+      }
+      items.forEach((item, i) => {
+        const why = chatProblem(item);
+        if (why) out.push(`${typeof v === "string" ? at : `${at}[${i}]`}: ${why}`);
+      });
+      return;
+    }
     case "grants":
       if (blank(v)) return;
       if (!Array.isArray(v)) {

@@ -402,6 +402,33 @@ def test_context_scheduled_trigger_and_other_sender(attack_case):
     assert ro.value == 0.0
 
 
+def test_context_trusted_chat_member_is_trusted_not_other(attack_case):
+    # A member of a chat the owner marked as trusted: trusted (0.3), never other (0.8), never the owner.
+    raw = _trajectory(attack_case)
+    for basis in (
+        ["plugin_allowlist:chat", "group_chat"],
+        ["plugin_allowlist:sender", "group_chat"],
+    ):
+        raw["trigger"] = {
+            "kind": "message",
+            "channel": "discord",
+            "sender": {"relation": "trusted", "basis": basis},
+        }
+        p = prepared_for({"fixture": raw, "state_seed": attack_case["state_seed"]})
+        assert [b.value for b in p.planir.trigger.sender.basis] == basis
+        [ro] = [
+            c for c in ContextProbe().run(p).contributions if c.signal == "suspicion.request_origin"
+        ]
+        assert ro.value == 0.3 and ro.reason == "trigger.trusted_allowlist"
+    # The same message from anyone else in the group stays other.
+    raw["trigger"]["sender"] = {"relation": "other", "basis": ["group_chat"]}
+    p = prepared_for({"fixture": raw, "state_seed": attack_case["state_seed"]})
+    [ro] = [
+        c for c in ContextProbe().run(p).contributions if c.signal == "suspicion.request_origin"
+    ]
+    assert ro.value == 0.8 and ro.reason == "trigger.sender_other"
+
+
 def test_context_sticky_flags_and_escalation(attack_case):
     seed = {
         "tainted": True,

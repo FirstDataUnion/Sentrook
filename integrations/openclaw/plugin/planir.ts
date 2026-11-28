@@ -13,6 +13,7 @@ import { destinationOk, type GrantConfig, nothingLiteral, type PluginConfig, TOO
 import { capArgs, type Redactor } from "./redact.ts";
 import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
+import { fromConfig, isTrustedSender, parseRef, type Trust, trustedChat } from "./trust.ts";
 
 /** History decisions sent as `review_timed_out`. */
 const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
@@ -414,19 +415,47 @@ export function chatKindOfTurn(sessionKey: unknown, channel: string | null, conf
 }
 
 /**
+ * The group or channel room a session key names, as `platform` (its channel) and `id` (the room's id, after its
+ * `group`/`channel`/`room`/`space` segment, lower case as the key is): `agent:<id>:<channel>[:<account>]:channel:<id>`.
+ * A thread or topic is the room it is in. Null for a direct chat, the agent's main session (whatever is routed into
+ * it) and any key that names no room.
+ */
+export function groupChatOfKey(sessionKey: unknown, config: any): { platform: string; id: string } | null {
+  const { main, rest } = chatOfKey(sessionKey, config);
+  if (main) return null;
+  const m = /^([^:]+):(?:[^:]+:)*?(?:group|channel|room|space):(.+)$/.exec(rest);
+  return m ? { platform: m[1]!, id: m[2]! } : null;
+}
+
+/** Where a turn came from, for the trusted users and chats (trust.ts). */
+export interface TurnPlace {
+  /** The turn's channel as OpenClaw names it (`discord`, `telegram`, ...), lower case. */
+  platform?: string | null;
+  /** The group or channel room the turn is in (`groupChatOfKey`); never a direct chat. */
+  chat?: { platform: string; id: string } | null;
+}
+
+/**
  * Who sent the turn. An owner's message in a group or channel room stays the owner's, with basis `group_chat`
  * (the room is shared, so nobody there is attending alone); an owner's message from a chat whose kind the
  * session key does not say keeps the owner relation with basis `none`, claiming no direct chat. A system agent
  * turn has no sender. Nor has a cron or heartbeat run that is not flagged as the owner's: the host started it from a
  * task, and the requester OpenClaw 2026.11+ attaches to it is the run's delivery channel and the agent's account, not
  * someone who wrote to the agent.
+ *
+ * Someone the owner trusts (trust.ts) is `trusted`, never the owner: a trusted user (basis `plugin_allowlist:sender`)
+ * or role (`plugin_allowlist:role`) in any chat, and anyone else in a trusted group or channel room
+ * (`plugin_allowlist:chat`), each with `group_chat` in a group. A direct chat is never a trusted chat. `trust` is the
+ * config's lists and the owner's (`trust.of`); the config's alone when not given.
  */
 export function senderOf(
   requester: any,
   run: RunContext,
-  cfg: Pick<PluginConfig, "trustedSenders" | "trustedRoles">,
+  cfg: Pick<PluginConfig, "trustedSenders" | "trustedRoles"> & Partial<Pick<PluginConfig, "trustedChats">>,
   chat: ChatKind = "direct",
   kind: string = triggerKind(run),
+  place: TurnPlace = {},
+  trust: Trust = fromConfig(cfg),
 ): { relation: string; basis: string[] } {
   if (isSystemAgentTurn(run)) return { relation: "unknown", basis: ["none"] };
   if (requester?.senderIsOwner === true || (!requester && run.senderIsOwner === true)) {
@@ -435,15 +464,21 @@ export function senderOf(
     return { relation: "owner", basis: ["host_owner_flag"] };
   }
   if (HOST_TASK_KINDS.has(kind)) return { relation: "unknown", basis: ["none"] };
+  const group = chat === "group";
+  const shared = group ? ["group_chat"] : [];
   const senderId = requester?.senderId ?? run.senderId;
-  if (senderId && cfg.trustedSenders.includes(String(senderId))) {
-    return { relation: "trusted", basis: chat === "group" ? ["plugin_allowlist:sender", "group_chat"] : ["plugin_allowlist:sender"] };
+  const platform = place.platform ?? place.chat?.platform ?? null;
+  if (isTrustedSender(trust, platform, senderId)) {
+    return { relation: "trusted", basis: ["plugin_allowlist:sender", ...shared] };
   }
   const roles: string[] = Array.isArray(requester?.roleIds) ? requester.roleIds.map(String) : [];
   if (roles.some((r) => cfg.trustedRoles.includes(r))) {
-    return { relation: "trusted", basis: chat === "group" ? ["plugin_allowlist:role", "group_chat"] : ["plugin_allowlist:role"] };
+    return { relation: "trusted", basis: ["plugin_allowlist:role", ...shared] };
   }
-  if (requester) return { relation: "other", basis: chat === "group" ? ["group_chat"] : ["none"] };
+  if (requester && group && trustedChat(trust, place.chat?.platform ?? null, place.chat?.id ?? null)) {
+    return { relation: "trusted", basis: ["plugin_allowlist:chat", "group_chat"] };
+  }
+  if (requester) return { relation: "other", basis: group ? ["group_chat"] : ["none"] };
   return { relation: "unknown", basis: ["none"] };
 }
 
@@ -771,6 +806,8 @@ export interface BuildInput {
   hostProcess?: boolean;
   /** A self-edit's `self_edit` block (`conversation.block`); sent only with `hostProcess`. */
   selfEdit?: Record<string, unknown> | null;
+  /** The trusted users and chats in force (`trust.of`); the config's alone when not given. */
+  trust?: Trust;
 }
 
 export interface Built {
@@ -785,6 +822,13 @@ export interface Built {
   historyArgs: Record<string, unknown>;
   /** The buffered inputs this request carries (cleared from the buffer on success). */
   sentInputs: BufferedInput[];
+  /** The trusted chat the turn is in (trust.ts) as [`platform:chat id`, owner-only], whoever sent it; else null. */
+  trustedChat: [string, boolean] | null;
+  /**
+   * A message turn on the main agent in a group or channel room: the room as `platform:chat id` and who wrote it (their
+   * id, for the scan record's keyed `group.sender`; never sent or logged as it is); else null.
+   */
+  group: { chat: string; senderId: string | null } | null;
 }
 
 /** Mutates `sess` (step, runs, seen call ids); the caller saves it. */
@@ -861,7 +905,14 @@ export function buildPlanir(b: BuildInput): Built {
   const sendPlatform = isSystemAgentTurn(run)
     ? null
     : sendPlatformOf(event.params, tk, b.hostConfig, ctx.requester?.channel ?? run.channel ?? run.messageProvider);
-  const sender = senderOf(ctx.requester, run, cfg, chatKind, kind);
+  const trust = b.trust ?? fromConfig(cfg);
+  const room = chatKind === "group" && !b.hostProcess ? groupChatOfKey(sessionKey, b.hostConfig) : null;
+  const rawChannel = ctx.requester?.channel ?? run.channel ?? run.messageProvider;
+  const sender = senderOf(ctx.requester, run, cfg, chatKind, kind, {
+    platform: typeof rawChannel === "string" && rawChannel ? rawChannel.toLowerCase() : null,
+    chat: room,
+  }, trust);
+  const inTrusted = room ? trustedChat(trust, room.platform, room.id) : null;
   // A short message from the owner goes with the agent's message before it, as the agent's text (never in `text`).
   const prior =
     !b.hostProcess &&
@@ -954,5 +1005,16 @@ export function buildPlanir(b: BuildInput): Built {
     provider,
     historyArgs: capArgs(args, cfg.historyArgsCapBytes),
     sentInputs,
+    trustedChat: inTrusted,
+    group:
+      room && !isSub && kind === "message" && parseRef(`${room.platform}:${room.id}`)
+        ? {
+            chat: `${room.platform}:${room.id}`,
+            senderId: (() => {
+              const id = ctx.requester?.senderId ?? run.senderId;
+              return id === undefined || id === null || id === "" ? null : String(id);
+            })(),
+          }
+        : null,
   };
 }

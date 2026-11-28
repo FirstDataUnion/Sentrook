@@ -105,6 +105,17 @@ SUMMARIES: dict[str, tuple[str, str]] = {
         "where notices go: `here`, sent as a direct message to the agent, sends them to that chat; `off` stops "
         "them",
     ),
+    "trust-chat": (
+        "add|remove|list [<platform>:<chat id>] [--owner-only] [--confirm]",
+        "a group chat or server channel where the owner knows every member: their messages count as from someone the "
+        "owner trusts, not a stranger, but never as the owner's; members may answer its reviews unless it is added "
+        "with `--owner-only`, which holds them for the owner; adding needs `--confirm`",
+    ),
+    "trust-user": (
+        "add|remove|list [<platform>:<user id>] [--confirm]",
+        "a person the owner knows: their messages count as from someone the owner trusts, in any chat, but never as "
+        "the owner's; adding needs `--confirm`",
+    ),
     "setup": (
         "[apply <code> [1,3] | discard <id>]",
         "lists what would stop Sentrook asking about routine work (channels the cron jobs deliver to, MCP servers, "
@@ -136,6 +147,8 @@ HOSTS: dict[str, dict] = {
             "passes",
             "notify",
             "attended",
+            "trust-chat",
+            "trust-user",
             "setup",
         ),
         #: Where a command's arguments or summary differ from the shared `SUMMARIES` on this host.
@@ -170,10 +183,19 @@ HOSTS: dict[str, dict] = {
             "notify",
             "attended add",
             "attended remove",
+            "trust-chat add",
+            "trust-chat remove",
+            "trust-user add",
+            "trust-user remove",
             "setup apply",
         ),
         "values": {
             "host": "Hermes",
+            "approvers_setting": "`approvals.approvers` in Hermes's `config.yaml`",
+            "trusted_roles": (
+                "Hermes does not tell plugins which roles a member has, so a role cannot be trusted: trust the chat, "
+                "or each person."
+            ),
             "binding_form": (
                 "On Hermes, write it with its platform, as `send_message` names the target: `discord:#daily-brief` "
                 "or `discord:<channel id>`."
@@ -229,9 +251,10 @@ HOSTS: dict[str, dict] = {
                 "the owner commands setup ends with (such as `{{cmd setup}} apply`) are refused in group chats and "
                 "server channels, and a long setup is easier to follow there. If the owner works with you from a group "
                 "or server channel, also say: their own messages there count as theirs when they are listed in "
-                "Hermes's allowed users, other members' messages and the channel history do not, and reviews there "
-                "ask in the channel, where anyone the bot lets in can answer, so a snooze and remembered answers "
-                "only work in a direct message or the terminal"
+                "Hermes's allowed users, other members' messages and the channel history do not (unless the owner "
+                'trusts the chat or the person: see "Group chats"), and reviews there ask in the channel, where '
+                "anyone the bot lets in can answer, so a snooze and remembered grants only work in a direct message "
+                "or the terminal"
             ),
             "approval_route": (
                 "Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat "
@@ -281,6 +304,8 @@ HOSTS: dict[str, dict] = {
             "approve",
             "passes",
             "notify",
+            "trust-chat",
+            "trust-user",
             "setup",
         ),
         "open": ("status", "help"),
@@ -296,10 +321,18 @@ HOSTS: dict[str, dict] = {
             "approve",
             "passes revoke",
             "notify",
+            "trust-chat add",
+            "trust-chat remove",
+            "trust-user add",
+            "trust-user remove",
             "setup apply",
         ),
         "values": {
             "host": "OpenClaw",
+            "approvers_setting": "`channels.<app>.execApprovals.approvers` in `openclaw.json`",
+            "trusted_roles": (
+                "A chat role can be trusted too, with Sentrook's `trustedRoles` setting, which only the owner edits."
+            ),
             "binding_form": (
                 "On OpenClaw, write it with its platform, `discord:<channel id>` or `discord:#daily-brief`: it then "
                 "applies to a send that names that platform, posts as an account the config has on it, or comes "
@@ -399,7 +432,7 @@ HOSTS: dict[str, dict] = {
     },
 }
 
-PLACEHOLDER = re.compile(r"\{\{(?:(cmd|cli) ([a-z]+)|([a-z_]+))\}\}")
+PLACEHOLDER = re.compile(r"\{\{(?:(cmd|cli) ([a-z-]+)|([a-z_]+))\}\}")
 
 
 def chat(host: str, verb: str) -> str:
