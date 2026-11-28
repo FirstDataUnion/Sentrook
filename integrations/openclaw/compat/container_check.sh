@@ -249,8 +249,8 @@ record seams "${detail%%$'\t'*}" "${detail#*$'\t'}"
 
 # 9b. The agent's setup tools under a tool profile. With tools.profile coding, OpenClaw offers a plugin's tools only
 # when its manifest lists them for that profile; the owner's turn must still reach both. OpenClaw lists plugin tools
-# in its tool catalog rather than the model request's tool list, so the model calls tool_describe for each and
-# neither may come back as an unknown tool.
+# in its tool catalog rather than the model request's tool list (from 2026.11; earlier ones list them in the request),
+# so where the request offers tool_describe the model calls it for each and neither may come back as an unknown tool.
 profile_set=1
 run profile-config openclaw config set tools.profile coding || profile_set=0
 (cd /tmp && run turn-setup-tools openclaw agent --local --agent main --session-id sentrook-compat-setup-tools \
@@ -260,9 +260,17 @@ import json, os, sys
 log, profile_set = sys.argv[1], sys.argv[2]
 turns = [e for e in map(json.loads, open(log)) if "describe_results" in e] if os.path.exists(log) else []
 results = turns[-1]["describe_results"] if turns else []
+listed = set(turns[0].get("tools") or []) if turns else set()
 want = ["sentrook_setup_report", "sentrook_propose_setup"]
 if profile_set != "1":
     print("FAIL\topenclaw config set tools.profile coding failed (see profile-config.log)")
+elif not turns:
+    print("FAIL\tno model request in the turn (see turn-setup-tools.log)")
+elif "tool_describe" not in listed:
+    # Before the tool catalog (2026.9), OpenClaw lists plugin tools in the model request itself.
+    missing = [n for n in want if n not in listed]
+    print(f"FAIL\tnot offered under tools.profile coding: {', '.join(missing)}" if missing
+          else "ok\tboth setup tools offered to the owner under tools.profile coding (in the request's tool list)")
 elif len(results) < len(want):
     print(f"FAIL\t{len(results)} of {len(want)} tool_describe results in the turn (see turn-setup-tools.log)")
 else:

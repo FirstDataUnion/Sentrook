@@ -76,13 +76,17 @@ def describe_results(messages: list[dict[str, Any]]) -> list[str] | None:
 
 
 def model_reply(
-    messages: list[dict[str, Any]], tool: str = "terminal", describe: tuple[str, ...] = ()
+    messages: list[dict[str, Any]],
+    tool: str = "terminal",
+    describe: tuple[str, ...] = (),
+    offered: list[str] | None = None,
 ) -> dict[str, Any]:
     """The assistant message for this step: the blocked call, then the allowed call, then text. In a turn whose
     user message carries DESCRIBE_MARKER, a `tool_describe` call for each name in `describe` instead, then text."""
     results = describe_results(messages)
     if results is not None:
-        if len(results) >= len(describe):
+        # A host that lists plugin tools in the request itself has no tool catalog to describe them from.
+        if len(results) >= len(describe) or "tool_describe" not in (offered or []):
             return {"role": "assistant", "content": FINAL_ANSWER}
         name = describe[len(results)]
         call = {"name": "tool_describe", "arguments": json.dumps({"id": name})}
@@ -191,15 +195,15 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.rstrip("/").endswith("/chat/completions"):
             req = json.loads(raw or b"{}")
             messages = req.get("messages") or []
-            msg = model_reply(messages, self.tool, self.describe)
-            step = (
-                msg["tool_calls"][0]["function"]["arguments"] if msg.get("tool_calls") else "answer"
-            )
             offered = [
                 (t.get("function") or {}).get("name")
                 for t in req.get("tools") or []
                 if isinstance(t, dict)
             ]
+            msg = model_reply(messages, self.tool, self.describe, offered)
+            step = (
+                msg["tool_calls"][0]["function"]["arguments"] if msg.get("tool_calls") else "answer"
+            )
             entry = {"model_step": step, "tools": offered}
             results = describe_results(messages)
             if results is not None:
