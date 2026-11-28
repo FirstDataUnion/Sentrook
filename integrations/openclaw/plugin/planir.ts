@@ -23,7 +23,7 @@ const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
  */
 const BY_OWNER: Record<string, string> = { allowed_by_pass: "allowed", denied_by_owner: "denied_by_user" };
 
-export const PLUGIN_VERSION = "2.0.0-beta.14";
+export const PLUGIN_VERSION = "2.0.0-beta.15";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
