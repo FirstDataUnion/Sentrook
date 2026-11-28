@@ -137,9 +137,8 @@ approved.
 
 If `sentrook_setup_report` or `sentrook_propose_setup` is not among your tools, or calling it says the tool is
 unknown, say so to the owner in one sentence. Whether someone is the owner is OpenClaw's call, not yours: the tools'
-absence does not mean the owner is someone else. Ask the owner to run `openclaw sentrook verify` in a terminal on this machine:
-it names a setting that hides the tools. Meanwhile give the owner one command per item they kept, each in its own
-code block, to send as a direct message to you or to run as `openclaw sentrook <command>` in a terminal:
+absence does not mean the owner is someone else. OpenClaw offers them only on the owner's own turns, and a tool profile or an allow or deny list in its config can hide them: ask the owner to run `openclaw sentrook verify` in a terminal on this machine, which names such a setting. Meanwhile give the owner one command per
+item they kept, each in its own code block, to send as a direct message to you:
 
 | Item | Command |
 | --- | --- |
@@ -149,11 +148,13 @@ code block, to send as a direct message to you or to run as `openclaw sentrook <
 | Their own MCP servers | `/sentrook-grant provider npm:@example/ --persistent` |
 | A repository or folder they write and maintain themselves | `/sentrook-grant folder ~/src/my-repo` |
 | A chat channel a scheduled job posts to | `/sentrook-bind add discord:#daily-brief` |
-| A group chat where the owner knows every member | `/sentrook-trust-chat add discord:1234567890 --confirm` |
-| A person the owner knows | `/sentrook-trust-user add discord:2345678901 --confirm` |
+| A group chat where the owner knows every member | `/sentrook-trust-chat add discord:1234567890` |
+| A person the owner knows | `/sentrook-trust-user add discord:2345678901` |
 
-Write each exactly in these forms, with the owner's own values; never another verb or option. Never run them
-yourself: Sentrook blocks them.
+Write each exactly in these forms, with the owner's own values; never another verb or option. A trust command
+replies with what trusting means and the form to confirm it; let the owner read that. In a terminal on this machine
+the same command is `openclaw sentrook grant destination api.example.com --persistent` and so on (the words after the command
+name unchanged), with any path holding `*` in quotes. Never run them yourself: Sentrook blocks them.
 
 ### Notes
 

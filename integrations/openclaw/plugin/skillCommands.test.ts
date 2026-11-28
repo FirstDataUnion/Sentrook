@@ -1,6 +1,7 @@
 /**
  * The setup skill's fallback commands (for when the setup tools are missing) are ones the plugin accepts: each grant
- * parses with the grant command's own parser, each binding is set by the bind command, each trust reference parses.
+ * parses with the grant command's own parser, each binding is set by the bind command, each trust reference parses
+ * and is left unconfirmed so the owner reads the trust warning first.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -36,9 +37,10 @@ test("the fallback table names the commands the plugin accepts", () => {
       const { change, reply } = grants.bind(dir, cfg, rest, { basis: ["test"] }, new Date(), CMD, () => {});
       assert.ok(change, `${line}: ${reply}`);
     } else if (typed === CMD("trust-chat") || typed === CMD("trust-user")) {
+      // no --confirm: the command's first reply says what trusting means and gives the confirm form
       assert.equal(words[0], "add", line);
       assert.ok(parseRef(words[1]), line);
-      assert.equal(words[2], "--confirm", line);
+      assert.equal(words.length, 2, line);
     } else {
       assert.fail(`unexpected command ${line}`);
     }

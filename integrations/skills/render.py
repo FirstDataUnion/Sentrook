@@ -244,6 +244,11 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where_short": "in a direct message to you, or on the machine",
             "cli_prefix_host": "hermes",
             "cli_wait": "Wait for it to finish; do not stop it early.",
+            "tools_missing_hint": (
+                "Hermes offers both tools in every chat, so a missing one means the running Hermes has an older "
+                "plugin or none: ask the owner to run `{{cli verify}}` in a terminal on this machine and, after an "
+                "update, to restart Hermes's services."
+            ),
             "local_places": (
                 "the terminal (`hermes chat`, or `hermes --tui` for the TUI) or the Hermes desktop app on the "
                 "machine"
@@ -381,6 +386,11 @@ HOSTS: dict[str, dict] = {
             ),
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
             "cli_prefix_host": "openclaw",
+            "tools_missing_hint": (
+                "OpenClaw offers them only on the owner's own turns, and a tool profile or an allow or deny list in "
+                "its config can hide them: ask the owner to run `{{cli verify}}` in a terminal on this machine, "
+                "which names such a setting."
+            ),
             "cli_wait": (
                 "On OpenClaw an `openclaw sentrook` command can take half a minute or more to start: run it with a "
                 "timeout of at least 90 seconds and wait for it to finish. If it still has not finished, carry on "

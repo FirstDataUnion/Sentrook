@@ -263,7 +263,6 @@ def test_the_owners_direct_message_gets_the_report(h):
     text = run(h)
     assert text.startswith("Sentrook setup report (read-only).")
     assert "No traffic yet." in text
-    assert "\nApproval cards in chat apps:\n" in text
     assert h.scans == []  # not scanned as a risky call
     [rec] = records(h)
     assert (rec["outcome"], rec["days"]) == ("answered", 14)
@@ -609,3 +608,13 @@ def test_an_api_server_the_owner_marked_attended_shows_the_buttons():
 
 def test_nothing_connected_reads_as_no_chat_app():
     assert setup_report.approval_routes([]) == []
+
+
+def test_an_unreadable_gateway_config_leaves_the_section_out(monkeypatch, tmp_path):
+    from plugin import hold
+
+    cfg = resolve_config({"state_dir": str(tmp_path)}, {"HOME": str(tmp_path)})
+    monkeypatch.setattr(hold, "connected_platforms_or_none", lambda: None)
+    assert plugin._approval_routes(cfg) is None
+    monkeypatch.setattr(hold, "connected_platforms_or_none", lambda: ["discord"])
+    assert [r["app"] for r in plugin._approval_routes(cfg)] == ["discord"]

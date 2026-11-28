@@ -116,9 +116,8 @@ approved.
 
 If `sentrook_setup_report` or `sentrook_propose_setup` is not among your tools, or calling it says the tool is
 unknown, say so to the owner in one sentence. Whether someone is the owner is {{host}}'s call, not yours: the tools'
-absence does not mean the owner is someone else. Ask the owner to run `{{cli verify}}` in a terminal on this machine:
-it names a setting that hides the tools. Meanwhile give the owner one command per item they kept, each in its own
-code block, to send as a direct message to you or to run as `{{cli_prefix}} <command>` in a terminal:
+absence does not mean the owner is someone else. {{tools_missing_hint}} Meanwhile give the owner one command per
+item they kept, each in its own code block, to send as a direct message to you:
 
 | Item | Command |
 | --- | --- |
@@ -128,11 +127,13 @@ code block, to send as a direct message to you or to run as `{{cli_prefix}} <com
 | Their own MCP servers | `{{cmd grant}} provider npm:@example/ --persistent` |
 | A repository or folder they write and maintain themselves | `{{cmd grant}} folder ~/src/my-repo` |
 | A chat channel a scheduled job posts to | `{{cmd bind}} add discord:#daily-brief` |
-| A group chat where the owner knows every member | `{{cmd trust-chat}} add discord:1234567890 --confirm` |
-| A person the owner knows | `{{cmd trust-user}} add discord:2345678901 --confirm` |
+| A group chat where the owner knows every member | `{{cmd trust-chat}} add discord:1234567890` |
+| A person the owner knows | `{{cmd trust-user}} add discord:2345678901` |
 
-Write each exactly in these forms, with the owner's own values; never another verb or option. Never run them
-yourself: Sentrook blocks them.
+Write each exactly in these forms, with the owner's own values; never another verb or option. A trust command
+replies with what trusting means and the form to confirm it; let the owner read that. In a terminal on this machine
+the same command is `{{cli grant}} destination api.example.com --persistent` and so on (the words after the command
+name unchanged), with any path holding `*` in quotes. Never run them yourself: Sentrook blocks them.
 
 ### Notes
 

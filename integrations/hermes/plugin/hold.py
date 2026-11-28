@@ -1440,15 +1440,20 @@ def notice_target(n: Notify, homes: list[str]) -> tuple[str | None, str]:
 
 def connected_platforms() -> list[str]:
     """The platforms Hermes's gateway config connects, by name; empty when the config cannot be read."""
+    return connected_platforms_or_none() or []
+
+
+def connected_platforms_or_none() -> list[str] | None:
+    """The platforms Hermes's gateway config connects, by name; None when the config cannot be read."""
     try:
         from gateway.config import load_gateway_config
 
         return sorted(
             str(getattr(p, "value", p)) for p in load_gateway_config().get_connected_platforms()
         )
-    except Exception as exc:  # noqa: BLE001 - no gateway config: nothing connected
+    except Exception as exc:  # noqa: BLE001 - no gateway config: not known
         logger.debug("connected platforms not readable: %s", exc)
-        return []
+        return None
 
 
 # ---- where the notice goes when no target is set ------------------------------------------------------------------

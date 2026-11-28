@@ -34,6 +34,7 @@ def test_the_fallback_table_names_the_commands_the_plugin_accepts(tmp_path):
             )
             assert change, f"{line}: {reply}"
         elif verb in ("trust-chat", "trust-user"):
-            assert words[0] == "add" and parse_ref(words[1]) and words[2] == "--confirm", line
+            # no --confirm: the command's first reply says what trusting means and gives the confirm form
+            assert words[0] == "add" and parse_ref(words[1]) and len(words) == 2, line
         else:
             raise AssertionError(f"unexpected command {line}")

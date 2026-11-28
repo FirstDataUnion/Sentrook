@@ -21,13 +21,23 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
 
-/** The channel's own `execApprovals` and each account's. */
-function execApprovals(channel: Obj): Obj[] {
-  const out: Obj[] = [];
-  if (isObj(channel.execApprovals)) out.push(channel.execApprovals);
+/**
+ * Each place approval cards can be on for this app, with what it inherits: the channel's own `execApprovals`, and each
+ * enabled account's over it (an account's unset `enabled` or `approvers` falls back to the channel's).
+ */
+function execApprovals(channel: Obj, defaultOn: boolean): Array<{ on: boolean; approvers: string[] }> {
+  const base = isObj(channel.execApprovals) ? channel.execApprovals : {};
+  const isOn = (v: unknown, fallback: boolean) => (v === undefined ? fallback : v === true || v === "auto");
+  const baseOn = isOn(base.enabled, defaultOn);
+  const out = [{ on: baseOn, approvers: list(base.approvers) }];
   if (isObj(channel.accounts)) {
     for (const account of Object.values(channel.accounts)) {
-      if (isObj(account) && account.enabled !== false && isObj(account.execApprovals)) out.push(account.execApprovals);
+      if (!isObj(account) || account.enabled === false || !isObj(account.execApprovals)) continue;
+      const own = account.execApprovals;
+      out.push({
+        on: isOn(own.enabled, baseOn),
+        approvers: own.approvers === undefined ? list(base.approvers) : list(own.approvers),
+      });
     }
   }
   return out;
@@ -36,10 +46,10 @@ function execApprovals(channel: Obj): Obj[] {
 const NAMES: Record<string, string> = { discord: "Discord", telegram: "Telegram" };
 
 function execRoute(app: string, channel: Obj, owners: string[], defaultOn: boolean): ApprovalRoute {
-  const blocks = execApprovals(channel);
-  const on = (e: Obj) => e.enabled === true || e.enabled === "auto" || (defaultOn && e.enabled === undefined);
-  const enabled = blocks.length ? blocks.some(on) : defaultOn;
-  const approver = blocks.some((e) => list(e.approvers).length > 0) || owners.some((o) => o.toLowerCase().startsWith(`${app}:`));
+  const places = execApprovals(channel, defaultOn).filter((p) => p.on);
+  const enabled = places.length > 0;
+  const ownerOnApp = owners.some((o) => o.toLowerCase().startsWith(`${app}:`));
+  const approver = ownerOnApp || places.some((p) => p.approvers.length > 0);
   if (!enabled) {
     return {
       app,

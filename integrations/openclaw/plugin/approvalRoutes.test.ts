@@ -47,3 +47,15 @@ test("WhatsApp and Signal need approvals.plugin; Slack needs nothing; others are
   const forwarded = approvalRoutes({ ...cfg, approvals: { plugin: { enabled: true, mode: "session" } } })!;
   assert.equal(forwarded.find((r) => r.app === "whatsapp")!.ok, true);
 });
+
+test("an account inherits what it does not set; approvers in a block that is off do not count", () => {
+  // channel off: an account with no `enabled` of its own is off too
+  const inherit = { commands: { ownerAllowFrom: ["telegram:9"] }, channels: { telegram: { execApprovals: { enabled: false }, accounts: { a: { execApprovals: {} } } } } };
+  assert.equal(route(inherit, "telegram")?.ok, false);
+  // approvers only in a block that is off, and no owner entry: refused
+  const offApprovers = { channels: { discord: { execApprovals: { approvers: ["251"] } } } };
+  assert.equal(route(offApprovers, "discord")?.ok, false);
+  // an account turns it on and inherits the channel's approvers
+  const accountOn = { channels: { discord: { execApprovals: { approvers: ["251"] }, accounts: { a: { execApprovals: { enabled: "auto" } } } } } };
+  assert.equal(route(accountOn, "discord")?.ok, true);
+});
