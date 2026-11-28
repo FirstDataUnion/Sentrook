@@ -121,9 +121,9 @@ def test_call_v9_reserves_call_v8s_largest_form_plus_the_rule(v8, v9):
     assert view_budgets([v9]) == (18_200, None)
 
 
-def test_call_v9_stays_selectable_after_call_v11_became_the_default():
-    assert ServeConfig().jev_call_question_set == "call-v11"
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v11"
+def test_call_v9_stays_selectable_after_later_sets_became_the_default():
+    assert ServeConfig().jev_call_question_set == "call-v12"
+    assert ServeConfig.from_env({}).jev_call_question_set == "call-v12"
     for name in ("call-v1", "call-v5", "call-v7", "call-v8", "call-v9"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set

@@ -933,6 +933,10 @@ Data Union Ltd:
   request and the turn it came from, and the note is sent as content. A message another Hermes plugin injects into
   the chat is not recognised and is sent as the turn's request, as before: Hermes does not tell plugins which
   messages were injected.
+- **The agent's last message before a short message of yours** (300 characters or less, such as "yes" or "go with
+  A"), so the scanner can see what you agreed to: the last text the agent wrote on the turn before. It goes only
+  with your own chat messages, marked as the agent's words, not yours, and cut to 2,000 characters (the start and
+  the end, where a question usually is).
 - **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
   last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `history_limit` changes the
   number).

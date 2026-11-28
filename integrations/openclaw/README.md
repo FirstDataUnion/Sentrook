@@ -912,6 +912,10 @@ Data Union Ltd:
   plus any other calls in the same batch. The request is sent only with `allowConversationAccess`, with whether it
   came from you, a scheduled job, a subagent or another sender. For a Code Mode `exec` (JavaScript that runs other
   tools), OpenClaw's mark that it is one goes too, so the code is not read as a shell command.
+- **The agent's last message before a short message of yours** (300 characters or less, such as "yes" or "go with
+  A"), so the scanner can see what you agreed to. It goes only with your own chat messages and only with
+  `allowConversationAccess`, marked as the agent's words, not yours, and cut to 2,000 characters (the start and the
+  end, where a question usually is).
 - **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
   last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `historyLimit` changes the number).
 - **Your operating system, home and workspace folder paths, and the plugin version.** Folder paths can identify you.

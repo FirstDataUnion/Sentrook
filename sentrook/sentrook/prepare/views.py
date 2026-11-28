@@ -84,6 +84,7 @@ VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
 VIEWS_VERSION_V8 = "trim-v8"
 VIEWS_VERSION_V9 = "trim-v9"
+VIEWS_VERSION_V10 = "trim-v10"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
@@ -103,6 +104,7 @@ CALL_V2 = "call-v2"
 CALL_V3 = "call-v3"
 CALL_V5 = "call-v5"
 CALL_V7 = "call-v7"
+CALL_V8 = "call-v8"
 SELFEDIT_V1 = "selfedit-v1"
 SELFEDIT_V2 = "selfedit-v2"
 #: The views for a declared self-edit; each is built only when the request has the `self_edit` block.
@@ -151,6 +153,7 @@ VIEW_KEYS: dict[str, tuple[str, ...]] = {
 }
 VIEW_KEYS[CALL_V5] = VIEW_KEYS[CALL_V3]
 VIEW_KEYS[CALL_V7] = VIEW_KEYS[CALL_V3]
+VIEW_KEYS[CALL_V8] = VIEW_KEYS[CALL_V3]
 VIEW_KEYS[SELFEDIT_V1] = (
     "planir_version",
     "host",
@@ -165,13 +168,13 @@ VIEW_KEYS[SELFEDIT_V1] = (
 )
 VIEW_KEYS[SELFEDIT_V2] = VIEW_KEYS[SELFEDIT_V1]
 #: Views whose `reputation` block lists near misses as well as known verdicts.
-NEAR_MISS_VIEWS = frozenset({CALL_V5, CALL_V7, SELFEDIT_V1, SELFEDIT_V2})
+NEAR_MISS_VIEWS = frozenset({CALL_V5, CALL_V7, CALL_V8, SELFEDIT_V1, SELFEDIT_V2})
 #: Views whose cut inputs keep head and tail (two thirds head, one third tail, a marker between), as the plugins cut
 #: them, so the end of a long page or file still reaches the judge. The other views keep the head, as before.
-HEAD_TAIL_VIEWS = frozenset({CALL_V5, CALL_V7})
+HEAD_TAIL_VIEWS = frozenset({CALL_V5, CALL_V7, CALL_V8})
 #: Views whose fitting cuts a long request text first, head and tail, when the view is over the budget. The other views
 #: never cut the request.
-REQUEST_FIT_VIEWS = frozenset({CALL_V5, CALL_V7})
+REQUEST_FIT_VIEWS = frozenset({CALL_V5, CALL_V7, CALL_V8})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -181,6 +184,7 @@ VIEW_VERSIONS: dict[str, str] = {
     CALL_V3: VIEWS_VERSION_V3,
     CALL_V5: VIEWS_VERSION_V8,
     CALL_V7: VIEWS_VERSION_V9,
+    CALL_V8: VIEWS_VERSION_V10,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
     SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
@@ -193,15 +197,24 @@ VIEW_KIND: dict[str, str] = {
     CALL_V3: CALL,
     CALL_V5: CALL,
     CALL_V7: CALL,
+    CALL_V8: CALL,
     SELFEDIT_V1: CALL,
     SELFEDIT_V2: CALL,
 }
 
 #: Views whose `pending_call` keeps the batch: the calls issued in the same step, and (from the call probe) the
 #: pending command resolved through what they write.
-BATCH_VIEWS = frozenset({CALL_V7})
+BATCH_VIEWS = frozenset({CALL_V7, CALL_V8})
 #: Views whose `reputation` block lists the destinations the owner's own configuration supplied.
-OWNER_CONFIG_VIEWS = frozenset({CALL_V7})
+OWNER_CONFIG_VIEWS = frozenset({CALL_V7, CALL_V8})
+#: Views that show `request.prior_agent_message`: the agent's last message before a short owner reply, which the reply
+#: answers. Every other view drops it, so their states are as before. It is shown only when the owner's message is at
+#: most `PRIOR_MESSAGE_REQUEST_MAX_CHARS` long, cut to `PRIOR_MESSAGE_CAP_CHARS`, one third head and two thirds tail
+#: (a proposal usually ends the message).
+PRIOR_MESSAGE_VIEWS = frozenset({CALL_V8})
+PRIOR_AGENT_MESSAGE = "prior_agent_message"
+PRIOR_MESSAGE_REQUEST_MAX_CHARS = 300
+PRIOR_MESSAGE_CAP_CHARS = 1500
 #: A sibling's argument value longer than this is cut, head and tail; at most this many siblings are listed.
 BATCH_ARG_CAP_CHARS = 1500
 BATCH_MAX_SIBLINGS = 8
@@ -253,7 +266,10 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: plus one block, `secrets_sent`, sent to three questions only when the pending call carries secret placeholders;
 #: without one its questions are call-v10's byte for byte. Measured live on 117 bodies that carry it (39 cases, 3
 #: repeats), against the same states under call-v10: the block and its list cost 539 to 563 tokens more, so its entry
-#: is call-v10's 9,491 plus 563, rounded up.
+#: is call-v10's 9,491 plus 563, rounded up. call-v12 is call-v11 plus one block, `prior_message`, sent to two questions
+#: only when the view shows the agent's message beside a short owner reply; without it its questions are call-v11's
+#: byte for byte. Measured live on 42 bodies that carry it (14 cases, 3 repeats), against the same states under
+#: call-v11: the block and the message cost 273 to 413 tokens more, so its entry is call-v11's 10,100 plus 413, rounded up.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
@@ -261,6 +277,7 @@ MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v9", "8582a5b42e1a"): 9_000,
     ("call-v10", "e9dd2e10f223"): 9_500,
     ("call-v11", "8d06c0f895f1"): 10_100,
+    ("call-v12", "f7ea133f52bf"): 10_600,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
@@ -296,6 +313,8 @@ def set_state_budget_tokens(qs: QuestionSet) -> int:
 def trim(raw: dict[str, Any]) -> dict[str, Any]:
     """The PlanIR as a Jev probe sees it. Never mutates `raw`."""
     st = {k: copy.deepcopy(v) for k, v in raw.items() if k not in STRIP_TOP}
+    if isinstance(st.get("request"), dict):
+        st["request"].pop(PRIOR_AGENT_MESSAGE, None)
     if isinstance(st.get("session"), dict):
         st["session"] = {k: st["session"][k] for k in SESSION_KEEP if k in st["session"]}
     for h in st.get("history") or []:
@@ -420,6 +439,33 @@ def _batch_block(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
     if len(out) < len(calls):
         block["siblings_omitted"] = len(calls) - len(out)
     return block, redactions
+
+
+def prior_agent_message(raw: dict[str, Any]) -> str | None:
+    """The agent's last message before the owner's request, as a prior-message view shows it: only when the request
+    is short enough to be a reply to it, cut to `PRIOR_MESSAGE_CAP_CHARS` (one third head, two thirds tail, the cut
+    points moved out of any placeholder). None otherwise."""
+    req = raw.get("request")
+    if not isinstance(req, dict):
+        return None
+    msg, text = req.get(PRIOR_AGENT_MESSAGE), req.get("text")
+    if not isinstance(msg, str) or not msg.strip() or not isinstance(text, str):
+        return None
+    if len(text.strip()) > PRIOR_MESSAGE_REQUEST_MAX_CHARS:
+        return None
+    msg = msg.strip()
+    cap = PRIOR_MESSAGE_CAP_CHARS
+    if len(msg) <= cap:
+        return msg
+    end = cap // 3
+    start = len(msg) - (cap - end)
+    for m in _PLACEHOLDER_RE.finditer(msg):
+        s, e = m.span()
+        if s < end < e:
+            end = s
+        if s < start < e:
+            start = e
+    return f"{msg[:end]} …[{start - end} characters cut]… {msg[start:]}"
 
 
 def view(trimmed: dict[str, Any], name: str) -> dict[str, Any]:
@@ -1108,6 +1154,10 @@ def _call_view_with_inputs(
             v["pending_call"][BATCH] = batch
             # the call probe adds `resolved` after the fit: keep its room free
             budget_tokens -= BATCH_RESOLVED_RESERVE_TOKENS
+    if name in PRIOR_MESSAGE_VIEWS and isinstance(v.get("request"), dict):
+        prior = prior_agent_message(raw)
+        if prior is not None:
+            v["request"][PRIOR_AGENT_MESSAGE] = prior
     sent_budget = budget_tokens
     budget_tokens -= shrink_tokens
     if name == SELFEDIT_V2:
@@ -1209,6 +1259,12 @@ def _build_views(
         _call_view_with_inputs(raw, CALL_V7, budget_tokens=call_budget)
         if batch_block(raw) is not None
         else out[CALL_V5]
+    )
+    # call-v7's state unless a short owner reply comes with the agent's message before it, which only call-v8 shows
+    out[CALL_V8] = (
+        _call_view_with_inputs(raw, CALL_V8, budget_tokens=call_budget)
+        if prior_agent_message(raw) is not None
+        else out[CALL_V7]
     )
     if isinstance(raw.get(SELF_EDIT), dict):
         selfedit_budget = (

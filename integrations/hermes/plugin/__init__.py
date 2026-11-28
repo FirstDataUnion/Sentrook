@@ -72,7 +72,14 @@ from .intent import (
     resolve_platform,
     session_facts,
 )
-from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
+from .planir import (
+    PLUGIN_VERSION,
+    build_planir,
+    previous_turn_id,
+    request_turn_id,
+    session_ref,
+    tool_kind,
+)
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import (
@@ -611,8 +618,12 @@ def _scan_one(
     kw: dict[str, Any],
 ) -> dict[str, Any] | None:
     sess = store.load_session(sid)
-    turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
+    turn_id = kw.get("turn_id") or sess.get("last_turn_id")
+    turn = store.load_turn(turn_id)
     last_request = store.load_turn(request_turn_id(sess))
+    # The turn before this one: its final message is what a short reply from the owner answers.
+    prior_tid = previous_turn_id(sess, turn_id)
+    prior_turn = store.load_turn(prior_tid) if prior_tid else None
     facts = session_facts()
     host_cfg = hermes_config()
     tool_name = str(kw.get("tool_name") or "")
@@ -640,6 +651,7 @@ def _scan_one(
         # The background review's calls serve the owner's last request, not a turn of their own.
         request_turn=last_request if skill_review.in_background_review() else None,
         last_request=last_request,
+        prior_turn=prior_turn,
     )
     planir = built["planir"]
     built["loop_save"] = loop_save
