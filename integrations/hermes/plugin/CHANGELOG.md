@@ -6,6 +6,13 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.19
 
+- Trusted chats can now be a whole Discord server: `/sentrook trust-chat add discord:server:<server id> --confirm`
+  (or the same text in `trusted_chats`) covers every channel and thread in it, including ones created later. A message
+  matches when Hermes reports that server for it; direct messages from its members are not covered, and a channel id
+  is never taken for a server id. `--owner-only` works as for a chat. Only Discord servers for now: a server entry on
+  another platform is refused, and so is one on a Hermes that cannot say which server a message came from. `list`
+  marks whole servers, `verify` has a trusted-chats line, and the setup skill and setup list suggest a server only
+  where you know every member and who can join.
 - The `sentrook-guide` skill's "Working well with Sentrook" section adds one habit: when the agent asks you to
   confirm something, it writes out in that message what it will do (the service or place, and what it will send,
   write or change), since Sentrook reads the agent's last message beside a short reply such as "yes".

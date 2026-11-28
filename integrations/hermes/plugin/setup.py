@@ -741,6 +741,15 @@ def valid_item(cand: dict[str, Any]) -> dict[str, Any] | None:
 def item_warnings(item: dict[str, Any]) -> list[str]:
     """The warnings an item carries from its own kind, pattern and allows."""
     out = []
+    if item.get("kind") == "trusted_chat" and trust.is_server(item["pattern"]):
+        out.append(
+            "everyone who can post in any channel or thread of this server, including ones created later, counts as "
+            "someone you trust; trust a server only when you know every member and who can join it, never an open "
+            "or public one"
+        )
+        if not item.get("owner_only"):
+            out.append("members there may approve the agent's reviews")
+        return out
     if item.get("kind") == "trusted_chat":
         out.append(
             "everyone who can post in this chat, now and later, counts as someone you trust; trust only a chat on a "
@@ -807,6 +816,13 @@ def lifetime_text(item: dict[str, Any], minutes: int | None) -> str:
 def describe(item: dict[str, Any], minutes: int | None) -> str:
     """The item's first line, in the plugin's words: what it lets through, from where, and for how long."""
     p = item["pattern"]
+    if item.get("kind") == "trusted_chat" and trust.is_server(p):
+        held = "; its reviews are held for you" if item.get("owner_only") else ""
+        return (
+            f"Trust the whole server `{p}`: messages from its members in every channel and thread, including ones "
+            f"created later, count as from someone you know, not a stranger (never as yours){held}, until you "
+            "remove it."
+        )
     if item.get("kind") == "trusted_chat":
         held = "; its reviews are held for you" if item.get("owner_only") else ""
         return (
@@ -957,7 +973,7 @@ def build(
             )
         for pid in dict.fromkeys(s["id"] for s in agent):
             lines.append(f"Proposed by the agent ({pid})" + ("." if backed else ", not seen yet."))
-        if item["kind"] == "trusted_chat" and ev.available:
+        if item["kind"] == "trusted_chat" and ev.available and not trust.is_server(item["pattern"]):
             seen = ev.groups.get(item["pattern"])
             if seen is None:
                 lines.append("Sentrook has not seen the agent used in this chat lately.")

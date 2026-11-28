@@ -7,6 +7,13 @@ or server channel where the owner knows everyone who can post: every member's me
 `plugin_allowlist:chat` and `group_chat`). A thread or topic in a trusted chat is covered too (Hermes names its parent
 chat). The owner's own messages stay the owner's.
 
+A trusted Discord server (`trust-chat add discord:server:<server id>`, or the same text in `trusted_chats`) covers every
+channel and thread in that server, including ones created later: a turn matches when Hermes reports that server for it
+(`HERMES_SESSION_SCOPE_ID`, the Discord guild id). The `server:` word keeps a server entry apart from a channel entry,
+so a channel id is never read as a server id or the other way round (on Discord an old #general channel can share its
+server's id). A direct message is never covered by a server entry. Only Discord for now; a server entry on another
+platform, or on a Hermes that does not report the server, is refused when it is added.
+
 Trusted is never the owner. Grants, bindings, settings, the setup screen and every owner command stay the owner's
 alone, from a direct message or the terminal; the scanner's floors apply whoever sent the turn; a trusted turn is not
 one the owner attends (no snooze, no grant set by approving a review).
@@ -42,6 +49,31 @@ _ID = re.compile(r"[^\s\x00-\x1f\x7f]{1,200}")
 #: Entries kept per list.
 MAX_ENTRIES = 200
 OWNER_ONLY = "--owner-only"
+#: The word that makes a trusted-chat entry a whole server: `discord:server:<server id>`.
+SERVER = "server:"
+#: Platforms whose server id Hermes reports per turn and a server entry can name.
+SERVER_PLATFORMS = frozenset({"discord"})
+#: A Discord server (guild) id: a number.
+_SERVER_ID = re.compile(r"[0-9]{1,25}")
+
+
+def is_server(key: str) -> bool:
+    """`platform:server:<id>`: a whole-server entry."""
+    return key.partition(":")[2].startswith(SERVER)
+
+
+def server_support() -> str | None:
+    """None when this Hermes reports a turn's server id (`HERMES_SESSION_SCOPE_ID`); else why not."""
+    try:
+        from gateway import session_context
+    except Exception:  # noqa: BLE001 - an install without the gateway package
+        return "this Hermes has no gateway session context, so it cannot say which server a message came from"
+    names = getattr(session_context, "_VAR_MAP", None)
+    if isinstance(names, dict) and "HERMES_SESSION_SCOPE_ID" not in names:
+        return (
+            "this Hermes does not report which server a message came from (HERMES_SESSION_SCOPE_ID)"
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -55,18 +87,30 @@ class Trust:
         return bool(uid) and f"{platform}:{uid}" in self.senders
 
     def chat(self, platform: str, facts: dict[str, str]) -> tuple[str, bool] | None:
-        """The trusted chat this turn is in, by its chat id or (for a thread or topic) its parent's:
-        (`platform:chat id`, owner-only), or None."""
+        """The trusted chat this turn is in, by its chat id or (for a thread or topic) its parent's, or by the server
+        Hermes reports for it (`scope_id`, Discord only): (`platform:chat id` or `platform:server:<id>`, owner-only),
+        or None. A chat id is only ever matched against chat entries and the server id against server entries. When a
+        chat and its server are both trusted, the chat's key is given, owner-only when either entry says so."""
+        found: list[str] = []
         for cid in (facts.get("chat_id"), facts.get("parent_chat_id")):
-            if isinstance(cid, str) and cid:
+            if isinstance(cid, str) and cid and not cid.startswith(SERVER):
                 key = f"{platform}:{cid}"
                 if key in self.chats:
-                    return key, self.chats[key]
-        return None
+                    found.append(key)
+                    break
+        scope = facts.get("scope_id")
+        if platform in SERVER_PLATFORMS and isinstance(scope, str) and _SERVER_ID.fullmatch(scope):
+            key = f"{platform}:{SERVER}{scope}"
+            if key in self.chats:
+                found.append(key)
+        if not found:
+            return None
+        return found[0], any(self.chats[k] for k in found)
 
 
 def parse_ref(raw: Any) -> tuple[str, str] | None:
-    """`<platform>:<id>` as (platform, id), or None. The platform must be a chat platform."""
+    """`<platform>:<id>` as (platform, id), or None. The platform must be a chat platform. A server entry
+    (`discord:server:<server id>`, id `server:<number>`) must be on a platform in `SERVER_PLATFORMS`."""
     if not isinstance(raw, str):
         return None
     platform, sep, ident = raw.strip().partition(":")
@@ -75,7 +119,29 @@ def parse_ref(raw: Any) -> tuple[str, str] | None:
         return None
     if not _ID.fullmatch(ident):
         return None
+    if ident.lower().startswith(SERVER):
+        sid = ident[len(SERVER) :]
+        if platform not in SERVER_PLATFORMS or not _SERVER_ID.fullmatch(sid):
+            return None
+        return platform, SERVER + sid
     return platform, ident
+
+
+def server_problem(raw: Any) -> str | None:
+    """Why `raw`, written as a server entry, cannot be one; None when it is not written as one or is fine."""
+    if not isinstance(raw, str):
+        return None
+    platform, _, ident = raw.strip().partition(":")
+    if not ident.lower().startswith(SERVER):
+        return None
+    if platform.lower() not in SERVER_PLATFORMS:
+        return (
+            f"A whole server can be trusted only on Discord for now; on {_clean(platform.lower(), 40)}, trust each "
+            "chat by its id instead"
+        )
+    if not _SERVER_ID.fullmatch(ident[len(SERVER) :]):
+        return "A Discord server id is a number: write it as discord:server:<server id>"
+    return None
 
 
 def _config_chats(raw: Any) -> dict[str, bool]:
@@ -130,6 +196,20 @@ def of(cfg: PluginConfig) -> Trust:
     return Trust(frozenset(senders | _config_senders(cfg.trusted_senders)), chats)
 
 
+def verify_check(cfg: PluginConfig) -> tuple[bool, str]:
+    """`verify`'s trusted-chats line: what is trusted, and, failed, a trusted server this Hermes cannot match (it does
+    not report a turn's server, so the entry never covers a message)."""
+    line = trust_line(cfg).split(". ")[0]
+    servers = [k for k in of(cfg).chats if is_server(k)]
+    why = server_support() if servers else None
+    if why:
+        return (
+            False,
+            f"{line}; the trusted servers never match: {why}. Trust each chat by its id instead",
+        )
+    return True, line
+
+
 # ---- the explanations ---------------------------------------------------------------------------------
 
 TRUSTED_IS = (
@@ -144,9 +224,15 @@ def trust_line(cfg: PluginConfig) -> str:
     if not t.chats and not t.senders:
         return "Trusted chats and users: none. Messages from anyone but you in a group count as a stranger's."
     owner_only = sum(1 for v in t.chats.values() if v)
+    servers = sum(1 for k in t.chats if is_server(k))
     chats = f"{len(t.chats)} trusted chat{'s' if len(t.chats) != 1 else ''}"
+    notes = []
+    if servers:
+        notes.append(f"{servers} whole server{'s' if servers != 1 else ''}")
     if owner_only:
-        chats += f" ({owner_only} hold reviews for you)"
+        notes.append(f"{owner_only} hold reviews for you")
+    if notes:
+        chats += f" ({', '.join(notes)})"
     users = f"{len(t.senders)} trusted user{'s' if len(t.senders) != 1 else ''}"
     return f"Trusted: {chats}, {users}. {TRUSTED_IS}"
 
@@ -160,11 +246,19 @@ def _clean(s: Any, cap: int = 60) -> str:
 
 
 def chat_warning(key: str, owner_only: bool, open_platform: bool, cmd: Any) -> str:
+    server = is_server(key)
+    where = (
+        "in any channel or thread of this server, including ones created later,"
+        if server
+        else "in this chat,"
+    )
     who = (
-        "Everyone who can post there, now and later, counts as someone you trust"
-        if not open_platform
-        else "Hermes lets anyone at all write to the agent on this platform, so everyone who can post in this "
-        "chat, now and later, counts as someone you trust"
+        f"Hermes lets anyone at all write to the agent on this platform, so everyone who can post {where} now and "
+        "later, counts as someone you trust"
+        if open_platform
+        else f"Everyone who can post {where} now and later, counts as someone you trust"
+        if server
+        else "Everyone who can post there, now and later, counts as someone you trust"
     )
     reviews = (
         "Sentrook will hold its reviews for you: you answer them from a direct message or the terminal."
@@ -173,9 +267,14 @@ def chat_warning(key: str, owner_only: bool, open_platform: bool, cmd: Any) -> s
         f"Hermes's config, or add the chat with {OWNER_ONLY} to have reviews held for you)."
     )
     flag = f" {OWNER_ONLY}" if owner_only else ""
+    when = (
+        "server only when you know every member and who can join it"
+        if server
+        else "chat only on a private server where you know every member"
+    )
     return (
-        f"Warning: {who}. {reviews} {TRUSTED_IS} Trust a chat only on a private server where you know every "
-        f"member, never an open or public group. To trust it: {cmd('trust-chat add')} {key}{flag} --confirm"
+        f"Warning: {who}. {reviews} {TRUSTED_IS} Trust a {when}, never an open or public group. "
+        f"To trust it: {cmd('trust-chat add')} {key}{flag} --confirm"
     )
 
 
@@ -188,7 +287,11 @@ def user_warning(key: str, cmd: Any) -> str:
 
 def _usage(kind: str, cmd: Any) -> str:
     c = cmd(f"trust-{kind}")
-    ref = "<platform>:<chat id>" if kind == "chat" else "<platform>:<user id>"
+    ref = (
+        "<platform>:<chat id>|discord:server:<server id>"
+        if kind == "chat"
+        else "<platform>:<user id>"
+    )
     extra = f" [{OWNER_ONLY}]" if kind == "chat" else ""
     return f"usage: {c} add {ref}{extra} [--confirm], {c} remove {ref} or {c} list"
 
@@ -197,7 +300,9 @@ def _list(cfg: PluginConfig, kind: str) -> str:
     t = of(cfg)
     if kind == "chat":
         rows = [
-            f"- {k}{' (reviews held for you)' if v else ''}" for k, v in sorted(t.chats.items())
+            f"- {k}{' (every channel and thread in this server)' if is_server(k) else ''}"
+            f"{' (reviews held for you)' if v else ''}"
+            for k, v in sorted(t.chats.items())
         ]
     else:
         rows = [f"- {k}" for k in sorted(t.senders)]
@@ -232,6 +337,9 @@ def run(
     if op not in ("add", "remove") or len(words) != 2:
         return _usage(kind, cmd), None
     ref = parse_ref(words[1])
+    problem = server_problem(words[1]) if kind == "chat" else None
+    if problem:
+        return f"{problem}. Nothing was changed.\n{_usage(kind, cmd)}", None
     if ref is None:
         return (
             f'"{_clean(words[1])}" is not a {kind} on a chat platform: write it as <platform>:<id>, for example '
@@ -269,6 +377,13 @@ def run(
 
         return change(drop)
 
+    if op == "add" and is_server(key):
+        why = server_support()
+        if why:
+            return (
+                f"A whole server cannot be trusted here: {why}. Trust each chat by its id instead. Nothing was changed.",
+                None,
+            )
     if kind == "chat" and chat.get("chat_id") and chat.get("chat_id") == ident:
         return (
             "This is your direct chat with the agent; a chat is trusted for a group's members. To trust a person, "
@@ -310,8 +425,13 @@ def run(
             if owner_only
             else "Members there may answer its reviews."
         )
+        whom = (
+            "messages from its members in every channel and thread, including ones created later, count"
+            if is_server(key)
+            else "its members' messages count"
+        )
         return (
-            f"Trusted {key}: its members' messages count as from someone you trust. {reviews} {undo}",
+            f"Trusted {key}: {whom} as from someone you trust. {reviews} {undo}",
             record,
         )
 

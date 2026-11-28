@@ -120,6 +120,8 @@ def session_facts() -> dict[str, str]:
         "CHAT_TYPE",
         "CHAT_ID",
         "PARENT_CHAT_ID",
+        # The Discord server (guild) or Slack workspace the chat is in; empty in a direct message.
+        "SCOPE_ID",
         "USER_ID",
         "ACTOR_ID",
         "KEY",

@@ -69,7 +69,8 @@ there). Never change a file in a trusted folder to make it say something new and
 once changed.
 
 A **trusted chat** or **trusted user** is a group chat or person the owner knows, set by the owner with
-`/sentrook trust-chat` or `/sentrook trust-user`. Messages from them count as from someone the owner trusts rather than a
+`/sentrook trust-chat` or `/sentrook trust-user`; a trusted Discord server (`discord:server:<server id>`) covers every channel
+and thread in it, including new ones, but not direct messages from its members. Messages from them count as from someone the owner trusts rather than a
 stranger, so routine work they ask for is not treated as a stranger's request. Trusted is never the owner: grants,
 settings and every command above stay the owner's alone, Sentrook still checks every call and its floors still apply,
 and in a trusted chat its members may answer reviews unless the owner chose to have them held. Only the owner changes

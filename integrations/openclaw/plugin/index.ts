@@ -46,6 +46,7 @@ import {
   hostLabels,
   PLUGIN_VERSION,
   priorAgentTextOf,
+  serverOfMessage,
   sessionRef,
   TOOL_CALL_NAMES,
   toolKind,
@@ -335,6 +336,7 @@ const plugin = {
                     },
                     session: commandSessionOf(ctx),
                     hostConfig: hostConfig(),
+                    hostVersion,
                     openclawDir: ocDir,
                     chat: {
                       channel: ctx.channel,
@@ -718,6 +720,14 @@ const plugin = {
         }),
       );
     }
+    // The server a Discord room is in, as OpenClaw names it on the message (never in a tool hook), for a trusted
+    // server (trust.ts). Kept by the room the session key names; a direct chat names none.
+    api.on("message_received", (event: any, ctx: any) =>
+      safely("message_received server", () => {
+        const server = serverOfMessage(event, ctx?.sessionKey ?? event?.sessionKey, hostConfig());
+        if (server) store.noteServer(server.room, server.server);
+      }),
+    );
     for (const hook of ["subagent_spawned", "subagent_delivery_target"]) {
       api.on(hook, (event: any, ctx: any) =>
         safely(hook, () => {
@@ -1026,6 +1036,7 @@ const plugin = {
         hostProcess: hostKind !== null,
         selfEdit: selfEditBlock,
         trust: trustOf(cfg),
+        serverOf: (room) => store.serverOf(`${room.platform}:${room.id}`),
       });
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
