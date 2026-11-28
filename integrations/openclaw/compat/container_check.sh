@@ -12,7 +12,8 @@
 # --force --accept-capabilities, enable, then `openclaw plugins doctor` and `inspect --runtime`, `openclaw
 # sentrook verify` and `status` against the mock identity service and scanner, and two real agent turns
 # (`openclaw agent --local`, model served by the mock) in one session: in the first Sentrook must block one exec
-# call and allow the next; the second only gives the seam probe a conversation with history. Last, settings
+# call and allow the next; the second only gives the seam probe a conversation with history. A third, under
+# tools.profile coding, must reach both of the plugin's setup tools through OpenClaw's tool catalog. Last, settings
 # Sentrook cannot read go into its config and `openclaw doctor --fix` runs: the plugin must stay enabled and keep
 # scanning. Every step runs even after a failure; the exit code is 1 when any failed.
 #
@@ -177,7 +178,8 @@ record doctor "${detail%%$'\t'*}" "${detail#*$'\t'}"
 
 # The mock identity service, scanner and model.
 python3 /shared/mock_services.py --port "$MOCK_PORT" --log "$OUT/mock.jsonl" \
-  --client-id "$CLIENT_ID" --client-secret "$CLIENT_SECRET" --tool exec &
+  --client-id "$CLIENT_ID" --client-secret "$CLIENT_SECRET" --tool exec \
+  --describe sentrook_setup_report,sentrook_propose_setup &
 for _ in $(seq 50); do
   python3 -c "import urllib.request; urllib.request.urlopen('$MOCK/healthz', timeout=1)" 2>/dev/null && break
   sleep 0.2
@@ -240,29 +242,38 @@ PY
 record turn "${turn_detail%%$'\t'*}" "${turn_detail#*$'\t'}"
 
 # 9. The host fields Sentrook reads without a documented contract. A second turn in the same session gives
-# before_prompt_build a history with the owner's message in it. It runs under the coding tool profile, which offers
-# a plugin's tools only when its manifest lists them for that profile: the owner's turn must still be offered both
-# setup tools.
-model_before=$(python3 -c 'import json, os, sys; p = sys.argv[1]; print(sum("model_step" in json.loads(l) for l in open(p)) if os.path.exists(p) else 0)' "$OUT/mock.jsonl")
-run profile-config openclaw config set tools.profile coding || record profile-config FAIL "openclaw config set tools.profile coding failed (see profile-config.log)"
+# before_prompt_build a history with the owner's message in it.
 (cd /tmp && run turn-2 openclaw agent --local --agent main --session-id sentrook-compat -m "Thanks.")
 detail=$(python3 /compat/seams.py "$COMPAT_PROBE_OUT")
 record seams "${detail%%$'\t'*}" "${detail#*$'\t'}"
-detail=$(python3 - "$OUT/mock.jsonl" "$model_before" <<'PY'
+
+# 9b. The agent's setup tools under a tool profile. With tools.profile coding, OpenClaw offers a plugin's tools only
+# when its manifest lists them for that profile; the owner's turn must still reach both. OpenClaw lists plugin tools
+# in its tool catalog rather than the model request's tool list, so the model calls tool_describe for each and
+# neither may come back as an unknown tool.
+profile_set=1
+run profile-config openclaw config set tools.profile coding || profile_set=0
+(cd /tmp && run turn-setup-tools openclaw agent --local --agent main --session-id sentrook-compat-setup-tools \
+  -m "COMPAT_DESCRIBE the Sentrook setup tools.")
+detail=$(python3 - "$OUT/mock.jsonl" "$profile_set" <<'PY'
 import json, os, sys
-log, before = sys.argv[1], int(sys.argv[2])
-steps = [e for e in map(json.loads, open(log)) if "model_step" in e][before:] if os.path.exists(log) else []
-want = {"sentrook_setup_report", "sentrook_propose_setup"}
-if not steps:
-    print("FAIL\tno model request in the second turn")
+log, profile_set = sys.argv[1], sys.argv[2]
+turns = [e for e in map(json.loads, open(log)) if "describe_results" in e] if os.path.exists(log) else []
+results = turns[-1]["describe_results"] if turns else []
+want = ["sentrook_setup_report", "sentrook_propose_setup"]
+if profile_set != "1":
+    print("FAIL\topenclaw config set tools.profile coding failed (see profile-config.log)")
+elif len(results) < len(want):
+    print(f"FAIL\t{len(results)} of {len(want)} tool_describe results in the turn (see turn-setup-tools.log)")
 else:
-    missing = sorted(want - set(steps[0].get("tools") or []))
-    print(f"FAIL\tnot offered under tools.profile coding: {', '.join(missing)}" if missing
+    hidden = [n for n, r in zip(want, results) if "Unknown tool id" in r or n not in r]
+    print(f"FAIL\tnot offered under tools.profile coding: {', '.join(hidden)}" if hidden
           else "ok\tboth setup tools offered to the owner under tools.profile coding")
 PY
 )
 record setup-tools "${detail%%$'\t'*}" "${detail#*$'\t'}"
-openclaw config unset tools.profile >/dev/null 2>&1 || true
+run profile-unset openclaw config unset tools.profile ||
+  record profile-unset FAIL "openclaw config unset tools.profile failed (see profile-unset.log)"
 
 # 10. Settings Sentrook cannot read must not get it disabled. OpenClaw's `doctor --fix` (which the official image
 # runs before every gateway start) deletes the config of a plugin that fails its manifest schema and disables the

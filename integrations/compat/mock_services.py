@@ -61,8 +61,38 @@ def scan_response(planir: Any) -> dict[str, Any]:
     return {"response_version": "2.0", "status": "ok", "risk": 0, "reasons": []}
 
 
-def model_reply(messages: list[dict[str, Any]], tool: str = "terminal") -> dict[str, Any]:
-    """The assistant message for this step: the blocked call, then the allowed call, then text."""
+DESCRIBE_MARKER = "COMPAT_DESCRIBE"
+
+
+def describe_results(messages: list[dict[str, Any]]) -> list[str] | None:
+    """In a describe turn (a user message carries DESCRIBE_MARKER), the tool results since that message, each cut to
+    300 characters; None in any other turn. The host may add its own user-role messages after the prompt."""
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") == "user" and DESCRIBE_MARKER in json.dumps(m.get("content")):
+            after = messages[i + 1 :]
+            return [json.dumps(t.get("content"))[:300] for t in after if t.get("role") == "tool"]
+    return None
+
+
+def model_reply(
+    messages: list[dict[str, Any]], tool: str = "terminal", describe: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """The assistant message for this step: the blocked call, then the allowed call, then text. In a turn whose
+    user message carries DESCRIBE_MARKER, a `tool_describe` call for each name in `describe` instead, then text."""
+    results = describe_results(messages)
+    if results is not None:
+        if len(results) >= len(describe):
+            return {"role": "assistant", "content": FINAL_ANSWER}
+        name = describe[len(results)]
+        call = {"name": "tool_describe", "arguments": json.dumps({"id": name})}
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": f"call_describe_{len(results) + 1}", "type": "function", "function": call}
+            ],
+        }
     done = sum(1 for m in messages if m.get("role") == "tool")
     if done >= 2:
         return {"role": "assistant", "content": FINAL_ANSWER}
@@ -89,6 +119,7 @@ class Handler(BaseHTTPRequestHandler):
     client_id: str = ""
     client_secret: str = ""
     tool: str = "terminal"
+    describe: tuple[str, ...] = ()
 
     def log_message(self, fmt: str, *args: Any) -> None:  # quiet stderr; the JSON log is the record
         return
@@ -159,7 +190,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if authed else 401, resp if authed else {"error": "unauthorized"})
         elif self.path.rstrip("/").endswith("/chat/completions"):
             req = json.loads(raw or b"{}")
-            msg = model_reply(req.get("messages") or [], self.tool)
+            messages = req.get("messages") or []
+            msg = model_reply(messages, self.tool, self.describe)
             step = (
                 msg["tool_calls"][0]["function"]["arguments"] if msg.get("tool_calls") else "answer"
             )
@@ -168,7 +200,11 @@ class Handler(BaseHTTPRequestHandler):
                 for t in req.get("tools") or []
                 if isinstance(t, dict)
             ]
-            self._record({"model_step": step, "tools": offered})
+            entry = {"model_step": step, "tools": offered}
+            results = describe_results(messages)
+            if results is not None:
+                entry["describe_results"] = results
+            self._record(entry)
             if req.get("stream"):
                 self._stream(req, msg)
             else:
@@ -236,7 +272,13 @@ def main() -> None:
     ap.add_argument("--client-id", required=True)
     ap.add_argument("--client-secret", required=True)
     ap.add_argument("--tool", default="terminal", help="the host's shell tool the model calls")
+    ap.add_argument(
+        "--describe",
+        default="",
+        help="comma-separated tool names the model describes in a turn marked " + DESCRIBE_MARKER,
+    )
     args = ap.parse_args()
+    Handler.describe = tuple(n for n in args.describe.split(",") if n)
     Handler.log_path = args.log
     Handler.client_id = args.client_id
     Handler.client_secret = args.client_secret

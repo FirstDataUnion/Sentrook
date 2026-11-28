@@ -5,7 +5,8 @@
  * A tool profile (`tools.profile`) no longer hides them: the manifest lists both for every profile under
  * `toolMetadata.<tool>.profiles`. An explicit `allow` list that names neither the tool, the plugin (`sentrook`),
  * `group:plugins` nor a matching glob, or a `deny` list that names any of them, still does, globally (`tools`) or
- * for one agent (`agents.list[].tools`). Entries match as OpenClaw matches them: trimmed, lower case, `*` as a glob.
+ * for one agent (`agents.list[].tools`), and for one model provider (`byProvider.<provider>`). Entries match as
+ * OpenClaw matches them: trimmed, lower case, `*` as a glob.
  */
 
 import { TOOL as PROPOSE_TOOL } from "./proposals.ts";
@@ -42,6 +43,12 @@ function names(list: string[], tool: string): boolean {
 function policyHides(policy: unknown, prefix: string): HiddenTool[] {
   if (!isRecord(policy)) return [];
   const hidden: HiddenTool[] = [];
+  // A provider's own lists (`byProvider.<provider>`) apply on top for turns on that model provider.
+  if (isRecord(policy.byProvider)) {
+    for (const [provider, sub] of Object.entries(policy.byProvider)) {
+      hidden.push(...policyHides(sub, `${prefix}.byProvider.${provider}`));
+    }
+  }
   const deny = entries(policy.deny);
   const allow = entries(policy.allow);
   const also = entries(policy.alsoAllow) ?? [];

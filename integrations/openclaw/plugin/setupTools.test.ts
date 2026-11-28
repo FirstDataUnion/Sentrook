@@ -75,6 +75,10 @@ test("must fire: an allow list that names neither the tools nor the plugin", () 
     hiddenSetupTools({ agents: { list: [{ id: "ops", tools: { deny: [report.TOOL] } }] } }),
     [{ tool: report.TOOL, where: "agents.list[ops].tools.deny" }],
   );
+  assert.deepEqual(
+    hiddenSetupTools({ tools: { byProvider: { openai: { deny: ["sentrook"] } } } }).map((h) => h.where),
+    ["tools.byProvider.openai.deny", "tools.byProvider.openai.deny"],
+  );
 });
 
 test("verify reports the hidden setup tools", async () => {
