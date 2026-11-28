@@ -677,7 +677,16 @@ would only block the call, with no hold and no notice.
   its name in quotes, or a heartbeat, subagent, or webhook or event run), the tool and its target, a broad category,
   and the commands; read the risk, the reasons and any grant Sentrook suggests with `/sentrook-why <id>`. Run `/sentrook-notify here` once, as a direct message to the
   agent on the channel where you want the notices (not in a group or channel; on Discord the notice goes to you as
-  a user). Until then nothing is sent, the call is still held, and `status` and `verify` say notices are not sent.
+  a user). Do this first. Until then the notice goes only to:
+  1. the chat the cron job delivers its own output to, when its delivery names one (`announce` with a `channel` and
+     `to`; not `last`, a webhook or `none`); else
+  2. your direct message, when `commands.ownerAllowFrom` names exactly one owner on a channel OpenClaw has
+     configured.
+
+  It never goes to a chat the job does not deliver to. Such a notice ends with a line saying where it went and how to
+  set a target; answer it from a direct message, since the commands are refused in a group. With neither, nothing is
+  sent. The call is still held either way, and while calls wait with no target `status` and `verify` warn (`verify`
+  fails) and the setup report lists it as its first gap.
 - Answer within 7 days, from a direct message (like the other owner commands). The notice lists only the answers
   this hold offers:
   - `/sentrook-allow <id>`: Sentrook runs the cron job again now (`openclaw cron run <id>`, as you would yourself),

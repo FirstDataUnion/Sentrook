@@ -62,7 +62,9 @@
  * `hold_allowed`, `hold_allowed_always`, `hold_denied` (`hold_approved` for an older hold), `hold_dismissed` or `hold_expired`, joined
  * by `request_id` as review answers are; a call a pass or denial settles is logged with decision `allowed_by_pass`
  * or `denied_by_owner`. Holds are kept in `<state>/sentrook/holds.json` and the notice target in `notify.json`; the
- * Hermes plugin keeps the same holds file and prints the same notice text.
+ * Hermes plugin keeps the same holds file and prints the same notice text. With no notice target set, a notice goes to
+ * the chat the cron job delivers to, else the owner's direct message when OpenClaw names exactly one owner
+ * (`fallbackTarget`); never to a chat the job does not deliver to.
  */
 
 import { randomBytes } from "node:crypto";
@@ -71,6 +73,7 @@ import path from "node:path";
 import { BLOCK_CATEGORIES, blockCategory, describe } from "./decision.ts";
 import { formatWhy, recentScans, recordsBackward } from "./history.ts";
 import { HIDE_SETTING } from "./config.ts";
+import { roomPattern } from "./cronDelivery.ts";
 import * as grants from "./grants.ts";
 import { OwnerRefused } from "./owner.ts";
 import * as passes from "./passes.ts";
@@ -1213,7 +1216,103 @@ export function statusLine(stateDir: string, target: NotifyTarget | null, now: D
     const most = again.reduce((a, b) => (Number(b.count ?? 1) > Number(a.count ?? 1) ? b : a));
     held += ` (${most.id} held ${Number(most.count ?? 1)} times since ${clean(most.held_at, 20)})`;
   }
-  return `${held}; ${target ? `notices by ${targetText(target)}` : `notices not sent (${NOTIFY_UNSET})`}`;
+  const warning = unsetWarning(stateDir, target, now);
+  return `${held}; ${target ? `notices by ${targetText(target)}` : `notices not sent (${NOTIFY_UNSET})`}${warning ? `; ${warning}` : ""}`;
+}
+
+// ---- where the notice goes when no target is set ---------------------------------------------------------------
+
+/** How a notice found a target with none set (`fallbackTarget`): the chat the cron job delivers to, or the owner's direct message. */
+export const VIA_JOB = "job_delivery";
+export const VIA_DM = "owner_dm";
+export type Via = typeof VIA_JOB | typeof VIA_DM;
+
+/** Where a notice goes with no target set: a notify target without `set_at`/`set_by`, and how it was found. */
+export interface Fallback {
+  target: Omit<NotifyTarget, "set_at" | "set_by">;
+  via: Via;
+}
+
+const PLATFORM = /^[a-z][a-z0-9_-]{1,20}$/;
+/** Channels that are not chat platforms a notice can be sent on. */
+const NOT_CHAT = new Set(["last", "webchat", "control-ui", "cli"]);
+const ADDRESS = /^[^\s]{1,200}$/;
+
+/**
+ * Where cron job delivery `delivery` (the job's `delivery` as OpenClaw stores it) sends the job's own output: an
+ * `announce` delivery that names its channel and target. Null for no delivery, a webhook, or the host's own choice
+ * (`channel` `last` or unset, or no `to`): those are not a chat the owner named for the job.
+ */
+export function jobDeliveryTarget(delivery: unknown): Fallback["target"] | null {
+  if (!delivery || typeof delivery !== "object") return null;
+  const d = delivery as Record<string, unknown>;
+  if (d.mode !== "announce" || typeof d.channel !== "string" || typeof d.to !== "string") return null;
+  const channel = d.channel.trim().toLowerCase();
+  const to = d.to.trim();
+  if (!PLATFORM.test(channel) || NOT_CHAT.has(channel) || !ADDRESS.test(to)) return null;
+  const threadId = typeof d.threadId === "number" || (typeof d.threadId === "string" && d.threadId.trim()) ? d.threadId : undefined;
+  return {
+    channel,
+    to,
+    ...(typeof d.accountId === "string" && d.accountId.trim() ? { accountId: d.accountId.trim() } : {}),
+    ...(threadId !== undefined ? { threadId } : {}),
+  };
+}
+
+/**
+ * The owner's direct message, when OpenClaw's config names exactly one owner (`commands.ownerAllowFrom`, entries
+ * `<channel>:<direct-user target>`) on a channel it has configured; null otherwise. Several owners, a wildcard, an
+ * entry with no channel, or one that names a room give none: a notice goes to one person or not at all.
+ */
+export function ownerDmTarget(hostConfig: any): Fallback["target"] | null {
+  const raw: unknown = hostConfig?.commands?.ownerAllowFrom;
+  const entries = [...new Set((Array.isArray(raw) ? raw : []).filter((e): e is string => typeof e === "string").map((e) => e.trim()).filter(Boolean))];
+  if (entries.length !== 1) return null;
+  const [only] = entries as [string];
+  const cut = only.indexOf(":");
+  if (cut < 0) return null;
+  const channel = only.slice(0, cut).toLowerCase();
+  let to = only.slice(cut + 1).trim();
+  if (!PLATFORM.test(channel) || NOT_CHAT.has(channel) || !ADDRESS.test(to) || to.includes("*")) return null;
+  if (!hostConfig?.channels || typeof hostConfig.channels !== "object" || !hostConfig.channels[channel]) return null;
+  // a room, or a handle (on Telegram `@name` is a public channel or group, never a direct message)
+  if (/^(?:channel|group|thread|room|topic):/i.test(to) || to.startsWith("@")) return null;
+  // OpenClaw's own direct-message target on Discord is `user:<id>` (as `targetOf` builds it)
+  if (channel === "discord" && !to.toLowerCase().startsWith("user:")) to = `user:${to}`;
+  if (roomPattern(channel, to) !== null) return null;
+  return { channel, to };
+}
+
+/**
+ * Where a notice goes when the owner has set no target: the cron job's own delivery chat (`jobDeliveryTarget`; none
+ * for a run of no job), then the owner's direct message (`ownerDmTarget`). Never a chat the job does not deliver to.
+ */
+export function fallbackTarget(delivery: unknown, hostConfig: any): Fallback | null {
+  const job = jobDeliveryTarget(delivery);
+  if (job) return { target: job, via: VIA_JOB };
+  const dm = ownerDmTarget(hostConfig);
+  return dm ? { target: dm, via: VIA_DM } : null;
+}
+
+/** The line a notice sent by `fallbackTarget` ends with: where it went and how to set a target. */
+export function fallbackNote(via: Via): string {
+  return via === VIA_JOB
+    ? "No notice target is set, so this notice went to the chat this job delivers to. Answer it in a direct message " +
+        "to the agent, and run /sentrook-notify here there to choose where notices go."
+    : "No notice target is set, so this notice went to your direct message. Run /sentrook-notify here in it to keep " +
+        "notices there.";
+}
+
+/** Status and verify, when calls are held and no target is set. */
+export const UNSET_WARNING =
+  "WARNING: {n} held call(s) waiting and no notify target is set, so their notices go only to a job's own delivery " +
+  "chat or your direct message where Sentrook can find one. Run /sentrook-notify here in a direct message to the agent";
+
+/** `UNSET_WARNING` when holds are waiting and the owner has set no notify target; "" otherwise. */
+export function unsetWarning(stateDir: string, target: NotifyTarget | null, now: Date): string {
+  if (target) return "";
+  const count = waiting(stateDir, now);
+  return count ? UNSET_WARNING.replace("{n}", String(count)) : "";
 }
 
 /** The fields of a command context `/sentrook-notify here` reads, as OpenClaw passes them. */
@@ -1319,7 +1418,7 @@ export interface Outbound {
 }
 
 /** Sends `text` to `target`; resolves with null when sent, else why not. Never throws. */
-export async function deliver(outbound: Outbound | undefined, cfg: unknown, target: NotifyTarget, text: string): Promise<string | null> {
+export async function deliver(outbound: Outbound | undefined, cfg: unknown, target: Fallback["target"], text: string): Promise<string | null> {
   try {
     if (!outbound?.loadAdapter) return "this OpenClaw has no outbound adapters for plugins";
     const send = (await outbound.loadAdapter(target.channel))?.sendText;

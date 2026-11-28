@@ -21,6 +21,7 @@ import * as hold from "./hold.ts";
 import plugin from "./index.ts";
 import * as passes from "./passes.ts";
 import { Store } from "./store.ts";
+import { runVerify } from "./verify.ts";
 
 const FIXTURES = JSON.parse(readFileSync(fileURLToPath(new URL("../../fixtures/hold/cases.json", import.meta.url)), "utf8"));
 const SEND = FIXTURES.notices[0];
@@ -152,14 +153,14 @@ const DM = {
   sessionId: "D1",
 };
 
-function registered(pluginConfig: Record<string, unknown> = {}) {
+function registered(pluginConfig: Record<string, unknown> = {}, host: Record<string, unknown> = {}) {
   const on: Record<string, any[]> = {};
   const commands: Record<string, any> = {};
   const sent: any[] = [];
   plugin.register({
     pluginConfig,
     registrationMode: "full",
-    config: { tools: { exec: { mode: "full" } } },
+    config: { tools: { exec: { mode: "full" } }, ...host },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     on: (hook: string, h: any) => (on[hook] ??= []).push(h),
     registerCommand: (def: any) => {
@@ -503,4 +504,123 @@ test("a late call of an earlier run does not close the current run's group", asy
   assert.ok(!notices(r).slice(before).some((n) => n.includes(head) && n.includes(lead2)), notices(r).slice(before).join("\n---\n"));
   await r.end(2);
   assert.equal(notices(r).at(-1)!.split("\n")[0], passes.fill(GROUP.head!, { job: "job-j", n: "1", lead: lead2 }));
+});
+
+
+// ---- no notify target: the job's own delivery chat, then the owner's direct message ------------------------------
+
+/** OpenClaw's config naming one owner on Telegram, which it has configured. */
+const ONE_OWNER = { commands: { ownerAllowFrom: ["telegram:100200300"] }, channels: { telegram: { enabled: true } } };
+const NO_DELIVERY = { ...JOB, delivery: { mode: "none" } };
+
+test("a held cron call with no target set goes to the job's own delivery chat", async () => {
+  const r = registered();
+  const { out, rec } = await r.call(1);
+  assert.deepEqual(out, HELD);
+  assert.equal(r.sent.length, 1);
+  assert.equal(r.sent[0].channel, "discord");
+  assert.equal(r.sent[0].to, "channel:123456");
+  assert.ok(String(r.sent[0].text).endsWith(hold.fallbackNote(hold.VIA_JOB)));
+  assert.deepEqual(rec.hold.notice, { status: "queued", target: "discord", via: hold.VIA_JOB });
+});
+
+test("the job's account and thread are kept", async () => {
+  putJob({ ...JOB, delivery: { mode: "announce", channel: "telegram", to: "-1001234567", accountId: "bot2", threadId: 17 } });
+  const r = registered();
+  await r.call(1);
+  assert.deepEqual(
+    r.sent.map((x) => [x.channel, x.to, x.accountId, x.threadId]),
+    [["telegram", "-1001234567", "bot2", 17]],
+  );
+});
+
+test("the run's end line goes to the job's delivery chat too", async () => {
+  const r = registered();
+  for (const [i, tool] of ["exec", "web_fetch"].entries()) await groupCall(r, 1, tool, `c${i}`);
+  await r.end(1);
+  assert.deepEqual(r.sent.map((x) => x.to), ["channel:123456", "channel:123456"]);
+  const [line] = r.records("run_group");
+  assert.deepEqual(line.notice, { status: "queued", target: "discord", via: hold.VIA_JOB });
+  assert.ok(String(r.sent[1].text).endsWith(hold.fallbackNote(hold.VIA_JOB)));
+});
+
+test("a job with no delivery chat falls back to the one owner's direct message", async () => {
+  putJob(NO_DELIVERY);
+  const r = registered({}, ONE_OWNER);
+  const { rec } = await r.call(1);
+  assert.deepEqual(r.sent.map((x) => [x.channel, x.to]), [["telegram", "100200300"]]);
+  assert.ok(String(r.sent[0].text).endsWith(hold.fallbackNote(hold.VIA_DM)));
+  assert.deepEqual(rec.hold.notice, { status: "queued", target: "telegram", via: hold.VIA_DM });
+});
+
+test("the job's delivery chat comes before the owner's direct message", async () => {
+  const r = registered({}, ONE_OWNER);
+  await r.call(1);
+  assert.deepEqual(r.sent.map((x) => [x.channel, x.to]), [["discord", "channel:123456"]]);
+});
+
+for (const [name, delivery] of [
+  ["no delivery", { mode: "none" }],
+  ["a webhook", { mode: "webhook", to: "https://example.test/hook" }],
+  ["the host's own choice", { mode: "announce", channel: "last", to: "channel:1" }],
+  ["the creating chat, unnamed", { mode: "announce" }],
+] as const) {
+  test(`no fallback to a chat the job does not name: ${name}`, async () => {
+    putJob({ ...JOB, delivery });
+    const r = registered({}, { channels: { discord: { enabled: true } } });
+    const { out, rec } = await r.call(1);
+    assert.deepEqual(out, HELD);
+    assert.deepEqual(r.sent, []);
+    assert.deepEqual(rec.hold.notice, { status: "unsent", target: null, reason: hold.NOTIFY_UNSET });
+  });
+}
+
+for (const [name, host] of [
+  ["two owners", { commands: { ownerAllowFrom: ["telegram:100200300", "telegram:777"] }, channels: { telegram: {} } }],
+  ["a wildcard", { commands: { ownerAllowFrom: ["*"] }, channels: { telegram: {} } }],
+  ["a group", { commands: { ownerAllowFrom: ["telegram:-1001234567"] }, channels: { telegram: {} } }],
+  ["a channel room", { commands: { ownerAllowFrom: ["discord:channel:123456"] }, channels: { discord: {} } }],
+  ["a channel OpenClaw has not configured", { commands: { ownerAllowFrom: ["telegram:100200300"] }, channels: {} }],
+  ["a handle", { commands: { ownerAllowFrom: ["telegram:@somechannel"] }, channels: { telegram: {} } }],
+  ["no channel named", { commands: { ownerAllowFrom: ["100200300"] }, channels: { telegram: {} } }],
+] as const) {
+  test(`no direct message without one owner OpenClaw can address: ${name}`, async () => {
+    putJob(NO_DELIVERY);
+    const r = registered({}, host);
+    await r.call(1);
+    assert.deepEqual(r.sent, []);
+  });
+}
+
+test("with a notify target set nothing changes", async () => {
+  const r = registered({}, ONE_OWNER);
+  await r.command("sentrook-notify", "here");
+  const { rec } = await r.call(1);
+  assert.deepEqual(r.sent.map((x) => [x.channel, x.to]), [["telegram", "100200300"]]);
+  assert.ok(!String(r.sent[0].text).includes("No notice target is set"));
+  assert.deepEqual(rec.hold.notice, { status: "queued", target: "telegram" });
+});
+
+test("status and verify warn when calls are held and no target is set", async () => {
+  putJob(NO_DELIVERY);
+  const r = registered();
+  await r.call(1);
+  const warning = hold.UNSET_WARNING.replace("{n}", "1");
+  assert.ok(hold.statusLine(stateDir, null, new Date()).endsWith(`; ${warning}`));
+  const check = (await runVerify({}, { env: process.env, hostConfig: {}, fetchImpl: (async () => new Response("{}", { status: 500 })) as any, timeoutMs: 10 })).find(
+    (c) => c.name === "held-call notices",
+  );
+  assert.equal(check?.ok, false);
+  assert.ok(check?.detail.endsWith(`. ${warning}`));
+});
+
+test("no warning without held calls, or with a target set", async () => {
+  assert.equal(hold.unsetWarning(stateDir, null, new Date()), "");
+  const r = registered({}, ONE_OWNER);
+  await r.command("sentrook-notify", "here");
+  await r.call(1);
+  const target = new Store(stateDir).loadNotify();
+  assert.ok(target);
+  assert.equal(hold.unsetWarning(stateDir, target, new Date()), "");
+  assert.ok(!hold.statusLine(stateDir, target, new Date()).includes("WARNING"));
 });

@@ -417,6 +417,7 @@ const plugin = {
         unsent_grants: Object.keys(cfg.unsentGrants ?? {}).length,
         shadowed_skills: [...new Set(shadowed)],
         traffic_log: cfg.trafficLog.enabled,
+        held_waiting: hold.waiting(cfg.stateDir, now),
       };
       const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);
       const log = cfg.trafficLog.enabled ? cfg.trafficLog.path : null;
@@ -1478,15 +1479,40 @@ const plugin = {
       safely("started run note", () => passes.note(cfg.stateDir, id, what));
     }
 
+    /**
+     * Where a notice about a held call goes: the owner's notify target; with none set, the chat cron job `jobId`
+     * delivers to, then the owner's direct message (`hold.fallbackTarget`). `via` names a fallback.
+     */
+    function noticeRoute(jobId: string | null): { target: hold.Fallback["target"] | null; via: hold.Via | null } {
+      const set = store.loadNotify();
+      if (set) return { target: set, via: null };
+      try {
+        const job = jobId ? cronDelivery.readCronJob(ocDir, jobId) : null;
+        const found = hold.fallbackTarget(job?.delivery, hostConfig());
+        return found ? { target: found.target, via: found.via } : { target: null, via: null };
+      } catch (err) {
+        api.logger.warn(`${LOG} could not look for a fallback notice target: ${String(err)}`);
+        return { target: null, via: null };
+      }
+    }
+
+    /** A notice's text for `noticeRoute`'s target: a fallback's says where it went and how to set a target. */
+    const noticeFor = (text: string, via: hold.Via | null) => (via ? `${text}\n\n${hold.fallbackNote(via)}` : text);
+    const queuedTo = (target: hold.Fallback["target"], via: hold.Via | null): Json => ({
+      status: "queued",
+      target: target.channel,
+      ...(via ? { via } : {}),
+    });
+
     /** Tells the owner how a run started for their answer went (passes.outcomeText), and logs it. Never throws. */
     function outcomeNotice(cfg: PluginConfig, rec: Json): void {
       safely("started run outcome", () => {
-        const text = passes.outcomeText(rec, hold.OUTCOMES);
-        const target = store.loadNotify();
+        const { target, via } = noticeRoute(typeof rec.job_id === "string" ? rec.job_id : null);
+        const text = noticeFor(passes.outcomeText(rec, hold.OUTCOMES), via);
         const outbound = outboundOf();
         let notice: Json = { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
         if (target && outbound?.loadAdapter) {
-          notice = { status: "queued", target: target.channel };
+          notice = queuedTo(target, via);
           hold.track(
             hold.deliver(outbound, hostConfig(), target, text).then((why) => {
               if (why) api.logger.warn(`${LOG} started-run notice not delivered: ${why}`);
@@ -1520,7 +1546,7 @@ const plugin = {
         const { runKey, startedAt } = runKeyOf(jobId, runId);
         const rec = passes.runEnd(cfg.stateDir, passes.jobRef(jobId), runKey, startedAt, now);
         if (rec) outcomeNotice(cfg, rec);
-        endLines(cfg, passes.jobRef(jobId), runKey, now);
+        endLines(cfg, passes.jobRef(jobId), runKey, now, jobId);
         safely("job run link", () => {
           const cur = store.jobRunOf(ctx?.sessionKey);
           if (cur?.via === "cron" && cur.run_id === runId) store.setJobRun(ctx.sessionKey, null);
@@ -1529,17 +1555,17 @@ const plugin = {
     );
 
     /** Sends the run's end line (`hold.endLineText`) for each group the run leads, and logs it. Never throws. */
-    function endLines(cfg: PluginConfig, ref: string | null, runKey: string | null, now: Date): void {
+    function endLines(cfg: PluginConfig, ref: string | null, runKey: string | null, now: Date, jobId: string | null): void {
       safely("run end line", () => {
         const groups = hold.endOfRun(cfg.stateDir, ref, runKey, now);
         if (!groups.length) return;
-        const target = store.loadNotify();
+        const { target, via } = noticeRoute(jobId);
         const outbound = outboundOf();
         for (const [lead, members, canAll] of groups) {
           let notice: Json = { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
           if (target && outbound?.loadAdapter) {
-            notice = { status: "queued", target: target.channel };
-            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), "run end line");
+            notice = queuedTo(target, via);
+            sendLine(target, noticeFor(hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), via), "run end line");
           } else if (target) {
             notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
           }
@@ -1557,7 +1583,7 @@ const plugin = {
     }
 
     /** Sends one line to the owner's notify target; a failed delivery is logged. */
-    function sendLine(target: NonNullable<ReturnType<Store["loadNotify"]>>, text: string, what: string): void {
+    function sendLine(target: hold.Fallback["target"], text: string, what: string): void {
       hold.track(
         hold.deliver(outboundOf(), hostConfig(), target, text).then((why) => {
           if (why) api.logger.warn(`${LOG} ${what} not delivered: ${why}`);
@@ -1796,11 +1822,9 @@ const plugin = {
       const { where } = bound.jobRun
         ? unattendedRun(sref, "scheduled", bound.jobRun, null, bound.jobId, null, true)
         : unattendedRun(sref, triggerKind, run, null, bound.jobId, source);
-      const target = store.loadNotify();
+      const { target, via } = noticeRoute(bound.jobId);
       const outbound = outboundOf();
-      let notice: Json = target
-        ? { status: "queued", target: target.channel }
-        : { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+      let notice: Json = target ? queuedTo(target, via) : { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
       if (target && !outbound?.loadAdapter) {
         notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
       }
@@ -1827,7 +1851,7 @@ const plugin = {
         // an earlier run of the job that ended where the plugin could not see it: its end line goes out first
         try {
           for (const [lead, members, canAll] of hold.staleGroups(cfg.stateDir, ref, bound.runKey ?? null, bound.runStart ?? null, now)) {
-            sendLine(target, hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), "earlier run's end line");
+            sendLine(target, noticeFor(hold.endLineText(lead, members, (v) => `/sentrook-${v}`, canAll), via), "earlier run's end line");
           }
         } catch (err) {
           // those holds stay listed in status
@@ -1876,7 +1900,7 @@ const plugin = {
       } else if (id !== null && target && notice.status === "queued") {
         try {
           const scope: hold.Scope = bound.jobId !== null ? "job" : (source?.kind ?? null);
-          const text = hold.noticeText(resp, tool, where, id, offers, (v) => `/sentrook-${v}`, scope);
+          const text = noticeFor(hold.noticeText(resp, tool, where, id, offers, (v) => `/sentrook-${v}`, scope), via);
           const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
             if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
           });

@@ -280,7 +280,12 @@ def test_with_no_home_channel_to_use_the_call_is_still_held_and_the_notice_logge
     from plugin import cli
 
     verify = dict((n, (ok, d)) for n, ok, d in cli.run_verify(dict(h.ctx.settings), timeout=0.01))
-    assert verify["held-call notices"] == (True, f"not sent: {why}")
+    if setting is None:
+        # a held call and no target set: verify fails, and says how to set one
+        warn = hold.UNSET_WARNING.format(n=1)
+        assert verify["held-call notices"] == (False, f"not sent: {why}. {warn}")
+    else:
+        assert verify["held-call notices"] == (True, f"not sent: {why}")
 
 
 def test_owner_channel_picks_the_home_channel(h, monkeypatch):

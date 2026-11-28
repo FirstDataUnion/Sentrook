@@ -168,6 +168,8 @@ export interface ReportState {
   unsent_grants: number;
   shadowed_skills?: string[] | null;
   traffic_log: boolean;
+  /** Held calls waiting for the owner; null when the holds file cannot be read. */
+  held_waiting?: number | null;
 }
 
 const q = (s: unknown, cap: number) => JSON.stringify(inert(s, cap));
@@ -222,7 +224,19 @@ export function gaps(state: ReportState): string[] {
     out.push("The scan credentials are missing: no call can be scanned until the owner sets them.");
   }
   if (state.mode === "observe") out.push("Mode is observe: Sentrook scores and logs calls but never asks or blocks.");
-  if (!state.notice.target) out.push("No notice target: calls held on scheduled jobs are held silently.");
+  if (!state.notice.target) {
+    const held = state.held_waiting ?? 0;
+    if (held) {
+      out.push(
+        `${n(held, "held call")} ${held === 1 ? "is" : "are"} waiting and no notice target is set: the owner is told ` +
+          "only where a fallback reaches them. Set a notice target first, from the owner's own direct message to the agent.",
+      );
+    }
+    out.push(
+      "No notice target: a held call's notice goes only to its job's own delivery chat, or to the owner's direct " +
+        "message where the plugin can find one; otherwise the call is held silently.",
+    );
+  }
   if (state.unsent_grants) {
     const k = state.unsent_grants;
     out.push(

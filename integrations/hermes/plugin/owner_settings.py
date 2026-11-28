@@ -201,8 +201,9 @@ def notify_line(n: Notify, cmd: Cmd | None = None) -> str:
     c = cmd or _cmd
     if not n.platform:
         return (
-            "Notices not set: calls held on scheduled jobs and other runs nobody watches are held "
-            f"silently. In the chat where you want notices, send {c('notify here')}."
+            "Notices not set: a call held on a scheduled job or another run nobody watches is announced only in "
+            "the chat the job delivers to, or in your direct message where Hermes can address you; otherwise it is "
+            f"held silently. In a direct message with the agent, send {c('notify here')}."
         )
     where = (
         f"the {n.platform} chat where you sent {c('notify here')}"

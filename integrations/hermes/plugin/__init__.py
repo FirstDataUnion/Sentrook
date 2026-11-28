@@ -1328,6 +1328,7 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
         "unsent_grants": len(cfg.unsent_grants),
         "shadowed_skills": None,
         "traffic_log": cfg.traffic_log_enabled,
+        "held_waiting": hold.waiting(cfg.state_dir, now),
     }
     data = grants.load(cfg.state_dir)
     force = setup.in_force(cfg, data, now)
@@ -1492,9 +1493,10 @@ def _note_rerun(cfg: PluginConfig, pid: str, **what: Any) -> None:
 def _outcome_notice(cfg: PluginConfig, rec: dict[str, Any]) -> None:
     """Tells the owner how a run started for their answer went (`passes.outcome_text`), and logs it."""
     text = passes.outcome_text(rec, hold.OUTCOMES)
-    target, why = _notice_target(cfg)
+    job_id = rec.get("job_id")
+    target, why, via = _notice_route(cfg, job_id if isinstance(job_id, str) else None)
     if target:
-        _deliver(cfg, target, text)
+        _deliver(cfg, target, text, via=via)
     else:
         logger.warning("sentrook started run ended but sent no notice: %s", why)
     _state(cfg)[1].write(
@@ -1506,9 +1508,7 @@ def _outcome_notice(cfg: PluginConfig, rec: dict[str, Any]) -> None:
             "job_ref": rec.get("job_ref"),
             "passed": bool(rec.get("passed")),
             "held": list(rec.get("held") or []),
-            "notice": {"status": "queued", "target": hold.target_label(target)}
-            if target
-            else {"status": "unsent", "target": None, "reason": why},
+            "notice": _notice_record(target, why, via),
         }
     )
 
@@ -1525,20 +1525,22 @@ def on_session_end(**kw: Any) -> None:
         rec = passes.run_end(cfg.state_dir, passes.job_ref(job_id), key, started, now)
         if rec is not None:
             _outcome_notice(cfg, rec)
-        _end_lines(cfg, passes.job_ref(job_id), key, now)
+        _end_lines(cfg, passes.job_ref(job_id), key, now, job_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("on_session_end failed: %s", exc)
 
 
-def _end_lines(cfg: PluginConfig, ref: str | None, key: str | None, now: datetime) -> None:
+def _end_lines(
+    cfg: PluginConfig, ref: str | None, key: str | None, now: datetime, job_id: str | None = None
+) -> None:
     """Sends the run's end line (`hold.end_line_text`) for each group the run leads, and logs it."""
     groups = hold.end_of_run(cfg.state_dir, ref, key, now)
     if not groups:
         return
-    target, why = _notice_target(cfg)
+    target, why, via = _notice_route(cfg, job_id)
     for lead, members, can_all in groups:
         if target:
-            _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD, can_all))
+            _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD, can_all), via=via)
         else:
             logger.warning("sentrook run ended with held calls but sent no end line: %s", why)
         _state(cfg)[1].write(
@@ -1548,9 +1550,7 @@ def _end_lines(cfg: PluginConfig, ref: str | None, key: str | None, now: datetim
                 "lead": lead.get("id"),
                 "listed": [m.get("id") for m in members],
                 "job_ref": ref,
-                "notice": {"status": "queued", "target": hold.target_label(target)}
-                if target
-                else {"status": "unsent", "target": None, "reason": why},
+                "notice": _notice_record(target, why, via),
             }
         )
 
@@ -1715,12 +1715,23 @@ def _background_save_attended(
 
 
 def _deliver(
-    cfg: PluginConfig, target: str, text: str, on_fail: Callable[[], None] | None = None
+    cfg: PluginConfig,
+    target: str,
+    text: str,
+    on_fail: Callable[[], None] | None = None,
+    via: str = "",
 ) -> None:
     """Sends one of the owner's notices (`hold.deliver`); one that gets through clears a failed test notice to the
     same target (`owner_settings.notice_delivered`). A notice to a chat Hermes cannot address yet is tried again
-    (`notice_retry`)."""
+    (`notice_retry`). A notice to a fallback target (`via`, see `_notice_route`) ends with where it went and how to
+    set a target, and is not kept for a retry: the retry's last resort is the platform's home channel, which the job
+    did not choose."""
     state_dir = cfg.state_dir
+    if via:
+        hold.deliver(
+            _ctx, target, f"{text}\n\n{hold.fallback_note(via, commands.CMD)}", on_fail=on_fail
+        )
+        return
     hold.deliver(
         _ctx,
         target,
@@ -1729,6 +1740,37 @@ def _deliver(
         on_ok=lambda: owner_settings.notice_delivered(state_dir, target),
         state_dir=state_dir,
     )
+
+
+def _notice_route(cfg: PluginConfig, job_id: str | None) -> tuple[str | None, str, str]:
+    """(where a notice about a held call goes, its reason when nowhere, `via` when it is a fallback). The target the
+    owner set (`_notice_target`); when none is set, the chat cron job `job_id` delivers to, then the owner's direct
+    message where Hermes can address one (`hold.fallback_target`). Only when no target is set: a target that is set
+    but cannot be reached is reported, not replaced."""
+    target, why = _notice_target(cfg)
+    if target or why != hold.NO_OWNER_CHANNEL:
+        return target, why, ""
+    if hold.send_route(callable(getattr(_ctx, "dispatch_tool", None)))[0] is None:
+        return None, why, ""
+    try:
+        env = dict(os.environ)
+        job = run_now.read_job(run_now.home(env), job_id) if job_id else None
+        to, via = hold.fallback_target(job, env, hold.home_platforms(), hold.connected_platforms())
+    except Exception as exc:  # noqa: BLE001 - no fallback: unsent, as before
+        logger.warning("sentrook could not look for a fallback notice target: %s", exc)
+        return None, why, ""
+    return (to, "", via) if to else (None, why, "")
+
+
+def _notice_record(target: str | None, why: str, via: str) -> dict[str, Any]:
+    """What a record says about a notice sent to `_notice_route`'s target."""
+    if not target:
+        return {"status": "unsent", "target": None, "reason": why}
+    return {
+        "status": "queued",
+        "target": hold.target_label(target),
+        **({"via": via} if via else {}),
+    }
 
 
 def _notice_target(cfg: PluginConfig) -> tuple[str | None, str]:
@@ -1978,12 +2020,8 @@ def _hold(
     `source`: where a run that is not a cron job came from (`_source_of`); the hold's answers are bound to it."""
     now = datetime.now(UTC)
     planir = built["planir"]
-    target, why = _notice_target(cfg)
-    notice: dict[str, Any] = (
-        {"status": "queued", "target": hold.target_label(target)}
-        if target
-        else {"status": "unsent", "target": None, "reason": why}
-    )
+    target, why, via = _notice_route(cfg, job_id)
+    notice: dict[str, Any] = _notice_record(target, why, via)
     hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
     where = _where(built)
     match = match or {}
@@ -2016,7 +2054,9 @@ def _hold(
             for lead, members, can_all in hold.stale_groups(
                 cfg.state_dir, passes.job_ref(job_id), run_key, _run_identity(built)[2], now
             ):
-                _deliver(cfg, target, hold.end_line_text(lead, members, commands.CMD, can_all))
+                _deliver(
+                    cfg, target, hold.end_line_text(lead, members, commands.CMD, can_all), via=via
+                )
         except Exception as exc:  # noqa: BLE001 - those holds stay listed in status
             logger.warning("sentrook could not send an earlier run's end line: %s", exc)
     group: dict[str, Any] = {}
@@ -2072,7 +2112,7 @@ def _hold(
                 commands.CMD,
                 scope="job" if job_id else source["kind"] if source else None,
             )
-            _deliver(cfg, target, text)
+            _deliver(cfg, target, text, via=via)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
             logger.warning("sentrook held a call but could not build its notice: %s", exc)
             notice = {"status": "unsent", "target": None, "reason": "notice could not be built"}

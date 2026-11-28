@@ -6,6 +6,13 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- With no notice target set, a held call's notice (and a run's end line, and the line on how a started run went) no
+  longer goes nowhere: it goes to the chat the cron job delivers its own output to (`deliver` of `origin`,
+  `<platform>:<chat>` or `<platform>`), else to your Telegram direct message when `TELEGRAM_ALLOWED_USERS` lists only
+  you. It never goes to a home channel or group the job does not deliver to, and it ends with a line saying where it
+  went and how to set a target. While calls are held with no target set, `status` warns, `verify` fails its held-call
+  notices check and the setup report lists it as its first gap. The setup skill now asks for `/sentrook notify here`
+  right after checking the install.
 - `hermes sentrook verify` lists the channel bindings no message send in the traffic log would carry (a binding is sent
   only with a send that shows its channel, so one written another way relieves nothing), and the setup report counts
   them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
