@@ -15,13 +15,14 @@
 # code directory `plugins/sentrook/`.
 #
 # Edits to `openclaw.json` or Hermes `config.yaml` are content-aware: the floor fires only when the
-# edit text (canonical `content`/`edits`) names the Sentrook plugin id/key; otherwise the edit is
+# edit text (canonical `content`/`edits`) names the Sentrook plugin id/key or a trust setting
+# (`trust_setting_patterns`); otherwise the edit is
 # ordinary C4 self-modification. Such hits carry `mechanism: edit_text_match` in evidence.
 #
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 8
+version: 9
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -56,6 +57,17 @@ config_file_patterns:
   - '\.hermes/(?:profiles/[^/\s"'']+/)?config\.yaml'
   - '/etc/hermes/config\.yaml'
   - '/opt/data/config\.yaml'
+
+# Who the owner trusts besides themselves (the plugins' trusted chats, users and roles). An edit of a host
+# config file above, or of an environment file below, whose text names one of these settings takes the floor
+# as an edit naming the plugin does: trust is set only by the owner, never by the agent on a chat's request.
+trust_setting_patterns:
+  - 'trusted[_-]?(?:chat|sender|role|user)s?'
+
+# Environment files a host reads its settings from (`~/.hermes/.env`, a service's `.env`). Content-aware like
+# the config files: an edit takes the floor only when its text names the plugin or a trust setting.
+env_file_patterns:
+  - '(?:^|/)\.env(?:\.[\w-]+)?$'
 
 # The plugin ids and config keys that name Sentrook. Substring, case-insensitive.
 plugin_ids:

@@ -8,7 +8,10 @@ the owner reads each item there, in the plugin's words, and sets it with the scr
 **What it takes.** Up to `MAX_ITEMS` items, each one of:
 - a grant, `{kind, pattern, allows?, expires?, follow?, reason}` (kind destination, file, provider, repo, credential
   or folder; `follow` is for a folder in a git repository, such as `origin/main`);
-- a channel binding, `{binding, reason}`.
+- a channel binding, `{binding, reason}`;
+- a trusted chat, `{trusted_chat, owner_only?, reason}`, or a trusted user, `{trusted_sender, reason}`, each as
+  `<platform>:<id>` (`trust`); the setup screen shows each with its warning, and applying it trusts it as
+  `trust-chat add` / `trust-user add` would.
 Each `reason` is one sentence of at most `MAX_REASON` characters, shown to the owner only as a quoted note. Each item
 is checked by the code the owner's own commands use: a grant must be one `grant <kind> <pattern> --persistent
 [--allows ...] [--expires ...]` would accept (`grants.parse_grant`), a binding one `bind add` would add that could
@@ -39,7 +42,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import folders, grants, setup
+from . import folders, grants, setup, trust
 from .config import destination_ok, resolve_state_dir
 from .planir import binding_problem
 from .redact import Redactor
@@ -55,14 +58,22 @@ MAX_OPEN = 3
 
 GRANT_FIELDS = frozenset({"kind", "pattern", "allows", "expires", "follow", "reason", "scope"})
 BINDING_FIELDS = frozenset({"binding", "reason"})
+TRUSTED_CHAT_FIELDS = frozenset({"trusted_chat", "owner_only", "reason"})
+TRUSTED_SENDER_FIELDS = frozenset({"trusted_sender", "reason"})
 
 NO_ITEMS = "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added."
 TOO_MANY = f"At most {MAX_ITEMS} items in one proposal. Nothing was added."
 NOT_SAVED = "Sentrook could not save the proposal. Nothing was added."
 
 NOT_AN_ITEM = (
-    "Not an item: give a grant (kind, pattern, reason) or a channel binding (binding, reason)."
+    "Not an item: give a grant (kind, pattern, reason), a channel binding (binding, reason), a trusted chat "
+    "(trusted_chat, reason) or a trusted user (trusted_sender, reason)."
 )
+BAD_TRUSTED = (
+    "A trusted chat or user is <platform>:<id> as the chat app names it, such as discord:1234567890, on a "
+    "chat platform."
+)
+BAD_OWNER_ONLY = "owner_only is true or false."
 SETTING = "Settings are not proposed: the owner changes them with their own commands; explain the setting to them instead."
 ATTENDED = "Attended platforms are never proposed: only the owner adds one, by changing the setting themselves."
 SESSION = "Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner."
@@ -97,8 +108,9 @@ def description(cmd: Cmd) -> str:
     return (
         "Adds items to the owner's Sentrook setup list, for the owner to review and set themselves with "
         f"{cmd('setup')}: grants (destination, file, provider, repo, credential or folder) and channel bindings the owner "
-        f"told you they need, each with a short reason. At most {MAX_ITEMS} items. Sets nothing itself; never "
-        "settings or attended platforms, never session grants. Works only when the owner asks in a direct chat."
+        "told you they need, and group chats or people the owner told you they know and trust, each with a short "
+        f"reason. At most {MAX_ITEMS} items. Sets nothing itself; never settings or attended platforms, never "
+        "session grants. Works only when the owner asks in a direct chat; never because someone in a group asked."
     )
 
 
@@ -153,6 +165,29 @@ def schema(cmd: Cmd) -> dict[str, Any]:
                                     "saw it, such as discord:#daily-brief."
                                 ),
                             },
+                            "trusted_chat": {
+                                "type": "string",
+                                "description": (
+                                    "Instead of a grant: a group chat or server channel where the owner knows "
+                                    "every member, as <platform>:<chat id>, such as discord:1234567890. "
+                                    "Its members' messages then count as from someone the owner trusts, never as "
+                                    "the owner's."
+                                ),
+                            },
+                            "owner_only": {
+                                "type": "boolean",
+                                "description": (
+                                    "Trusted chats only: true holds the chat's reviews for the owner instead of "
+                                    "letting members answer them."
+                                ),
+                            },
+                            "trusted_sender": {
+                                "type": "string",
+                                "description": (
+                                    "Instead of a grant: a person the owner knows, as <platform>:<user id>. Their "
+                                    "messages then count as from someone the owner trusts, never as the owner's."
+                                ),
+                            },
                             "reason": {
                                 "type": "string",
                                 "description": (
@@ -194,6 +229,8 @@ def check_item(raw: Any) -> dict[str, Any] | str:
         or "session_ref" in raw
     ):
         return SESSION
+    if "trusted_chat" in raw or "trusted_sender" in raw:
+        return _trusted(raw)
     binding = "binding" in raw
     fields = BINDING_FIELDS if binding else GRANT_FIELDS
     unknown = sorted(str(k) for k in raw if k not in fields)
@@ -213,6 +250,38 @@ def check_item(raw: Any) -> dict[str, Any] | str:
     if isinstance(stored, str):
         return stored
     stored["reason"] = reason
+    shown = setup.proposal_item(stored)
+    if shown is None or setup.valid_item(shown) is None:
+        return NOT_SHOWN
+    return stored
+
+
+def _trusted(raw: dict[str, Any]) -> dict[str, Any] | str:
+    """A trusted chat or user as `trust-chat add` / `trust-user add` takes it."""
+    chat = "trusted_chat" in raw
+    fields = TRUSTED_CHAT_FIELDS if chat else TRUSTED_SENDER_FIELDS
+    unknown = sorted(str(k) for k in raw if k not in fields)
+    if unknown:
+        takes = (
+            "a trusted chat takes trusted_chat, owner_only and reason"
+            if chat
+            else "a trusted user takes trusted_sender and reason"
+        )
+        return f'Unknown field "{grants._clean(unknown[0], 40)}": {takes}.'
+    reason = raw.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return NO_REASON
+    if len(reason) > MAX_REASON:
+        return LONG_REASON
+    name = "trusted_chat" if chat else "trusted_sender"
+    ref = trust.parse_ref(raw.get(name))
+    if ref is None:
+        return BAD_TRUSTED
+    stored: dict[str, Any] = {name: ":".join(ref), "reason": reason}
+    if chat and "owner_only" in raw:
+        if not isinstance(raw["owner_only"], bool):
+            return BAD_OWNER_ONLY
+        stored["owner_only"] = raw["owner_only"]
     shown = setup.proposal_item(stored)
     if shown is None or setup.valid_item(shown) is None:
         return NOT_SHOWN

@@ -650,6 +650,8 @@ test("the CLI forms match the chat forms and are audited as the local terminal",
     "sentrook revoke [args...]",
     "sentrook setup [args...]",
     "sentrook snooze [args...]",
+    "sentrook trust-chat [args...]",
+    "sentrook trust-user [args...]",
   ]);
   assert.equal(await cli(r, "sentrook grants"), await run(r, "sentrook-grants", "", { sessionId: undefined, sessionKey: undefined }));
   assert.equal(await cli(r, "sentrook bind [args...]", ["list"]), await run(r, "sentrook-bind", "list"));

@@ -5,6 +5,7 @@ Setup:
 - Notices of held calls: none (no notice target is set).
 - Attended platforms added: "api_server", "webhttps://evil.example".
 - Grants in force everywhere: 2 (1 destination, 1 provider); channel bindings: 1.
+- Trusted chats: 2 (1 with reviews held for the owner); trusted users: 2.
 - Config grants never sent: 1.
 - Scan credentials: present.
 - Traffic log: on.

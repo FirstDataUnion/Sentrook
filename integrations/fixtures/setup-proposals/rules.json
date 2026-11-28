@@ -1,5 +1,5 @@
 {
-  "_comment": "What the agent's setup proposal tool takes, shared by both plugins. `items`: each item as the agent sent it, and either what is stored in the proposals file (`stored`) or the error the agent gets back for it (`error`). A grant must be one `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` would accept, a binding one `bind add` would add that could ever apply, and either one the setup screen can show; session grants, settings and attended platforms are refused, and a destination may use a wildcard only as `*.` and one registrable domain. `calls`: the tool's whole answer to a call's arguments (with {setup} replaced by /sentrook setup on Hermes and /sentrook-setup on OpenClaw) and how many items it stores; items sent as JSON text read as the list it holds. `store`: the proposals file before and after a proposal is stored at `now` from `session_ref`, with ids drawn in the order `ids` gives: at most three open, a new one replacing the oldest, expired ones dropped. `unchecked_warning`: the line the setup screen shows on each item of a proposal made while the chat had read content no scan had seen yet.",
+  "_comment": "What the agent's setup proposal tool takes, shared by both plugins. `items`: each item as the agent sent it, and either what is stored in the proposals file (`stored`) or the error the agent gets back for it (`error`). A grant must be one `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` would accept, a binding one `bind add` would add that could ever apply, and either one the setup screen can show; session grants, settings and attended platforms are refused, and a destination may use a wildcard only as `*.` and one registrable domain. `calls`: the tool's whole answer to a call's arguments (with {setup} replaced by /sentrook setup on Hermes and /sentrook-setup on OpenClaw) and how many items it stores; items sent as JSON text read as the list it holds. `store`: the proposals file before and after a proposal is stored at `now` from `session_ref`, with ids drawn in the order `ids` gives: at most three open, a new one replacing the oldest, expired ones dropped. `unchecked_warning`: the line the setup screen shows on each item of a proposal made while the chat had read content no scan had seen yet. A trusted chat (`trusted_chat`, optional `owner_only`) or trusted user (`trusted_sender`) is one `trust-chat add` / `trust-user add` would accept: `<platform>:<id>` on a chat platform, the platform in lower case.",
   "refusal": "Setup needs the owner in a direct chat.",
   "items": [
     {
@@ -113,7 +113,7 @@
     },
     {
       "item": "api.example.com",
-      "error": "Not an item: give a grant (kind, pattern, reason) or a channel binding (binding, reason)."
+      "error": "Not an item: give a grant (kind, pattern, reason), a channel binding (binding, reason), a trusted chat (trusted_chat, reason) or a trusted user (trusted_sender, reason)."
     },
     {
       "item": {
@@ -505,6 +505,89 @@
         "pattern": "EXAMPLE_API_KEY@*.example.com",
         "reason": "Credential wildcards are the grant command's"
       }
+    },
+    {
+      "item": {
+        "trusted_chat": "Discord:1234567890",
+        "reason": "The team server's #general, everyone there is known"
+      },
+      "stored": {
+        "trusted_chat": "discord:1234567890",
+        "reason": "The team server's #general, everyone there is known"
+      }
+    },
+    {
+      "item": {
+        "trusted_chat": "discord:1234567890",
+        "owner_only": true,
+        "reason": "Members known, owner answers reviews"
+      },
+      "stored": {
+        "trusted_chat": "discord:1234567890",
+        "reason": "Members known, owner answers reviews",
+        "owner_only": true
+      }
+    },
+    {
+      "item": {
+        "trusted_sender": "slack:U0123ABCD",
+        "reason": "A colleague the owner works with"
+      },
+      "stored": {
+        "trusted_sender": "slack:U0123ABCD",
+        "reason": "A colleague the owner works with"
+      }
+    },
+    {
+      "item": {
+        "trusted_chat": "cron:1",
+        "reason": "Not a chat"
+      },
+      "error": "A trusted chat or user is <platform>:<id> as the chat app names it, such as discord:1234567890, on a chat platform."
+    },
+    {
+      "item": {
+        "trusted_chat": "discord",
+        "reason": "No id"
+      },
+      "error": "A trusted chat or user is <platform>:<id> as the chat app names it, such as discord:1234567890, on a chat platform."
+    },
+    {
+      "item": {
+        "trusted_chat": "discord:has space",
+        "reason": "Two words"
+      },
+      "error": "A trusted chat or user is <platform>:<id> as the chat app names it, such as discord:1234567890, on a chat platform."
+    },
+    {
+      "item": {
+        "trusted_chat": "discord:1",
+        "owner_only": "yes",
+        "reason": "Not a boolean"
+      },
+      "error": "owner_only is true or false."
+    },
+    {
+      "item": {
+        "trusted_sender": "discord:1",
+        "owner_only": true,
+        "reason": "Only chats take it"
+      },
+      "error": "Unknown field \"owner_only\": a trusted user takes trusted_sender and reason."
+    },
+    {
+      "item": {
+        "trusted_chat": "discord:1",
+        "expires": "7d",
+        "reason": "Trust does not expire"
+      },
+      "error": "Unknown field \"expires\": a trusted chat takes trusted_chat, owner_only and reason."
+    },
+    {
+      "item": {
+        "trusted_chat": "discord:1"
+      },
+      "error": "Each item needs a reason: one sentence on why the owner would want it."
     }
   ],
   "calls": [

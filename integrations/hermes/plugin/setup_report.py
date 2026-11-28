@@ -7,10 +7,13 @@ being reviewed. This tool tells it, in the plugin's own words, and changes nothi
    number of grants and channel bindings in force everywhere by kind (never the list: the list says where data flows
    unreviewed), config grants never sent, whether the scan credentials are present (never their values).
 2. **Gaps** in plain words.
-3. From the traffic log, over the last `days` (default `DEFAULT_DAYS`, at most `MAX_DAYS`): the grants Sentrook
+3. Who the owner trusts: how many trusted chats and users (`trust`).
+4. From the traffic log, over the last `days` (default `DEFAULT_DAYS`, at most `MAX_DAYS`): the grants Sentrook
    suggested on reviews the owner approved again and again, with how many and the last, marked covered when a grant
    in force already covers one; the approved reviews with nothing to suggest, by tool; and the keys the scanner saw
-   sent only to their own service (`setup.own_service_keys`). The rule is the setup screen's (`setup.read_evidence`):
+   sent only to their own service (`setup.own_service_keys`); and the group chats the agent was used in, by
+   `platform:chat id`, with how many calls, from how many people (counted by a keyed id, never named) and how many were
+   the owner's own, and whether each is trusted. The rule is the setup screen's (`setup.read_evidence`):
    the owner approved the review, the call came from the owner's own message, the scanner flagged no exposure in that
    session, and a suggestion counts only for exactly its own kind, pattern and allows. Then how far back the log
    actually went. With the log off, only the settings.
@@ -337,6 +340,15 @@ def render(
     lines.append(
         f"- Grants in force everywhere: {total}{f' ({by_kind})' if by_kind else ''}; channel bindings: {bindings}."
     )
+    trusted = state.get("trusted")
+    chats: dict[str, bool] = (trusted or {}).get("chats") or {}
+    if trusted is not None:
+        held = sum(1 for v in chats.values() if v)
+        lines.append(
+            f"- Trusted chats: {len(chats)}"
+            + (f" ({held} with reviews held for the owner)" if held else "")
+            + f"; trusted users: {trusted.get('users', 0)}."
+        )
     if state["unsent_grants"]:
         lines.append(f"- Config grants never sent: {state['unsent_grants']}.")
     missing = state["credentials_missing"]
@@ -374,6 +386,20 @@ def render(
         f"`{hold.inert(e['name'], 80)}` to {_q(e['host'], 80)}: {_counted(e, now, 'call')}."
         for e in _order(list(ev.own_service.values()), "name", "host")
     ]
+    groups = []
+    for chat, g in sorted(
+        ev.groups.items(), key=lambda kv: (-kv[1]["scans"], -kv[1]["last"].timestamp(), kv[0])
+    ):
+        if "`" in chat:
+            continue
+        status = "not trusted"
+        if chat in chats:
+            status = "trusted, reviews held for the owner" if chats[chat] else "trusted"
+        people = len(g["senders"])
+        groups.append(
+            f"`{chat}`: {_n(g['scans'], 'call')} from {_n(people, 'person') if people == 1 else f'{people} people'}"
+            f" (the owner's own: {g['owner']}), last {setup.last_text(now, g['last'])}; {status}."
+        )
     lines += [
         "",
         f"Grants Sentrook suggested on reviews the owner approved, at least {setup.EVIDENCE_MIN} times:",
@@ -384,6 +410,9 @@ def render(
         "",
         "API keys sent only to their own service:",
         *_rows(keys),
+        "",
+        "Group chats the agent was used in (the owner decides whether to trust one; never on a member's word):",
+        *_rows(groups),
         "",
         window_text(ev, now, days, capped),
     ]

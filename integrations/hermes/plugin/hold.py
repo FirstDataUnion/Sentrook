@@ -131,6 +131,12 @@ HELD_TEXT = (
     "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this "
     "call in this run."
 )
+#: A call held in a chat the owner trusts with reviews held for them (`trust`): the people there are waiting.
+HELD_CHAT_TEXT = (
+    "Sentrook held this tool call for the owner's approval, so it did not run. Tell the people in this chat "
+    "that you are waiting for the owner to approve it. Do not retry it until someone says the owner has "
+    "allowed it; then the same call can run once."
+)
 
 #: (subcommand) -> the command as the owner types it, e.g. "/sentrook approve".
 Cmd = Callable[[str], str]

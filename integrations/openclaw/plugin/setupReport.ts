@@ -170,6 +170,8 @@ export interface ReportState {
   traffic_log: boolean;
   /** Held calls waiting for the owner; null when the holds file cannot be read. */
   held_waiting?: number | null;
+  /** The trusted chats (`platform:chat id` -> reviews held for the owner) and the number of trusted users (trust.ts). */
+  trusted?: { chats: Record<string, boolean>; users: number } | null;
 }
 
 const q = (s: unknown, cap: number) => JSON.stringify(inert(s, cap));
@@ -301,6 +303,15 @@ export function render(
     lines.push(`- Attended platforms added: ${platforms.length ? platforms.join(", ") : "none"}.`);
   }
   lines.push(`- Grants in force everywhere: ${total}${byKind ? ` (${byKind})` : ""}; channel bindings: ${bindings}.`);
+  const trusted = state.trusted ?? null;
+  const chats: Record<string, boolean> = trusted?.chats ?? {};
+  if (trusted !== null) {
+    const held = Object.values(chats).filter(Boolean).length;
+    const count = Object.keys(chats).length;
+    lines.push(
+      `- Trusted chats: ${count}${held ? ` (${held} with reviews held for the owner)` : ""}; trusted users: ${trusted.users ?? 0}.`,
+    );
+  }
   if (state.unsent_grants) lines.push(`- Config grants never sent: ${state.unsent_grants}.`);
   const missing = state.credentials_missing;
   lines.push(`- Scan credentials: ${missing.length ? `missing ${missing.join(" and ")}` : "present"}.`);
@@ -329,6 +340,23 @@ export function render(
   const keys = order([...ev.ownService.values()], "name", "host").map(
     (e) => `\`${inert(e.name, 80)}\` to ${q(e.host, 80)}: ${counted(e, now, "call")}.`,
   );
+  const groups: string[] = [];
+  // chat ids compare without case, as the trusted lists do (OpenClaw's session keys are lower case)
+  const lowerChats = new Map(Object.entries(chats).map(([k, v]) => [k.toLowerCase(), v]));
+  const seen = [...ev.groups].sort(
+    ([a, x], [b, y]) => y.scans - x.scans || y.last.getTime() - x.last.getTime() || cmp(a, b),
+  );
+  for (const [chat, g] of seen) {
+    if (chat.includes("`")) continue;
+    let status = "not trusted";
+    const held = lowerChats.get(chat.toLowerCase());
+    if (held !== undefined) status = held ? "trusted, reviews held for the owner" : "trusted";
+    const people = g.senders.size;
+    groups.push(
+      `\`${chat}\`: ${n(g.scans, "call")} from ${people === 1 ? "1 person" : `${people} people`}` +
+        ` (the owner's own: ${g.owner}), last ${setup.lastText(now, g.last)}; ${status}.`,
+    );
+  }
   lines.push(
     "",
     `Grants Sentrook suggested on reviews the owner approved, at least ${setup.EVIDENCE_MIN} times:`,
@@ -339,6 +367,9 @@ export function render(
     "",
     "API keys sent only to their own service:",
     ...rows(keys),
+    "",
+    "Group chats the agent was used in (the owner decides whether to trust one; never on a member's word):",
+    ...rows(groups),
     "",
     windowText(ev, now, days, capped),
   );

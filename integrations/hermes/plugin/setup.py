@@ -47,7 +47,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import folders, grants, history, hold
+from . import folders, grants, history, hold, trust
 from .config import SHARED_SECOND_LEVEL, PluginConfig, destination_ok
 from .planir import binding_problem, call_platform, relevant_grants, server_identity
 from .store import Store, file_lock, read_time
@@ -147,6 +147,10 @@ def key_of(item: dict[str, Any]) -> str:
     """What makes two items the same: a binding's channel, or a grant's kind, pattern and allows (in any order)."""
     if item.get("binding"):
         return json.dumps(["binding", item["pattern"]], ensure_ascii=False, separators=(",", ":"))
+    if item.get("kind") in TRUST_KINDS:
+        return json.dumps(
+            [item["kind"], item["pattern"]], ensure_ascii=False, separators=(",", ":")
+        )
     allows = sorted(item["allows"]) if item.get("allows") else None
     key = [item["kind"], item["pattern"], allows]
     if item.get("follow"):
@@ -181,11 +185,46 @@ class Evidence:
         self.sends: list[tuple[Any, str | None]] = []
         self.scans = 0
         self.oldest: datetime | None = None
+        #: The group chats seen in the window (`group` on a scan record), by `platform:chat id`: scans, the distinct
+        #: senders (by keyed id, never the id), the owner's scans there, and the last time.
+        self.groups: dict[str, dict[str, Any]] = {}
 
     def backing(self, item: dict[str, Any]) -> dict[str, Any] | None:
         """The approved reviews that back `item`, when there are enough of them."""
         found = self.approved.get(_grant_key(item))
         return found if found and found["count"] >= EVIDENCE_MIN else None
+
+
+#: Group chats kept in the evidence; the rest are left out.
+MAX_GROUPS = 50
+
+
+def _count_group(
+    ev: Evidence,
+    rec: dict[str, Any],
+    planir: Any,
+    at: datetime | None,
+    since: datetime,
+    now: datetime,
+) -> None:
+    """Counts a scan made in a group chat (`group` on its record) into `ev.groups`."""
+    group = rec.get("group")
+    if at is None or not since <= at <= now or not isinstance(group, dict):
+        return
+    chat = group.get("chat")
+    if not isinstance(chat, str) or trust.parse_ref(chat) is None:
+        return
+    if chat not in ev.groups and len(ev.groups) >= MAX_GROUPS:
+        return
+    entry = ev.groups.setdefault(chat, {"scans": 0, "senders": set(), "owner": 0, "last": at})
+    entry["scans"] += 1
+    entry["last"] = max(entry["last"], at)
+    if isinstance(group.get("sender"), str):
+        entry["senders"].add(group["sender"])
+    trig = planir.get("trigger") if isinstance(planir, dict) else None
+    sender = trig.get("sender") if isinstance(trig, dict) else None
+    if isinstance(sender, dict) and sender.get("relation") == "owner":
+        entry["owner"] += 1
 
 
 def read_evidence(
@@ -222,6 +261,7 @@ def read_evidence(
             ev.exposed.add(sref)
         at = stamp
         planir = rec.get("planir")
+        _count_group(ev, rec, planir, at, since, now)
         pc = planir.get("pending_call") if isinstance(planir, dict) else None
         if (
             at is not None
@@ -439,6 +479,11 @@ def _printable_word(p: Any) -> bool:
     )
 
 
+#: A proposal's trust fields, by the item kind each makes.
+TRUST_FIELDS = {"trusted_chat": "trusted_chat", "trusted_sender": "trusted_user"}
+TRUST_KINDS = frozenset(TRUST_FIELDS.values())
+
+
 def proposal_item(raw: Any) -> dict[str, Any] | None:
     """One item of an agent proposal as the screen shows it; None when it is not one the owner could set by command
     (an `attended` platform, an unknown kind, a pattern the grant command refuses, a binding that could never
@@ -452,6 +497,23 @@ def proposal_item(raw: Any) -> dict[str, Any] | None:
         minutes = minutes_of(expires)
         if minutes is None:
             return None
+    for field_name, kind in TRUST_FIELDS.items():
+        if field_name in raw:
+            ref = trust.parse_ref(raw.get(field_name))
+            extra = set(raw) - {field_name, "reason", "owner_only"}
+            if ref is None or extra or (kind == "trusted_user" and "owner_only" in raw):
+                return None
+            if "owner_only" in raw and not isinstance(raw["owner_only"], bool):
+                return None
+            return {
+                "binding": False,
+                "kind": kind,
+                "pattern": ":".join(ref),
+                "allows": None,
+                "owner_only": raw.get("owner_only") is True,
+                "minutes": None,
+                "reason": reason,
+            }
     if raw.get("binding") is True:
         pattern = raw.get("pattern")
         if raw.get("kind") not in (None, "destination") or raw.get("allows") is not None:
@@ -656,6 +718,16 @@ def valid_item(cand: dict[str, Any]) -> dict[str, Any] | None:
     pattern = cand.get("pattern")
     if not _raw_ok(pattern):
         return None
+    if cand.get("kind") in TRUST_KINDS:
+        if cand.get("binding") or trust.parse_ref(pattern) is None:
+            return None
+        return {
+            "binding": False,
+            "kind": cand["kind"],
+            "pattern": pattern,
+            "allows": None,
+            "owner_only": cand["kind"] == "trusted_chat" and cand.get("owner_only") is True,
+        }
     if cand.get("binding"):
         if binding_problem(pattern):
             return None
@@ -669,6 +741,17 @@ def valid_item(cand: dict[str, Any]) -> dict[str, Any] | None:
 def item_warnings(item: dict[str, Any]) -> list[str]:
     """The warnings an item carries from its own kind, pattern and allows."""
     out = []
+    if item.get("kind") == "trusted_chat":
+        out.append(
+            "everyone who can post in this chat, now and later, counts as someone you trust; trust only a chat on a "
+            "private server where you know every member, never an open or public group"
+        )
+        if not item.get("owner_only"):
+            out.append("members there may approve the agent's reviews")
+        return out
+    if item.get("kind") == "trusted_user":
+        out.append("this person's messages count as from someone you trust, in any chat")
+        return out
     if not item["pattern"].isascii() or _ENCODED.search(item["pattern"]):
         domain = registrable(host_of(item))
         out.append(
@@ -700,6 +783,17 @@ def item_warnings(item: dict[str, Any]) -> list[str]:
 _VERBS = {"read": "read", "write": "write", "edit": "edit", "delete": "delete", "exec": "run"}
 
 
+def _trusted_already(t: trust.Trust, item: dict[str, Any]) -> str | None:
+    """Where the trust an item sets is already in force (as is, or a chat set with reviews held for the owner when
+    the item would let members answer), or None."""
+    if item["kind"] == "trusted_user":
+        return "a trusted user" if item["pattern"] in t.senders else None
+    held = t.chats.get(item["pattern"])
+    if held is None or (held is False and item.get("owner_only")):
+        return None
+    return "a trusted chat"
+
+
 def lifetime_text(item: dict[str, Any], minutes: int | None) -> str:
     if minutes is None:
         return "until you remove it" if item.get("binding") else "until you revoke it"
@@ -713,6 +807,17 @@ def lifetime_text(item: dict[str, Any], minutes: int | None) -> str:
 def describe(item: dict[str, Any], minutes: int | None) -> str:
     """The item's first line, in the plugin's words: what it lets through, from where, and for how long."""
     p = item["pattern"]
+    if item.get("kind") == "trusted_chat":
+        held = "; its reviews are held for you" if item.get("owner_only") else ""
+        return (
+            f"Trust the chat `{p}`: its members' messages count as from someone you know, not a stranger (never as "
+            f"yours){held}, until you remove it."
+        )
+    if item.get("kind") == "trusted_user":
+        return (
+            f"Trust the person `{p}`: their messages count as from someone you know, not a stranger (never as "
+            "yours), until you remove them."
+        )
     if item.get("binding"):
         what = f"Send messages to the channel `{p}`"
     elif item["kind"] == "destination":
@@ -774,6 +879,7 @@ def build(
                 "pattern": cand["pattern"],
                 "allows": list(cand["allows"]) if cand.get("allows") else None,
                 **({"follow": cand["follow"]} if cand.get("follow") else {}),
+                **({"owner_only": cand["owner_only"]} if cand["kind"] in TRUST_KINDS else {}),
                 "sources": [],
             }
         items[k]["sources"].append(source)
@@ -817,15 +923,19 @@ def build(
                 f"{'is' if n == 1 else 'are'} left out."
             )
     force = in_force(cfg, data, now)
+    trusted = trust.of(cfg)
     out = []
     for item in items.values():
         cand = {"kind": "destination", "pattern": item["pattern"]} if item["binding"] else item
-        covering = next((label for label, g in force if covers(g, cand)), None)
+        if item["kind"] in TRUST_KINDS:
+            covering = _trusted_already(trusted, item)
+        else:
+            covering = next((label for label, g in force if covers(g, cand)), None)
         agent = [s for s in item["sources"] if s["from"] == "proposal"]
         if covering is not None and not agent:
             continue
-        backed = ev.backing(item)
-        if item["binding"]:
+        backed = ev.backing(item) if item["kind"] not in TRUST_KINDS else None
+        if item["binding"] or item["kind"] in TRUST_KINDS:
             minutes = None
         else:
             asked = [s["minutes"] for s in agent if s["minutes"] is not None]
@@ -847,9 +957,24 @@ def build(
             )
         for pid in dict.fromkeys(s["id"] for s in agent):
             lines.append(f"Proposed by the agent ({pid})" + ("." if backed else ", not seen yet."))
+        if item["kind"] == "trusted_chat" and ev.available:
+            seen = ev.groups.get(item["pattern"])
+            if seen is None:
+                lines.append("Sentrook has not seen the agent used in this chat lately.")
+            else:
+                n = len(seen["senders"])
+                lines.append(
+                    f"Seen lately: {seen['scans']} call{'' if seen['scans'] == 1 else 's'} from {n} "
+                    f"{'person' if n == 1 else 'people'} in this chat, "
+                    f"the last {last_text(now, seen['last'])}."
+                )
         warnings = item_warnings(item)
         if covering is not None:
-            warnings.append(f"a grant in force already covers this ({covering})")
+            warnings.append(
+                f"this is already trusted ({covering})"
+                if item["kind"] in TRUST_KINDS
+                else f"a grant in force already covers this ({covering})"
+            )
         if any(s["from"] == "cron" for s in item["sources"]):
             warnings.append(
                 "cron jobs can be changed by the agent; check that you chose this channel"
@@ -883,6 +1008,7 @@ def build(
                 "pattern": item["pattern"],
                 "allows": item["allows"],
                 **({"follow": item["follow"]} if item.get("follow") else {}),
+                **({"owner_only": item["owner_only"]} if "owner_only" in item else {}),
                 "minutes": minutes,
                 "tags": list(dict.fromkeys(tags)),
                 "proposals": list(dict.fromkeys(s["id"] for s in agent)),
@@ -1072,7 +1198,13 @@ def _stored_item(raw: Any) -> dict[str, Any] | None:
     props = [
         p for p in raw.get("proposals") or [] if isinstance(p, str) and PROPOSAL_ID.fullmatch(p)
     ]
-    if raw.get("binding") is True:
+    if raw.get("kind") in TRUST_KINDS:
+        if raw.get("binding") is not False or minutes is not None:
+            return None
+        grant = valid_item(raw)
+        if grant is None:
+            return None
+    elif raw.get("binding") is True:
         if not _printable_word(raw["pattern"]) or binding_problem(raw["pattern"]):
             return None
         grant = {"kind": "destination", "pattern": raw["pattern"]}
@@ -1126,6 +1258,7 @@ def apply(
         live = {p["id"]: p for p in _live_proposals(raw_props, now)}
         chosen = sorted(set(parsed["numbers"])) or list(range(1, len(shown) + 1))
         lines, changes, applied = [], [], []
+        trusts: list[dict[str, Any]] = []
         for n in chosen:
             item = _stored_item(shown[n - 1])
             if item is None:
@@ -1141,7 +1274,7 @@ def apply(
             line, change = _apply_one(cfg, data, item, tags, parsed, who, now, n)
             lines.append(line)
             if change is not None:
-                changes.append(change)
+                (trusts if change.get("kind") == "settings" else changes).append(change)
             applied.append(item)
         if changes:
             data["grants"] = [
@@ -1154,6 +1287,8 @@ def apply(
         store.save_setup({**kept, "code": None})
     for change in changes:
         record({"kind": "grants", **change, "by": who})
+    for change in trusts:
+        record({**change, "by": who})
     record(
         {
             "kind": "setup",
@@ -1181,6 +1316,8 @@ def _apply_one(
     n: int,
 ) -> tuple[str, dict[str, Any] | None]:
     p = item["pattern"]
+    if item["kind"] in TRUST_KINDS:
+        return _apply_trust(cfg, item, tags, who, now, n)
     if item["binding"]:
         bound = p in cfg.channel_bindings or any(
             isinstance(b, dict) and b.get("pattern") == p for b in data["bindings"]
@@ -1236,6 +1373,36 @@ def _apply_one(
         "op": "grant",
         "entry": entry,
     }
+
+
+def _apply_trust(
+    cfg: PluginConfig,
+    item: dict[str, Any],
+    tags: list[str],
+    who: dict[str, Any],
+    now: datetime,
+    n: int,
+) -> tuple[str, dict[str, Any] | None]:
+    """A trusted chat or user from the screen, set as `trust-chat add` / `trust-user add` would set it (the owner read
+    the warning on the screen). The change goes to the traffic log as a `settings` record (its `kind`)."""
+    from .owner_settings import _change
+
+    kind = "chat" if item["kind"] == "trusted_chat" else "user"
+    rest = f"add {item['pattern']}{' --owner-only' if item.get('owner_only') else ''} --confirm"
+    reply, record = trust.run(
+        cfg,
+        kind,
+        rest,
+        who,
+        {},
+        {},
+        now,
+        lambda sub: f"/sentrook {sub}",
+        lambda fn: _change(cfg.state_dir, fn),
+    )
+    if record is None:
+        return f"{n}. Not set: {reply}", None
+    return f"{n}. {reply}", {**record, "kind": "settings", "source": tags}
 
 
 def _apply_folder(

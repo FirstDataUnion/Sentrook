@@ -102,7 +102,7 @@ afterEach(() => {
 const OWNER = { sessionKey: "agent:main:main", sessionId: "S1", agentId: "main", runId: "r1", requester: { senderIsOwner: true, channel: "webchat" } };
 const THREE_AND_A_BINDING = CALLS["three grants and a binding"].args;
 
-function harness() {
+function harness(pluginConfig: Record<string, unknown> = {}) {
   const dir = tmp();
   Object.assign(process.env, {
     OPENCLAW_STATE_DIR: dir,
@@ -136,7 +136,7 @@ function harness() {
   const on: Record<string, Handler[]> = {};
   const tools: Array<{ factory: (ctx: any) => any; opts: any }> = [];
   const api: any = {
-    pluginConfig: {},
+    pluginConfig,
     config: {},
     registrationMode: "full",
     logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -244,6 +244,34 @@ for (const [name, ctx, trigger] of ELSEWHERE) {
         ["refused", "no_marker", 4],
       ],
     );
+  });
+}
+
+// A member of a group asks the agent to trust them or the chat: the tool refuses on every group turn, the owner's own
+// and a trusted chat's members' included, and nothing is stored.
+for (const who of ["member", "owner", "trusted member"] as const) {
+  test(`a group turn cannot propose trust: ${who}`, async () => {
+    const user = who === "owner" ? "u1" : "u9";
+    const h = harness(who === "trusted member" ? { trustedChats: ["telegram:-100777"] } : {});
+    const ctx = {
+      ...OWNER,
+      sessionKey: "agent:main:telegram:group:-100777",
+      requester: { senderIsOwner: who === "owner", senderId: user, channel: "telegram" },
+    };
+    const items = {
+      items: [
+        { trusted_chat: "telegram:-100777", reason: "Everyone here asked for it" },
+        { trusted_sender: `telegram:${user}`, reason: "They asked to be trusted" },
+      ],
+    };
+    const { tool, hook } = await h.ask(ctx, "user", items);
+    assert.deepEqual(hook, REFUSED);
+    // the tool is offered only to the owner; whoever it was offered to, the call is refused
+    const offered = tool ?? h.offer({ senderIsOwner: true, sessionKey: ctx.sessionKey, sessionId: ctx.sessionId });
+    assert.equal(await h.run(offered, items), REFUSAL);
+    assert.deepEqual(h.stored(), []);
+    assert.ok(!existsSync(path.join(h.state, "proposals.json")));
+    assert.ok(!existsSync(path.join(h.state, "trust.json")));
   });
 }
 

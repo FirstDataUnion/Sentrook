@@ -149,6 +149,13 @@ export interface SnoozeFile {
   [key: string]: unknown;
 }
 
+export interface TrustFile {
+  version?: number;
+  trusted_chats: unknown[];
+  trusted_senders: unknown[];
+  [key: string]: unknown;
+}
+
 export interface ProposalsFile {
   version: number;
   proposals: unknown[];
@@ -393,6 +400,27 @@ export class Store {
 
   saveSnooze(value: SnoozeFile): void {
     this.writeJson(path.join(this.dir, "snooze.json"), value);
+  }
+
+  /**
+   * `trust.json`, the trusted chats and users the owner set by command (trust.ts), empty when absent; null when it
+   * exists but cannot be read.
+   */
+  loadTrust(): TrustFile | null {
+    const file = path.join(this.dir, "trust.json");
+    if (!existsSync(file)) return { version: 1, trusted_chats: [], trusted_senders: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const t = data as Record<string, unknown>;
+    for (const k of ["trusted_chats", "trusted_senders"]) {
+      if (!Object.hasOwn(t, k)) t[k] = [];
+      if (!Array.isArray(t[k])) return null;
+    }
+    return t as TrustFile;
+  }
+
+  saveTrust(value: TrustFile): void {
+    this.writeJson(path.join(this.dir, "trust.json"), value);
   }
 
   /** `holds.json`, empty when absent; null when it exists but cannot be read. */

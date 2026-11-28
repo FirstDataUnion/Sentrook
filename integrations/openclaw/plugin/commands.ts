@@ -7,7 +7,8 @@
  * `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
  * grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`,
  * the same as `allow`) answer a call held on an unattended run, `dismiss` takes held calls off the list unanswered, `passes` lists and revokes what those answers set
- * (passes.ts), `notify` says where the notice of a held call goes (see `hold.ts`) and `setup` shows what would stop
+ * (passes.ts), `notify` says where the notice of a held call goes (see `hold.ts`), `trust-chat` and `trust-user` list
+ * and change the chats and people whose messages count as trusted, never as the owner's (trust.ts), and `setup` shows what would stop
  * Sentrook asking about routine work and sets it with the screen's code (see `setup.ts`), so only the owner may run
  * them. `snooze` and a session `grant` cover the session the command was sent from; the
  * command line has none, so there a snooze needs `--all` and a session grant `--session`. OpenClaw tells a
@@ -44,6 +45,7 @@ import * as setup from "./setup.ts";
 import * as snooze from "./snooze.ts";
 import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
 import { Store } from "./store.ts";
+import * as trust from "./trust.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
 export interface OwnerRun {
@@ -262,6 +264,25 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
         "notify",
       ),
   },
+  "trust-chat": {
+    command: "sentrook-trust-chat",
+    args: "add|remove|list [<platform>:<chat id>] [--owner-only] [--confirm]",
+    description:
+      "List, add or remove a group chat whose members you all know: their messages count as from someone you trust, " +
+      "not a stranger (never as yours); its reviews are answered as OpenClaw allows there unless added with " +
+      "--owner-only, which holds them for you; adding needs --confirm",
+    cliRest: true,
+    run: (ctx, rest) => trustText(ctx, "chat", rest),
+  },
+  "trust-user": {
+    command: "sentrook-trust-user",
+    args: "add|remove|list [<platform>:<user id>] [--confirm]",
+    description:
+      "List, add or remove a person you know: their messages count as from someone you trust, not a stranger " +
+      "(never as yours); adding needs --confirm",
+    cliRest: true,
+    run: (ctx, rest) => trustText(ctx, "user", rest),
+  },
   setup: {
     command: "sentrook-setup",
     args: "[apply <code> [1,3] | discard <id>]",
@@ -281,6 +302,16 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     },
   },
 };
+
+/** `trust-chat` or `trust-user` (trust.ts), recorded as a `settings` change naming the platform only. */
+function trustText(ctx: CommandContext, kind: "chat" | "user", rest: string): string {
+  return changed(
+    ctx,
+    `trust-${kind}`,
+    (cfg, o) => trust.run(cfg, kind, rest, o.by, ctx.chat ?? {}, ctx.hostConfig, new Date(), CMD, o.beforeWrite),
+    "settings",
+  );
+}
 
 /** The `session_ref` of the session the command was sent from; null when there is none. */
 function refOf(ctx: CommandContext): string | null {

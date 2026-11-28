@@ -48,6 +48,16 @@ In short, for anyone deciding whether to install it:
   answer within 7 days: `/sentrook-allow` runs the job again now and lets that call through once in that run (`later`:
   on the job's next run instead; `always`: for 30 days, where offered), and `/sentrook-deny` refuses it on that job for 30 days with no more notices; `/sentrook-dismiss` (or `/sentrook-dismiss all`) takes it off the list unanswered, as if it had expired. On a heartbeat or subagent run the answers are bound to the heartbeat's agent or the subagent's parent session instead, and nothing is started. A call blocked there because the scan failed sends you a notice on
   the same chat, at most once per job (per session for other runs) every 6 hours.
+- **Trusted users and chats:** by default a message from anyone but you in a group counts as a stranger's. You can
+  mark a group chat or server channel where you know every member as trusted (`/sentrook-trust-chat add
+  <platform>:<chat id> [--owner-only] --confirm`, or `trustedChats` in the config, a list of `<platform>:<chat id>` or
+  `{ chat, owner_only }`), and a person you know (`/sentrook-trust-user add <platform>:<user id> --confirm`, or
+  `trustedSenders`). Their messages then count as from someone you trust, never as yours: grants, settings and every
+  Sentrook command stay yours, and Sentrook still stops anything risky. A thread or topic in a trusted chat is covered;
+  a direct chat is never a trusted chat. Reviews there are answered as OpenClaw allows (its approvers); a chat added
+  with `--owner-only` holds them for you instead, answered with `/sentrook-allow`. Each command warns first, runs only
+  where the other owner commands run (never in a group), and lists with `list` and undoes with `remove`; each change is
+  logged by platform, never by id.
 - **Background skill and memory saves:** OpenClaw's own saves (the Skill Workshop review, the memory flush, the skill
   collection review) are never asked about, because nobody can answer a prompt in those runs. A save Sentrook would
   ask about is let through when it can be, saved as a Skill Workshop draft for you to apply (a new skill, or a change
@@ -57,7 +67,7 @@ In short, for anyone deciding whether to install it:
   notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
   whose records are kept for 30 days: older ones are deleted from the log and its rotated copy as it writes, and it
-  is rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls, the passes and denials your answers set, and where their notices go; when each job or run last had a notice with a quiet period; the
+  is rotated at 50 MB; grants and channel bindings set by command; trusted chats and users set by command; snooze state; held calls, the passes and denials your answers set, and where their notices go; when each job or run last had a notice with a quiet period; the
   agent's setup proposals and the last `/sentrook-setup` list with its code; the conversations above), or to the paths
   you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
   cron run, that job's definition from OpenClaw's job store (read-only), for the channel the job delivers to; when you

@@ -50,6 +50,7 @@ import { actionOf, recordsBackward, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
 import { bindingProblem, callPlatform, relevantGrants, serverIdentity } from "./planir.ts";
 import { type GrantsFile, type ProposalsFile, readTime, Store, withFileLock } from "./store.ts";
+import * as trust from "./trust.ts";
 
 type Entry = Record<string, any>;
 
@@ -147,6 +148,7 @@ export function exposureFlagged(resp: unknown): boolean {
 /** What makes two items the same: a binding's channel, or a grant's kind, pattern and allows (in any order). */
 export function keyOf(item: Entry): string {
   if (item.binding) return JSON.stringify(["binding", item.pattern]);
+  if (TRUST_KINDS.has(item.kind)) return JSON.stringify([item.kind, item.pattern]);
   const allows = Array.isArray(item.allows) && item.allows.length ? [...item.allows].sort() : null;
   const key: unknown[] = [item.kind, item.pattern, allows];
   if (item.follow) key.push(item.follow);
@@ -156,6 +158,33 @@ export function keyOf(item: Entry): string {
 /** The key of the grant an item sets: a binding is a destination grant for its channel. */
 function grantKey(item: Entry): string {
   return item.binding ? keyOf({ kind: "destination", pattern: item.pattern }) : keyOf(item);
+}
+
+/** A group chat as the traffic log saw it (`Evidence.groups`). */
+export interface GroupSeen {
+  scans: number;
+  senders: Set<string>;
+  owner: number;
+  last: Date;
+}
+
+/** Group chats kept in the evidence; the rest are left out. */
+export const MAX_GROUPS = 50;
+
+/** Counts a scan made in a group chat (`group` on its record) into `ev.groups`. */
+function countGroup(ev: Evidence, rec: Entry, planir: unknown, at: Date | null, since: number, now: Date): void {
+  const group = rec.group;
+  if (at === null || at.getTime() < since || at.getTime() > now.getTime() || !group || typeof group !== "object" || Array.isArray(group)) return;
+  const chat = group.chat;
+  if (typeof chat !== "string" || trust.parseRef(chat) === null) return;
+  if (!ev.groups.has(chat) && ev.groups.size >= MAX_GROUPS) return;
+  const entry = ev.groups.get(chat) ?? { scans: 0, senders: new Set<string>(), owner: 0, last: at };
+  ev.groups.set(chat, entry);
+  entry.scans += 1;
+  if (at.getTime() > entry.last.getTime()) entry.last = at;
+  if (typeof group.sender === "string") entry.senders.add(group.sender);
+  const sender = (planir as Entry | null)?.trigger?.sender;
+  if (sender && typeof sender === "object" && sender.relation === "owner") entry.owner += 1;
 }
 
 export interface Approved {
@@ -198,6 +227,11 @@ export class Evidence {
   sends: Array<{ args: unknown; platform: string | null }> = [];
   scans = 0;
   oldest: Date | null = null;
+  /**
+   * The group chats seen in the window (`group` on a scan record), by `platform:chat id`: scans, the distinct senders
+   * (by keyed id, never the id), the owner's scans there, and the last time.
+   */
+  groups = new Map<string, GroupSeen>();
   readonly available: boolean;
   constructor(available: boolean) {
     this.available = available;
@@ -241,6 +275,7 @@ export function readEvidence(log: string | null, reviewAt: number, now: Date, wi
     if (exposureFlagged(resp) && typeof sref === "string") ev.exposed.add(sref);
     const at = stamp;
     const planir = rec.planir;
+    countGroup(ev, rec, planir, at, since, now);
     const pc = planir && typeof planir === "object" ? (planir as Entry).pending_call : null;
     if (
       at !== null &&
@@ -394,6 +429,10 @@ function printableWord(p: unknown): p is string {
   return typeof p === "string" && p.length > 0 && p.length <= grants.MAX_PATTERN && grants.printable(p) && !/\s/u.test(p);
 }
 
+/** A proposal's trust fields, by the item kind each makes. */
+export const TRUST_FIELDS: Record<string, string> = { trusted_chat: "trusted_chat", trusted_sender: "trusted_user" };
+export const TRUST_KINDS: ReadonlySet<string> = new Set(Object.values(TRUST_FIELDS));
+
 /**
  * One item of an agent proposal as the screen shows it; null when it is not one the owner could set by command (an
  * `attended` platform, an unknown kind, a pattern the grant command refuses, a binding that could never apply).
@@ -406,6 +445,22 @@ export function proposalItem(raw: unknown): Entry | null {
   if (r.expires !== undefined && r.expires !== null) {
     minutes = minutesOf(r.expires);
     if (minutes === null) return null;
+  }
+  for (const [field, kind] of Object.entries(TRUST_FIELDS)) {
+    if (!Object.hasOwn(r, field)) continue;
+    const ref = trust.parseRef(r[field]);
+    const extra = Object.keys(r).filter((k) => k !== field && k !== "reason" && k !== "owner_only");
+    if (ref === null || extra.length || (kind === "trusted_user" && Object.hasOwn(r, "owner_only"))) return null;
+    if (Object.hasOwn(r, "owner_only") && typeof r.owner_only !== "boolean") return null;
+    return {
+      binding: false,
+      kind,
+      pattern: ref.join(":"),
+      allows: null,
+      owner_only: r.owner_only === true,
+      minutes: null,
+      reason,
+    };
   }
   if (r.binding === true) {
     if ((r.kind !== undefined && r.kind !== null && r.kind !== "destination") || (r.allows !== undefined && r.allows !== null)) {
@@ -654,6 +709,16 @@ const ENCODED = /(?:^|[.:@/*])xn--/i;
 export function validItem(cand: Entry): Entry | null {
   const pattern = cand.pattern;
   if (!rawOk(pattern)) return null;
+  if (TRUST_KINDS.has(cand.kind)) {
+    if (cand.binding || trust.parseRef(pattern) === null) return null;
+    return {
+      binding: false,
+      kind: cand.kind,
+      pattern,
+      allows: null,
+      owner_only: cand.kind === "trusted_chat" && cand.owner_only === true,
+    };
+  }
   if (cand.binding) {
     if (bindingProblem(pattern)) return null;
     return { binding: true, kind: "destination", pattern, allows: null };
@@ -666,6 +731,18 @@ export function validItem(cand: Entry): Entry | null {
 /** The warnings an item carries from its own kind, pattern and allows. */
 export function itemWarnings(item: Entry): string[] {
   const out: string[] = [];
+  if (item.kind === "trusted_chat") {
+    out.push(
+      "everyone who can post in this chat, now and later, counts as someone you trust; trust only a chat on a " +
+        "private server where you know every member, never an open or public group",
+    );
+    if (!item.owner_only) out.push("members there may approve the agent's reviews");
+    return out;
+  }
+  if (item.kind === "trusted_user") {
+    out.push("this person's messages count as from someone you trust, in any chat");
+    return out;
+  }
   if (!isAscii(item.pattern) || ENCODED.test(item.pattern)) {
     const domain = registrable(hostOf(item));
     out.push(
@@ -692,6 +769,18 @@ export function itemWarnings(item: Entry): string[] {
   return out;
 }
 
+/**
+ * Where the trust an item sets is already in force (as is, or a chat set with reviews held for the owner when the item
+ * would let members answer), or null.
+ */
+function trustedAlready(t: trust.Trust, item: Entry): string | null {
+  const key = String(item.pattern).toLowerCase();
+  if (item.kind === "trusted_user") return t.senders.has(key) ? "a trusted user" : null;
+  const held = t.chats.get(key);
+  if (held === undefined || (held === false && item.owner_only)) return null;
+  return "a trusted chat";
+}
+
 // ---- the text -----------------------------------------------------------------------------------------------------
 
 const VERBS: Record<string, string> = { read: "read", write: "write", edit: "edit", delete: "delete", exec: "run" };
@@ -711,6 +800,19 @@ export function lifetimeText(item: Entry, minutes: number | null): string {
 /** The item's first line, in the plugin's words: what it lets through, from where, and for how long. */
 export function describe(item: Entry, minutes: number | null): string {
   const p: string = item.pattern;
+  if (item.kind === "trusted_chat") {
+    const held = item.owner_only ? "; its reviews are held for you" : "";
+    return (
+      `Trust the chat \`${p}\`: its members' messages count as from someone you know, not a stranger (never as ` +
+      `yours)${held}, until you remove it.`
+    );
+  }
+  if (item.kind === "trusted_user") {
+    return (
+      `Trust the person \`${p}\`: their messages count as from someone you know, not a stranger (never as ` +
+      "yours), until you remove them."
+    );
+  }
   let what: string;
   if (item.binding) what = `Send messages to the channel \`${p}\``;
   else if (item.kind === "destination") what = p.startsWith("*.") ? `Send data to \`${p.slice(2)}\` and every name under it` : `Send data to \`${p}\``;
@@ -741,6 +843,8 @@ export interface Item {
   allows: string[] | null;
   /** A folder grant's followed branch (`origin/main`), when it has one. */
   follow?: string;
+  /** A trusted chat's: whether its reviews are held for the owner (trust.ts). */
+  owner_only?: boolean;
   /** Null: until revoked or removed. */
   minutes: number | null;
   /** Where it came from, for the grants file. */
@@ -778,6 +882,7 @@ export function build(
         pattern: cand.pattern,
         allows: Array.isArray(cand.allows) && cand.allows.length ? [...cand.allows] : null,
         ...(cand.follow ? { follow: cand.follow } : {}),
+        ...(TRUST_KINDS.has(cand.kind) ? { owner_only: cand.owner_only } : {}),
         sources: [],
       });
     }
@@ -808,15 +913,17 @@ export function build(
     }
   }
   const force = inForce(cfg, data, now);
+  const trusted = trust.of(cfg);
   const out: Item[] = [];
   for (const item of items.values()) {
+    const trustItem = TRUST_KINDS.has(item.kind);
     const cand = item.binding ? { kind: "destination", pattern: item.pattern } : item;
-    const covering = force.find(([, g]) => covers(g, cand))?.[0] ?? null;
+    const covering = trustItem ? trustedAlready(trusted, item) : (force.find(([, g]) => covers(g, cand))?.[0] ?? null);
     const agent: Entry[] = item.sources.filter((s: Entry) => s.from === "proposal");
     if (covering !== null && !agent.length) continue;
-    const backed = ev.backing(item);
+    const backed = trustItem ? null : ev.backing(item);
     let minutes: number | null;
-    if (item.binding) minutes = null;
+    if (item.binding || trustItem) minutes = null;
     else {
       const asked: number[] = agent.map((s) => s.minutes).filter((m): m is number => m !== null);
       minutes = backed ? (asked.length ? Math.min(...asked) : null) : Math.min(...asked, DEFAULT_MINUTES);
@@ -831,8 +938,21 @@ export function build(
     }
     const ids = [...new Set(agent.map((s) => s.id as string))];
     for (const id of ids) lines.push(`Proposed by the agent (${id})${backed ? "." : ", not seen yet."}`);
+    if (item.kind === "trusted_chat" && ev.available) {
+      const seen = ev.groups.get(item.pattern);
+      if (seen === undefined) lines.push("Sentrook has not seen the agent used in this chat lately.");
+      else {
+        const n = seen.senders.size;
+        lines.push(
+          `Seen lately: ${seen.scans} calls from ${n} ${n === 1 ? "person" : "people"} in this chat, the last ` +
+            `${lastText(now, seen.last)}.`,
+        );
+      }
+    }
     const warnings = itemWarnings(item);
-    if (covering !== null) warnings.push(`a grant in force already covers this (${covering})`);
+    if (covering !== null) {
+      warnings.push(trustItem ? `this is already trusted (${covering})` : `a grant in force already covers this (${covering})`);
+    }
     if (item.sources.some((s: Entry) => s.from === "cron")) {
       warnings.push("cron jobs can be changed by the agent; check that you chose this channel");
     }
@@ -861,6 +981,7 @@ export function build(
       pattern: item.pattern,
       allows: item.allows,
       ...(item.follow ? { follow: item.follow } : {}),
+      ...(Object.hasOwn(item, "owner_only") ? { owner_only: item.owner_only } : {}),
       minutes,
       tags: [...new Set(tags)],
       proposals: ids,
@@ -1022,7 +1143,11 @@ function storedItem(raw: unknown): (Entry & { tags: string[]; proposals: string[
     (p: unknown): p is string => typeof p === "string" && PROPOSAL_ID.test(p),
   );
   let grant: Entry | null;
-  if (r.binding === true) {
+  if (TRUST_KINDS.has(r.kind)) {
+    if (r.binding !== false || minutes !== null) return null;
+    grant = validItem(r);
+    if (!grant) return null;
+  } else if (r.binding === true) {
     if (!printableWord(r.pattern) || bindingProblem(r.pattern)) return null;
     grant = { kind: "destination", pattern: r.pattern };
   } else {
@@ -1042,7 +1167,7 @@ export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd
   const lock = <T>(file: string, fn: () => T) => withFileLock(path.join(state, file), fn);
   const result = lock("setup.json", () =>
     lock("grants.json", () =>
-      lock("proposals.json", (): { reply: string; changes: Entry[]; chosen: number[]; closed: string[] } | string => {
+      lock("proposals.json", (): { reply: string; changes: Entry[]; trusts: Entry[]; chosen: number[]; closed: string[] } | string => {
         const kept = store.loadSetup();
         if (!codeOk(kept, parsed.code, now)) return refused;
         const shown: unknown[] = Array.isArray(kept.items) ? kept.items : [];
@@ -1059,6 +1184,7 @@ export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd
           : Array.from({ length: shown.length }, (_, i) => i + 1);
         const lines: string[] = [];
         const changes: Entry[] = [];
+        const trusts: Entry[] = [];
         const applied: Entry[] = [];
         for (const n of chosen) {
           const item = storedItem(shown[n - 1]);
@@ -1072,9 +1198,11 @@ export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd
             lines.push(`${n}. Not set: proposal ${gone[0]} was discarded or has expired since the screen was shown.`);
             continue;
           }
-          const [line, change] = applyOne(cfg, data, item, tags, parsed, by, now, n);
+          const [line, change] = TRUST_KINDS.has(item.kind)
+            ? applyTrust(cfg, item, tags, by, now, n, beforeWrite)
+            : applyOne(cfg, data, item, tags, parsed, by, now, n);
           lines.push(line);
-          if (change) changes.push(change);
+          if (change) (change.kind === "settings" ? trusts : changes).push(change);
           applied.push(item);
         }
         const closed = close(rawProps, live, applied);
@@ -1085,12 +1213,13 @@ export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd
         }
         if (closed !== null) store.saveProposals(rawProps);
         store.saveSetup({ ...kept, code: null });
-        return { reply: lines.join("\n"), changes, chosen, closed: closed ?? [] };
+        return { reply: lines.join("\n"), changes, trusts, chosen, closed: closed ?? [] };
       }),
     ),
   );
   if (typeof result === "string") return result;
   for (const change of result.changes) record({ kind: "grants", ...change, by });
+  for (const change of result.trusts) record({ ...change, by });
   record({ kind: "setup", op: "apply", items: result.chosen, closed: result.closed, by });
   const end = `Remove a grant with ${cmd("revoke")} <id> and a channel with ${cmd("bind")} remove <channel>; ${cmd("grants")} lists what is in force.`;
   return ["Set from the setup screen:", result.reply, end].join("\n");
@@ -1146,6 +1275,26 @@ function applyOne(
   const allows = entry.allows ? `, allows ${entry.allows.join(",")}` : "";
   const life = until ? `expires ${show(until)}` : "until you revoke it";
   return [`${n}. Granted ${id}: ${item.kind} \`${p}\`${allows} (persistent, ${life}).`, { op: "grant", entry }];
+}
+
+/**
+ * A trusted chat or user from the screen, set as `trust-chat add` / `trust-user add` would set it (the owner read the
+ * warning on the screen). The change goes to the traffic log as a `settings` record (its `kind`).
+ */
+function applyTrust(
+  cfg: PluginConfig,
+  item: Entry,
+  tags: string[],
+  by: Entry,
+  now: Date,
+  n: number,
+  beforeWrite: () => void,
+): [string, Entry | null] {
+  const kind = item.kind === "trusted_chat" ? "chat" : "user";
+  const rest = `add ${item.pattern}${item.owner_only ? " --owner-only" : ""} --confirm`;
+  const { reply, change } = trust.run(cfg, kind, rest, by, {}, {}, now, (sub) => `/sentrook-${sub}`, beforeWrite);
+  if (change === null) return [`${n}. Not set: ${reply}`, null];
+  return [`${n}. ${reply}`, { ...change, kind: "settings", source: tags }];
 }
 
 /**

@@ -48,6 +48,7 @@ from . import (
     skill_turn,
     snooze,
     staging,
+    trust,
 )
 from .auth import CREDENTIAL_VARS, resolve_oidc_credentials
 from .auth import missing_credentials as auth_missing_credentials
@@ -123,6 +124,8 @@ SETTINGS_KEYS = (
     "skill_review",
     "owner_channel",
     "hide_tool_calls",
+    "trusted_senders",
+    "trusted_chats",
     # replaced by hide_tool_calls; still accepted, does nothing
     "dashboard_show_calls",
 )
@@ -442,7 +445,9 @@ def on_pre_llm_call(**kw: Any) -> None:
             if _capturing(cfg, store) and not background:
                 facts = session_facts()
                 platform = resolve_platform(kw.get("platform"), facts, env)
-                sender = conversation_sender_of(platform, facts, kw.get("sender_id"), env)
+                sender = conversation_sender_of(
+                    platform, facts, kw.get("sender_id"), env, trust.of(cfg)
+                )
                 if host is not None and sender["relation"] == "owner":
                     sender = dict(host_turns.SENDER, basis=list(host_turns.SENDER["basis"]))
                 entries: list[tuple[dict[str, Any], Any]] = [(sender, kw.get("user_message"))]
@@ -692,14 +697,22 @@ def _scan_one(
     in_parent_chat = parent_chat is not None and not is_unattended(
         parent_chat, env, attended_platforms=attendance["attended_platforms"]
     )
+    sender = (planir.get("trigger") or {}).get("sender") or {}
+    # A chat the owner trusts with --owner-only: a review there on anyone's turn but the owner's is held for the owner,
+    # who answers it from a direct message or the terminal (`trust`). Members answer reviews in other trusted chats.
+    built["group"] = _group_of(built, facts, store.salt())
+    in_trusted = built.get("trusted_chat")
+    built["trusted_chat_hold"] = bool(
+        in_trusted is not None and in_trusted[1] and sender.get("relation") != "owner"
+    )
     # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
     unattended = (
         loop_save
         or background_run
+        or built["trusted_chat_hold"]
         or (not in_parent_chat and is_unattended(built["platform"], env, **attendance))
     )
     # Whether a sub-agent of this session asks in this chat, for its own scans (`_parent_chat`).
-    sender = (planir.get("trigger") or {}).get("sender") or {}
     sess["children"] = {
         "ask": not unattended
         and (
@@ -899,7 +912,12 @@ def _scan_one(
                     _note_rerun(cfg, rerun["id"], passed=True)
             else:
                 entry["decision"] = "held"
-                directive = {"action": "block", "message": hold.HELD_TEXT}
+                directive = {
+                    "action": "block",
+                    "message": hold.HELD_CHAT_TEXT
+                    if built.get("trusted_chat_hold")
+                    else hold.HELD_TEXT,
+                }
                 held = _hold(
                     cfg,
                     traffic,
@@ -1117,6 +1135,7 @@ def _scan_one(
             **({"skill_review": True} if loop_save else {}),
             **({"background_run": True} if background_run else {}),
             **({"parent_chat": True} if in_parent_chat else {}),
+            **({"group": built["group"]} if built.get("group") else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
             "response": result.response if isinstance(result, ScanOk) else None,
@@ -1363,6 +1382,7 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
             "why": why,
         },
         "attended_platforms": sorted(owner_settings.attended_of(cfg)),
+        "trusted": _trusted_state(cfg),
         "unsent_grants": len(cfg.unsent_grants),
         "shadowed_skills": None,
         "traffic_log": cfg.traffic_log_enabled,
@@ -1377,6 +1397,56 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
     )
 
 
+def _trusted_state(cfg: PluginConfig) -> dict[str, Any]:
+    """Who the owner trusts, as the setup report shows it: each trusted chat with whether its reviews are held for the
+    owner, and how many trusted users."""
+    t = trust.of(cfg)
+    return {"chats": dict(t.chats), "users": len(t.senders)}
+
+
+def _group_of(built: dict[str, Any], facts: dict[str, str], secret: str) -> dict[str, str] | None:
+    """A turn in a group chat, for the setup report's list of group chats (`setup.read_evidence`): the chat as
+    `platform:chat id` (a thread's parent chat), and who wrote by a key under the install's salt, never their id.
+    None outside a group chat or a main-agent message turn."""
+    planir = built["planir"]
+    if (
+        (facts.get("chat_type") or "dm").lower() == "dm"
+        or built["subagent"]
+        or (planir.get("trigger") or {}).get("kind") != "message"
+    ):
+        return None
+    chat = facts.get("parent_chat_id") or facts.get("chat_id")
+    ref = trust.parse_ref(f"{built['platform']}:{chat}") if chat else None
+    if ref is None:
+        return None
+    out = {"chat": ":".join(ref)}
+    uid = facts.get("actor_id") or facts.get("user_id")
+    if uid:
+        out["sender"] = hmac.new(
+            ("sentrook group sender|" + secret).encode(), uid.encode(), hashlib.sha256
+        ).hexdigest()[:16]
+    return out
+
+
+def _trusted_turn(planir: dict[str, Any], built: dict[str, Any]) -> bool:
+    """A message turn on the main agent, from the owner or someone the owner trusts, in a chat the owner trusts whose
+    members answer its reviews (`trust`): a Session answer there is kept for the chat as an allowance, never as a
+    grant (whoever answered is not known to be the owner). A trusted user outside such a chat keeps none: whoever
+    answers there may be anyone the host admits."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    session = planir.get("session") if isinstance(planir.get("session"), dict) else {}
+    if (
+        trig.get("kind") != "message"
+        or session.get("agent_role") != "main"
+        or planir.get("self_edit") is not None
+        or built.get("trusted_chat_hold")
+    ):
+        return False
+    in_chat = built.get("trusted_chat")
+    return in_chat is not None and not in_chat[1] and sender.get("relation") in ("owner", "trusted")
+
+
 def _allow_key(
     cfg: PluginConfig,
     resp: dict[str, Any],
@@ -1386,11 +1456,16 @@ def _allow_key(
     store: Store,
 ) -> str | None:
     """The allowance key a Session answer to this review would keep, and a later review is matched by
-    (`session_allow`): only on the owner's own turn (whoever answers elsewhere is not known to be the owner), never
-    for a block a snooze turned into a review or a score at the block line (a block the scanner capped to a review),
-    and None when the review names no party."""
+    (`session_allow`): only on the owner's own turn (whoever answers elsewhere is not known to be the owner) or on a
+    turn of someone the owner trusts (`_trusted_turn`), never for a block a snooze turned into a review or a score at
+    the block line (a block the scanner capped to a review), and None when the review names no party."""
     risk = session_allow.risk_of(resp)
-    if relaxed or not grants.may_remember(planir) or risk is None or risk >= cfg.block_at:
+    if (
+        relaxed
+        or not (grants.may_remember(planir) or _trusted_turn(planir, built))
+        or risk is None
+        or risk >= cfg.block_at
+    ):
         return None
     return session_allow.key(
         str(built.get("tool") or ""), session_allow.parties(resp), store.salt()
@@ -1712,6 +1787,8 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None, dict[str, str] | No
         return hold.where_text(skill_review.RUN, sref), None, None
     if built.get("background_run"):
         return hold.where_text(skill_review.RUN_CALLS, sref), None, None
+    if built.get("trusted_chat_hold"):
+        return hold.where_text(f"trusted {built['platform']} chat", sref), None, None
     run = None
     try:
         read = getattr(_ctx, "current_cron_execution", None)

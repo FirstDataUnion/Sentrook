@@ -5244,19 +5244,37 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         low = text.lower()
         return any(pid in low for pid in plugin_ids)
 
+    trust_settings = lists.patterns("guardrail", "trust_setting_patterns")
+
+    def names_trust(text: str) -> bool:
+        return _match_any(trust_settings, text) is not None
+
     # 1. Writes into guardrail paths (file tools, exec destinations, redirects, moves, deletes).
     config_files = lists.patterns("guardrail", "config_file_patterns")
+    env_files = lists.patterns("guardrail", "env_file_patterns")
     for p, mechanism in _written_paths(a, ctx):
         reason = _guardrail_path_reason(p.value, None, ctx)
         if reason is not None:
             emit(reason, p.entity_id, {"path": p.display, "mechanism": mechanism})
             continue
+        writes = a.kind in _WRITE_KINDS | {ToolKind.MCP, ToolKind.OTHER, ToolKind.EXEC}
+        if _match_any(env_files, p.value) and writes:
+            # An environment file: only an edit that names the plugin or a trust setting (for a command,
+            # anything the command says).
+            said = a.scan_text if a.kind is ToolKind.EXEC else a.edit_text
+            if names_plugin(said) or names_trust(said):
+                emit(
+                    "guardrail.config_entry",
+                    p.entity_id,
+                    {"path": p.display, "mechanism": "edit_text_match"},
+                )
+            continue
         if _match_any(config_files, p.value) and a.kind in _WRITE_KINDS | {
             ToolKind.MCP,
             ToolKind.OTHER,
         }:
-            # Content-aware: the edit must name the plugin, or set a host approval.
-            if names_plugin(a.edit_text):
+            # Content-aware: the edit must name the plugin or a trust setting, or set a host approval.
+            if names_plugin(a.edit_text) or names_trust(a.edit_text):
                 emit(
                     "guardrail.config_entry",
                     p.entity_id,

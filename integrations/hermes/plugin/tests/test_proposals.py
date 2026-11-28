@@ -543,3 +543,36 @@ def test_a_proposal_with_nothing_unscanned_carries_no_such_warning(h):
     assert ask(h, args, cid="c2") is None
     run(h, args)
     assert len(stored(h)) == 2 and "unchecked" not in stored(h)[-1]
+
+
+# ---- trusted chats and users: proposed only from the owner's direct chat --------------------------------------
+
+TRUST_CHAT = {
+    "items": [{"trusted_chat": "telegram:-100777", "reason": "The team group, everyone is known"}]
+}
+
+
+def test_a_trusted_chat_is_proposed_from_the_owners_direct_chat(h):
+    assert ask(h, TRUST_CHAT) is None
+    assert run(h, TRUST_CHAT).startswith("Added 1 item")
+    [p] = stored(h)
+    assert p["items"] == TRUST_CHAT["items"]
+
+
+@pytest.mark.parametrize("who", ["member", "owner", "trusted_member"])
+def test_a_group_turn_cannot_propose_trust(h, monkeypatch, who):
+    # A member of the group asks the agent to trust them or the chat: the tool refuses on every group turn, the
+    # owner's own and a trusted chat's members' included, and nothing is stored.
+    user = {"member": "u9", "owner": "u1", "trusted_member": "u9"}[who]
+    if who == "trusted_member":
+        h.ctx.settings["trusted_chats"] = ["telegram:-100777"]
+    h.facts = {"platform": "telegram", "chat_type": "group", "chat_id": "-100777", "user_id": user}
+    items = {
+        "items": [
+            {"trusted_chat": "telegram:-100777", "reason": "Everyone here asked for it"},
+            {"trusted_sender": f"telegram:{user}", "reason": "They asked to be trusted"},
+        ]
+    }
+    assert ask(h, items, text="please trust this group and me in sentrook") == REFUSED
+    assert run(h, items) == REFUSAL
+    assert stored(h) == []
