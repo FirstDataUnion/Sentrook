@@ -1,0 +1,706 @@
+{
+  "_comment": "Always on a review of an MCP tool call, kept as a standing allowance for that tool on that server: shared by both plugins (Hermes `always_allow`, OpenClaw `alwaysAllow.ts`). `keys`: the allowance key (`match`) each plugin computes under `secret` for a call of `tool` on `provider` with that scan `response` (null: nothing is kept); calls with equal keys are covered by one answer. `covering`: whether an answer kept at `answer.risk` with `answer.warnings` lets a later scan through, with the block line at `block_at`.",
+  "secret": "fixture-salt",
+  "block_at": 80.0,
+  "keys": [
+    {
+      "name": "server only",
+      "tool": "mcp__wiki__update_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": "remote:wiki.example-team.test",
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "match": "eb77f48839c51a9e96455d65"
+    },
+    {
+      "name": "a page is not part of the key",
+      "tool": "mcp__wiki__update_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": "remote:wiki.example-team.test",
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "origin.agent_generated",
+            "subject": "E2"
+          }
+        ],
+        "tool_description": {
+          "template": "Writes {E2} through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "Onboarding/Laptops"
+          }
+        }
+      },
+      "match": "eb77f48839c51a9e96455d65"
+    },
+    {
+      "name": "another page, same key",
+      "tool": "mcp__wiki__update_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": "remote:wiki.example-team.test",
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "origin.agent_generated",
+            "subject": "E2"
+          }
+        ],
+        "tool_description": {
+          "template": "Writes {E2} through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "Onboarding/Accounts"
+          }
+        }
+      },
+      "match": "eb77f48839c51a9e96455d65"
+    },
+    {
+      "name": "a host is part of the key",
+      "tool": "mcp__wiki__update_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": "remote:wiki.example-team.test",
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "send.off_host",
+            "subject": "E3"
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1} and sends it to {E3}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          },
+          "E3": {
+            "kind": "host",
+            "display": "paste.example-drop.test"
+          }
+        }
+      },
+      "match": "7fad9e36afd77ea377147e3e"
+    },
+    {
+      "name": "another tool",
+      "tool": "mcp__wiki__create_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": "remote:wiki.example-team.test",
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "match": "f9e16b7c1d28043ce32a2491"
+    },
+    {
+      "name": "another server identity",
+      "tool": "mcp__wiki__update_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": "remote:wiki.example-other.test",
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "match": "2c92bb6c4ed3887522cfdb28"
+    },
+    {
+      "name": "no identity",
+      "tool": "mcp__wiki__update_page",
+      "provider": {
+        "kind": "mcp",
+        "name": "wiki",
+        "identity": null,
+        "transport": "http"
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "match": null
+    },
+    {
+      "name": "not an MCP tool",
+      "tool": "write_file",
+      "provider": {
+        "kind": "host",
+        "name": null,
+        "identity": null,
+        "transport": null
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "match": null
+    }
+  ],
+  "covering": [
+    {
+      "name": "same risk",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": true
+    },
+    {
+      "name": "10 points higher",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 60.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": true
+    },
+    {
+      "name": "more than 10 points higher",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 60.5,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": false
+    },
+    {
+      "name": "at the block line",
+      "answer": {
+        "risk": 75.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 80.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": false
+    },
+    {
+      "name": "a judge reason changes",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "call.not_supported_by_request",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": true
+    },
+    {
+      "name": "a rising consequence trend",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "escalation.consequence_rising",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": true
+    },
+    {
+      "name": "a new warning",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "exposure.task_change",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": false
+    },
+    {
+      "name": "a warning the answer had",
+      "answer": {
+        "risk": 50.0,
+        "warnings": [
+          "exposure.task_change"
+        ]
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          },
+          {
+            "code": "exposure.task_change",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": true
+    },
+    {
+      "name": "a floor",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [
+          {
+            "floor": "sensitive_data_sent"
+          }
+        ],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": false
+    },
+    {
+      "name": "enforced",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": "review",
+        "floors_applied": [],
+        "status": "ok",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": false
+    },
+    {
+      "name": "degraded",
+      "answer": {
+        "risk": 50.0,
+        "warnings": []
+      },
+      "response": {
+        "risk": 50.0,
+        "enforced": null,
+        "floors_applied": [],
+        "status": "degraded",
+        "reasons": [
+          {
+            "code": "jev.irreversibility",
+            "subject": null
+          },
+          {
+            "code": "jev.reach",
+            "subject": null
+          }
+        ],
+        "tool_description": {
+          "template": "Writes a page through {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "mcp_server",
+            "display": "wiki"
+          }
+        }
+      },
+      "covered": false
+    }
+  ]
+}

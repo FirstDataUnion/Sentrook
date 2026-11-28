@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import (
+    always_allow,
     build,
     grants,
     history,
@@ -229,9 +230,12 @@ def run_grants(
 ) -> str:
     cfg = resolve_config(settings, env)
     ref = session_ref(session_id) if session_id else None
-    return grants.format_grants(
-        cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD, ref, state_dir=cfg.state_dir
+    now = datetime.now(UTC)
+    listing = grants.format_grants(
+        cfg, grants.load(cfg.state_dir), now, CMD, ref, state_dir=cfg.state_dir
     )
+    standing = always_allow.format_lines(cfg.state_dir, now, CMD)
+    return "\n".join([listing, "", *standing]) if standing else listing
 
 
 def run_grant(
@@ -256,6 +260,11 @@ def run_revoke(
     if who is None:
         return refusal("revoke")
     now = datetime.now(UTC)
+    if rest.strip().startswith("aa-"):
+        # an Always answer kept for an MCP tool on its server (`always_allow`), listed with the grants
+        done = always_allow.revoke(cfg.state_dir, rest.strip(), now)
+        if done is not None:
+            return _changed(cfg, done, who)
     return _changed(cfg, grants.revoke(cfg.state_dir, cfg, rest, now, CMD), who)
 
 
@@ -453,7 +462,11 @@ COMMANDS: dict[str, Subcommand] = {
         session=True,
     ),
     "revoke": Subcommand(
-        "remove a grant set by command", run_revoke, args="<id>", owner_only=True, cli_rest=True
+        "remove a grant set by command, or an Always answer kept for an MCP tool",
+        run_revoke,
+        args="<id>",
+        owner_only=True,
+        cli_rest=True,
     ),
     "bind": Subcommand(
         "list, add or remove a channel binding (an expected delivery destination)",

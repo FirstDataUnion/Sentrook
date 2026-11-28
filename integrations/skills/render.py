@@ -191,7 +191,10 @@ HOSTS: dict[str, dict] = {
             "approval_choices": (
                 "Hermes shows its own buttons: **Once** runs this call; **Session** also lets the same action "
                 "through for the rest of this session; **Always** lets it through from now on; **Deny** stops it. "
-                "Where a grant would cover calls like this, the prompt says what Session and Always also set."
+                "Where a grant would cover calls like this, the prompt says what Session and Always also set. On "
+                "an MCP tool call the owner asked for, Always also covers that tool on that server for 30 days, at a "
+                "similar risk and with no new warning; `{{cmd grants}}` lists these and `{{cmd revoke}} <id>` "
+                "removes one."
             ),
             "always_answer": (
                 "answering **Always** on an approval prompt that names a grant (it sets that grant for 30 days)"
@@ -311,9 +314,12 @@ HOSTS: dict[str, dict] = {
             "settings_place": "`plugins.entries.sentrook` in `openclaw.json`",
             "state_dir": "`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`",
             "approval_choices": (
-                "OpenClaw shows its own buttons: **Allow once** runs this call; **Allow always** appears only when a "
-                "grant would cover calls like this and the owner asked for the work, and also sets that grant for 30 "
-                "days; **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 minutes."
+                "OpenClaw shows its own buttons: **Allow once** runs this call; **Allow always** appears only when "
+                "the owner asked for the work and either a grant would cover calls like this (it also sets that "
+                "grant for 30 days) or the call is an MCP tool's (it also covers that tool on that server for 30 "
+                "days, at a similar risk and with no new warning; `{{cmd grants}}` lists these and `{{cmd revoke}} "
+                "<id>` removes one); **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 "
+                "minutes."
             ),
             "always_answer": (
                 "answering **Allow always** on an approval card that offers it (it sets that grant for 30 days)"

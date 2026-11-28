@@ -22,7 +22,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 
 - **An approval prompt** (risk 45 or more by default). It starts with a feather and "Sentrook security check · risk
   N/100" ("Safety rule" for a rule that always asks), says what the call does and why in plain words, and ends with
-  `Details: /sentrook why <id>`. Hermes shows its own buttons: **Once** runs this call; **Session** also lets the same action through for the rest of this session; **Always** lets it through from now on; **Deny** stops it. Where a grant would cover calls like this, the prompt says what Session and Always also set.
+  `Details: /sentrook why <id>`. Hermes shows its own buttons: **Once** runs this call; **Session** also lets the same action through for the rest of this session; **Always** lets it through from now on; **Deny** stops it. Where a grant would cover calls like this, the prompt says what Session and Always also set. On an MCP tool call the owner asked for, Always also covers that tool on that server for 30 days, at a similar risk and with no new warning; `/sentrook grants` lists these and `/sentrook revoke <id>` removes one.
 - **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
   category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
   with `/sentrook why last`.

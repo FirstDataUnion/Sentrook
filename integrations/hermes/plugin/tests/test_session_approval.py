@@ -7,7 +7,8 @@ tool, about the same parties (the entities its reasons and its description name)
 and below the block line, with no attack-type warning the answered review lacked (a rising consequence trend is not
 one), nothing enforced and no floor, within 12 hours. Anything else asks.
 A Session answer that sets the review's suggested grant (for this session only) keeps no such allowance: the scanner
-scores later calls with the grant. Always is unchanged: Hermes's exact key and the 30-day grant.
+scores later calls with the grant. Always keeps Hermes's exact key and the 30-day grant, and for an MCP tool call a
+standing allowance for that tool on that server (`test_always_mcp`).
 """
 
 import json

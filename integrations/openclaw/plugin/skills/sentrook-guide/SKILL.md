@@ -22,7 +22,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 
 - **An approval prompt** (risk 45 or more by default). It starts with a feather and "Sentrook security check · risk
   N/100" ("Safety rule" for a rule that always asks), says what the call does and why in plain words, and ends with
-  `Details: /sentrook-why <id>`. OpenClaw shows its own buttons: **Allow once** runs this call; **Allow always** appears only when a grant would cover calls like this and the owner asked for the work, and also sets that grant for 30 days; **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 minutes.
+  `Details: /sentrook-why <id>`. OpenClaw shows its own buttons: **Allow once** runs this call; **Allow always** appears only when the owner asked for the work and either a grant would cover calls like this (it also sets that grant for 30 days) or the call is an MCP tool's (it also covers that tool on that server for 30 days, at a similar risk and with no new warning; `/sentrook-grants` lists these and `/sentrook-revoke <id>` removes one); **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 minutes.
 - **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
   category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
   with `/sentrook-why last`.

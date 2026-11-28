@@ -599,7 +599,16 @@ Details: /sentrook why 3f9c2a1b
   points count from the call you answered, not from a call Session let through since.
   The prompt says which applies: "also covers the same parties at a similar risk", or "covers only this exact
   action" when the review named no party or the answer is not known to be yours (a group chat, someone else's
-  message, a subagent). **Always** covers only the same action, as above.
+  message, a subagent). **Always** covers only the same action, as above, except on an MCP tool call (below).
+- When you asked for the work in your own chat and the call is an MCP server's tool, **Always** also covers that
+  tool on that server from now on, for 30 days, in any session: a later call of the same tool on the same server
+  (the server's address or package, as configured), whatever page or file it writes, scoring at most 10 points
+  higher than the call you answered and below the block line, with no warning the answered call lacked, goes
+  through without asking. A call that also names a host, a recipient or a channel is covered only when it names the
+  same ones. Another tool, another server (or the same name pointed somewhere else), a new warning, a floor, a rule
+  that always asks or a block still asks. The prompt says so: '"Always" also covers this tool on this server at a
+  similar risk for 30 days.' `/sentrook grants` lists these answers and `/sentrook revoke <id>` removes one. Where
+  a grant would cover the call, Always sets the grant instead.
 - Where a grant would cover calls like this, the prompt says what **Session** (for this chat) and **Always** (for 30
   days) also set, or gives the command. A grant goes to the scanner, which scores later calls with it; with a grant
   set, Session skips no further questions.
