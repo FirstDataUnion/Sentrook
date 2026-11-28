@@ -658,6 +658,14 @@ Details: /sentrook-why 3f9c2a1b
   the reasons and your options and shortening the description of the call.
 - **Allow once** runs this call. **Allow always** appears only when a grant would cover calls like this and you asked
   for the work yourself; it runs the call and sets that grant for 30 days. Otherwise the card gives the command.
+- On an MCP tool call you asked for yourself, with no grant to set, **Allow always** also appears: it covers that
+  tool on that server for 30 days, in any session. A later call of the same tool on the same server (the server's
+  address or package, as configured), whatever page or file it writes, scoring at most 10 points higher than the
+  call you answered and below the block line, with no warning the answered call lacked, goes through without asking.
+  A call that also names a host, a recipient or a channel is covered only when it names the same ones. Another
+  tool, another server (or the same name pointed somewhere else), a new warning, a floor, a rule that always asks or
+  a block still asks. The card says so: '"Always allow" also covers this tool on this server at a similar risk for
+  30 days.' `/sentrook-grants` lists these answers and `/sentrook-revoke <id>` removes one.
 - `/sentrook-why <id>` shows everything behind the decision: the scores, the checks that fired, the files and
   addresses in full, and every grant that would allow it next time.
 

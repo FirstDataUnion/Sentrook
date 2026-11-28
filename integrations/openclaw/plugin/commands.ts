@@ -20,6 +20,7 @@
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { configProblemsSummary, HIDE_SETTING, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
+import * as alwaysAllow from "./alwaysAllow.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import * as passes from "./passes.ts";
@@ -130,7 +131,10 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     description: "Grants in force: from config (read-only) and set by command",
     run: (ctx) => {
       const cfg = configOf(ctx);
-      return grants.formatGrants(cfg, grants.load(cfg.stateDir), new Date(), CMD, refOf(ctx), cfg.stateDir);
+      const now = new Date();
+      const listing = grants.formatGrants(cfg, grants.load(cfg.stateDir), now, CMD, refOf(ctx), cfg.stateDir);
+      const standing = alwaysAllow.formatLines(cfg.stateDir, now, CMD);
+      return standing.length ? [listing, "", ...standing].join("\n") : listing;
     },
   },
   grant: {
@@ -146,10 +150,15 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   revoke: {
     command: "sentrook-revoke",
     args: "<id>",
-    description: "Remove a grant set by command",
+    description: "Remove a grant set by command, or an Always answer kept for an MCP tool",
     cliRest: true,
     run: (ctx, rest) =>
-      changed(ctx, "revoke", (cfg, o) => grants.revoke(cfg.stateDir, cfg, rest, new Date(), CMD, o.beforeWrite)),
+      changed(ctx, "revoke", (cfg, o) => {
+        const now = new Date();
+        // an Always answer kept for an MCP tool on its server (alwaysAllow.ts), listed with the grants
+        const done = rest.trim().startsWith("aa-") ? alwaysAllow.revoke(cfg.stateDir, rest.trim(), now, o.beforeWrite) : null;
+        return done ?? grants.revoke(cfg.stateDir, cfg, rest, now, CMD, o.beforeWrite);
+      }),
   },
   bind: {
     command: "sentrook-bind",

@@ -36,6 +36,8 @@ export const TITLE_MAX = 80;
 export const DESCRIPTION_BUDGET = 500;
 const CMD = (sub: string) => `/sentrook-${sub}`;
 const ALWAYS = '"Always allow"';
+/** What "Always allow" also covers on a review of an MCP tool call when it sets no grant (alwaysAllow.ts). */
+export const ALWAYS_LINE = `${ALWAYS} also covers this tool on this server at a similar risk for ${GRANT_DAYS} days.`;
 
 /** Entity displays are shortened to these lengths in turn before the line about what the call does gives way. */
 const ENTITY_CAPS = [60, 40, 24, 12];
@@ -162,7 +164,16 @@ export function commandShown(grant: Entry): boolean {
   return !(new RegExp(ODD.source, "u").test(pattern) || /[\[\]<>|`]/.test(pattern) || BROADCAST.test(pattern));
 }
 
-function answer(relaxed: boolean, hint: Entry | null, remember: boolean, whyId: string | null, short: boolean, cap: number, strong = false): string[] {
+function answer(
+  relaxed: boolean,
+  hint: Entry | null,
+  remember: boolean,
+  whyId: string | null,
+  short: boolean,
+  cap: number,
+  strong = false,
+  always = false,
+): string[] {
   const lines: string[] = [];
   if (hint) {
     if (remember) lines.push(`${ALWAYS} also ${grantPhrase(hint, true, cap)} for ${GRANT_DAYS} days.`);
@@ -172,6 +183,7 @@ function answer(relaxed: boolean, hint: Entry | null, remember: boolean, whyId: 
       if (whyId) lines.push(`To ${grantPhrase(hint, false, cap)} for ${GRANT_DAYS} days, see Details.`);
     } else lines.push(`To allow this for ${GRANT_DAYS} days: ${grantCommand(hint, CMD)}`);
   }
+  if (always && !relaxed && !(hint && remember)) lines.push(ALWAYS_LINE);
   if (relaxed) lines.push(strong ? STRONG_NOTE : RELAXED_NOTE);
   return lines;
 }
@@ -192,13 +204,15 @@ export interface CardOptions {
   hint?: Entry | null;
   /** Approving always sets `hint`. */
   remember?: boolean;
+  /** Approving always keeps this MCP tool on this server (alwaysAllow.ts), when it sets no grant. */
+  always?: boolean;
   /** The scan's request id, when `why` can find it (the traffic log is on). */
   whyId?: string | null;
 }
 
 /** The description's lines, fitted to the budget. */
 export function reviewLines(resp: ScanResponse, tool: string, opts: CardOptions = {}): string[] {
-  const { relaxed = false, remember = false } = opts;
+  const { relaxed = false, remember = false, always = false } = opts;
   const strong = relaxed && opts.strong === true;
   // A strong block suggests no grant: the owner allows only this call.
   const hint = strong ? null : (opts.hint ?? null);
@@ -216,7 +230,7 @@ export function reviewLines(resp: ScanResponse, tool: string, opts: CardOptions 
       strong,
     );
     if (whyRoom !== null) b = clip(b, whyRoom);
-    return [w, b, ...answer(relaxed, hint, remember, sid, short, Math.max(cap, 24), strong), ...details].filter(Boolean);
+    return [w, b, ...answer(relaxed, hint, remember, sid, short, Math.max(cap, 24), strong, always), ...details].filter(Boolean);
   };
   const size = (lines: string[]) => measure(lines.join("\n"));
   const roomFor = (lines: string[], index: number) => {

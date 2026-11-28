@@ -21,6 +21,7 @@ from typing import Any
 
 from . import (
     agent_skills,
+    always_allow,
     build,
     card,
     channel_context,
@@ -754,7 +755,9 @@ def _scan_one(
     strong = False  # a relaxed block with a strong signal: a warning, and nothing answers it but this prompt
     let_through = False
     session_allowed: dict[str, Any] | None = None
+    always_allowed: dict[str, Any] | None = None
     allow_key: str | None = None
+    always_key: str | None = None
     held: dict[str, Any] | None = None
     by_pass: dict[str, Any] | None = (
         None  # the owner's pass or denial that settled an unattended review
@@ -951,6 +954,20 @@ def _scan_one(
             # allowed: the owner was not shown this call.
             entry["decision"] = "allowed"
             session_allowed = {"by": covered.get("request_id")}
+        elif (
+            standing := always_allow.covering(
+                always_allow.load(cfg.state_dir),
+                always_key := _always_key(cfg, resp, planir, built, relaxed, store),
+                resp,
+                datetime.now(UTC),
+                cfg.block_at,
+            )
+        ) is not None:
+            # The owner answered Always for a call of this MCP tool on this server, at most 10 points below this
+            # risk, with every attack-type warning this one carries (`always_allow`). History says allowed: the
+            # owner was not shown this call.
+            entry["decision"] = "allowed"
+            always_allowed = {"by": standing[1].get("request_id"), "id": standing[0].get("id")}
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
             snoozes = (
@@ -980,6 +997,7 @@ def _scan_one(
             # with it: no allowance besides (`session_allow`).
             if remember:
                 allow_key = None
+                always_key = None
             if relaxed:
                 snooze.note_asked(sess, resp)
             directive = {
@@ -993,6 +1011,7 @@ def _scan_one(
                     remember=remember,
                     why_id=planir["request_id"] if cfg.traffic_log_enabled else None,
                     session=None if relaxed else "parties" if allow_key is not None else "exact",
+                    always=always_key is not None,
                 ),
                 "rule_key": key,
             }
@@ -1006,7 +1025,7 @@ def _scan_one(
                     # per session): the answer sets the grant, or the allowance, only from the chat it was asked in.
                     **(
                         {"session_key": _approval_session_key()}
-                        if remember or allow_key is not None
+                        if remember or allow_key is not None or always_key is not None
                         else {}
                     ),
                     **({"hint": hint, "platform": built["platform"]} if remember else {}),
@@ -1019,6 +1038,22 @@ def _scan_one(
                             }
                         }
                         if allow_key is not None and session_allow.risk_of(resp) is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            "always": {
+                                "key": always_key,
+                                "tool": str(built.get("tool") or ""),
+                                "server": server[0],
+                                "identity": server[1],
+                                "risk": float(resp["risk"]),
+                                "warnings": session_allow.warnings(resp),
+                            }
+                        }
+                        if always_key is not None
+                        and (server := always_allow.server_of(built.get("provider"))) is not None
+                        and session_allow.risk_of(resp) is not None
                         else {}
                     ),
                     **({"child": True} if in_parent_chat else {}),
@@ -1074,6 +1109,7 @@ def _scan_one(
             **({"relaxed": True} if relaxed else {}),
             **({"relaxed_strong": True} if strong else {}),
             **({"session_allowed": session_allowed} if session_allowed is not None else {}),
+            **({"always_allowed": always_allowed} if always_allowed is not None else {}),
             **({"hold": held} if held is not None else {}),
             **({"pass": by_pass} if by_pass is not None else {}),
             **({"notice": notice} if notice is not None else {}),
@@ -1103,6 +1139,8 @@ def _scan_one(
             if snoozed
             else " (covered by an earlier Session answer)"
             if session_allowed is not None
+            else f" (covered by an earlier Always answer, {always_allowed['id']})"
+            if always_allowed is not None
             else f" ({'refused by' if by_pass['kind'] == 'deny' else 'let through by'} {by_pass['id']})"
             if by_pass is not None
             else " (block with a strong signal asked by snooze)"
@@ -1357,6 +1395,23 @@ def _allow_key(
     return session_allow.key(
         str(built.get("tool") or ""), session_allow.parties(resp), store.salt()
     )
+
+
+def _always_key(
+    cfg: PluginConfig,
+    resp: dict[str, Any],
+    planir: dict[str, Any],
+    built: dict[str, Any],
+    relaxed: bool,
+    store: Store,
+) -> str | None:
+    """The standing allowance key an Always answer to this review would keep, and a later review is matched by
+    (`always_allow`): an MCP tool call with a server identity, on the owner's own turn, as `_allow_key`; never for a
+    block a snooze turned into a review or a score at the block line."""
+    risk = session_allow.risk_of(resp)
+    if relaxed or not grants.may_remember(planir) or risk is None or risk >= cfg.block_at:
+        return None
+    return always_allow.key(str(built.get("tool") or ""), built.get("provider"), resp, store.salt())
 
 
 def _cron_run() -> tuple[str | None, str | None, datetime | None]:
@@ -2259,6 +2314,30 @@ def on_post_approval_response(**kw: Any) -> None:
             and review.get("session_key") == answer_key
             else None
         )
+        # Always on an MCP tool call also lets later calls of that tool on that server through (`always_allow`).
+        standing = review.get("always") if isinstance(review.get("always"), dict) else None
+        always_entry = None
+        if (
+            standing is not None
+            and approved
+            and choice in _ALWAYS
+            and not review.get("on_error")
+            and review.get("session_key") == answer_key
+        ):
+            try:
+                always_entry = always_allow.add(
+                    cfg.state_dir,
+                    k=str(standing["key"]),
+                    tool=str(standing["tool"]),
+                    server=str(standing["server"]),
+                    identity=str(standing["identity"]),
+                    risk=float(standing["risk"]),
+                    seen=[str(w) for w in standing.get("warnings") or []],
+                    request_id=str(review["request_id"]),
+                    now=datetime.now(UTC),
+                )
+            except Exception as exc:  # noqa: BLE001 - the approval stands without the allowance
+                logger.warning("sentrook could not keep the Always answer: %s", exc)
         with store.session_lock(sid):
             s = store.load_session(sid)
             if allowed_on is not None:
@@ -2288,6 +2367,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 **({"decided_by": history.REVIEW_LOOP} if auto else {}),
                 **({"grant_id": remembered["entry"]["id"]} if remembered else {}),
                 **({"session_allow": True} if allowed_on is not None else {}),
+                **({"always_allow": always_entry["id"]} if always_entry is not None else {}),
                 **({"hold": held} if held is not None else {}),
             }
         )

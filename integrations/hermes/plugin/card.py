@@ -64,6 +64,11 @@ SESSION_LINES = {
     "parties": '"Session" also covers the same parties at a similar risk.',
     "exact": '"Session" covers only this exact action.',
 }
+#: What Hermes's Always answer also covers on a review of an MCP tool call it keeps a standing allowance for
+#: (`always_allow`): later calls of that tool on that server, at a similar risk and with no new warning.
+ALWAYS_LINE = (
+    f'"Always" also covers this tool on this server at a similar risk for {GRANT_DAYS} days.'
+)
 
 #: Entity displays are shortened to these lengths in turn before the line about what the call does gives way.
 ENTITY_CAPS = (60, 40, 24, 12)
@@ -210,6 +215,7 @@ def _answer(
     cap: int,
     session: str | None = None,
     strong: bool = False,
+    always: bool = False,
 ) -> list[str]:
     h = HOSTS[host]
     lines: list[str] = []
@@ -238,6 +244,8 @@ def _answer(
             )
     if session in SESSION_LINES and not relaxed:
         lines.append(SESSION_LINES[session])
+    if always and not relaxed and not (hint is not None and remember):
+        lines.append(ALWAYS_LINE)
     if relaxed and strong:
         line = STRONG_NOTE
         if host == "hermes":
@@ -268,10 +276,12 @@ def review_lines(
     fixed: str = "",
     session: str | None = None,
     strong: bool = False,
+    always: bool = False,
 ) -> list[str]:
     """The card's body lines, fitted with `fixed` (text the host shows with them in the same budget, the header
     on Hermes) to the host's budget. `session` ("parties" or "exact", Hermes only) says what a Session answer
-    covers. `strong` (with `relaxed`): the block a snooze turned into a question carries a strong signal, so the
+    covers, `always` (Hermes only) that Always also covers this MCP tool on this server (`ALWAYS_LINE`). `strong`
+    (with `relaxed`): the block a snooze turned into a question carries a strong signal, so the
     reasons say it would be blocked and the answer line warns; it suggests no grant, since the owner allows only this
     call."""
     strong = strong and relaxed
@@ -292,7 +302,9 @@ def review_lines(
         because = _because([_fill(t, ents, max(cap, 24)) for t in texts[:n]], strong)
         if why_room is not None:
             because = clip(because, why_room)
-        answer = _answer(host, relaxed, hint, remember, sid, short, max(cap, 24), session, strong)
+        answer = _answer(
+            host, relaxed, hint, remember, sid, short, max(cap, 24), session, strong, always
+        )
         lines = [what, because, *answer, *details]
         return [line for line in lines if line]
 
@@ -341,6 +353,7 @@ def hermes_message(
     why_id: str | None = None,
     session: str | None = None,
     strong: bool = False,
+    always: bool = False,
 ) -> str:
     """The approval prompt's text on Hermes (its only field: the host adds its own header and buttons). `session`
     says what a Session answer covers (`SESSION_LINES`); None leaves it unsaid."""
@@ -356,6 +369,7 @@ def hermes_message(
         fixed=head,
         session=session,
         strong=strong,
+        always=always,
     )
     return "\n".join([head, *body])
 

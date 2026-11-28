@@ -425,6 +425,21 @@ export class Store {
     this.writeJson(path.join(this.dir, "passes.json"), value);
   }
 
+  /** `always-allows.json` (alwaysAllow.ts), empty when absent; null when it exists but cannot be read. */
+  loadAlwaysAllows(): Record<string, any> | null {
+    const file = path.join(this.dir, "always-allows.json");
+    if (!existsSync(file)) return { version: 1, allows: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const a = data as Record<string, unknown>;
+    if (!Object.hasOwn(a, "allows")) a.allows = [];
+    return Array.isArray(a.allows) ? (a as Record<string, any>) : null;
+  }
+
+  saveAlwaysAllows(value: Record<string, any>): void {
+    this.writeJson(path.join(this.dir, "always-allows.json"), value);
+  }
+
   /** `proposals.json` (the agent's setup proposals), empty when absent; null when it cannot be read. */
   loadProposals(): ProposalsFile | null {
     const file = path.join(this.dir, "proposals.json");

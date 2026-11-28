@@ -6,6 +6,13 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- **Always** on an MCP tool call now means always. Answered on your own turn, it also covers that tool on that
+  server for 30 days, in any session: a later call of the same tool on the same server (its configured address or
+  package), whatever page or file it writes, at most 10 points higher and below the block line, with no new warning,
+  goes through without asking. Before, an MCP write tool's arguments changed on every call, so Hermes's own Always
+  never matched again and every call asked. Another tool, another server, a host, recipient or channel the answered
+  call did not name, a floor, a rule that always asks or a block still asks; a group chat keeps nothing. The prompt
+  says so, `/sentrook grants` lists these answers and `/sentrook revoke <id>` removes one.
 - With no notice target set, a held call's notice (and a run's end line, and the line on how a started run went) no
   longer goes nowhere: it goes to the chat the cron job delivers its own output to (`deliver` of `origin`,
   `<platform>:<chat>` or `<platform>`), else to your Telegram direct message when `TELEGRAM_ALLOWED_USERS` lists only

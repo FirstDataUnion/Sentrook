@@ -35,6 +35,7 @@ import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as history from "./history.ts";
 import * as hold from "./hold.ts";
+import * as alwaysAllow from "./alwaysAllow.ts";
 import * as passes from "./passes.ts";
 import * as runNow from "./runNow.ts";
 import { reviewCard } from "./card.ts";
@@ -1076,6 +1077,30 @@ const plugin = {
       let byPass: Json | null = null;
       /** The suggested grant "allow always" sets, when the prompt offers it. */
       let remember: grants.Entry | null = null;
+      /** What "Always allow" keeps for an MCP tool on its server when it sets no grant (alwaysAllow.ts). */
+      let standingOffer: Json | null = null;
+      /** The earlier "Always allow" answer that let this review through. */
+      let alwaysAllowed: Json | null = null;
+      let alwaysKey: string | null = null;
+      let standing: [Json, Json] | null = null;
+      /**
+       * The standing allowance key "Always allow" on this review would keep, and a later review is matched by
+       * (alwaysAllow.ts): an MCP tool call with a server identity, from the owner's own message on the main agent
+       * outside a group chat; never for a block a snooze turned into a review or a score at the block line.
+       */
+      const alwaysKeyOf = (resp: ScanOk["response"], relaxedNow: boolean): string | null => {
+        const risk = passes.riskOf(resp);
+        if (relaxedNow || !grants.mayRemember(built.planir) || risk === null || risk >= cfg.blockAt) return null;
+        return alwaysAllow.keyOf(event.toolName, built.provider, resp, store.salt());
+      };
+      const alwaysAllows = (): Json | null => {
+        try {
+          return alwaysAllow.load(cfg.stateDir);
+        } catch (err) {
+          api.logger.warn(`${LOG} could not read the Always answers: ${String(err)}`);
+          return null;
+        }
+      };
       if (result.ok) {
         const resp = result.response;
         // An exec the scanner read as a save into the run's store is one of the run's saves: never asked about, and
@@ -1227,19 +1252,41 @@ const plugin = {
             });
             if (rerunId && typeof held?.id === "string") noteRun(cfg, rerunId, { held: held.id });
           }
+        } else if (
+          (standing = alwaysAllow.covering(
+            alwaysAllows(),
+            (alwaysKey = alwaysKeyOf(resp, relaxed)),
+            resp,
+            new Date(),
+            cfg.blockAt,
+          )) !== null
+        ) {
+          // The owner answered "Always allow" for a call of this MCP tool on this server, at most 10 points below this
+          // risk, with every attack-type warning this one carries (alwaysAllow.ts). History says allowed: the owner
+          // was not shown this call.
+          entry.decision = "allowed";
+          alwaysAllowed = { by: standing[1].request_id ?? null, id: standing[0].id ?? null };
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
-          // The grant the scan suggests: the prompt shows its command, and "allow always" (offered only then) sets it
-          // where the owner is the one answering. Never for a block a snooze turned into a review.
+          // The grant the scan suggests: the prompt shows its command, and "allow always" sets it where the owner is
+          // the one answering. Never for a block a snooze turned into a review.
           const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
           remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
+          // Without a grant to set, "allow always" on an MCP tool call keeps that tool on that server (alwaysAllow.ts).
+          const server = alwaysAllow.serverOf(built.provider);
+          const risk = passes.riskOf(resp);
+          standingOffer =
+            remember === null && alwaysKey !== null && server !== null && risk !== null
+              ? { key: alwaysKey, tool: event.toolName, server: server[0], identity: server[1], risk, warnings: passes.warnings(resp) }
+              : null;
           if (relaxed) snooze.noteAsked(sess, resp);
           const copy = reviewCard(resp, event.toolName, {
             relaxed,
             strong,
             hint,
             remember: remember !== null,
+            always: standingOffer !== null,
             whyId: cfg.trafficLog.enabled ? built.planir.request_id : null,
           });
           hook = {
@@ -1249,7 +1296,7 @@ const plugin = {
               timeoutMs: timing.timeoutMs,
               // An unanswered card never runs the call, on a host that reads this or not.
               timeoutBehavior: "deny",
-              allowedDecisions: remember ? ["allow-once", "allow-always", "deny"] : ["allow-once", "deny"],
+              allowedDecisions: remember || standingOffer ? ["allow-once", "allow-always", "deny"] : ["allow-once", "deny"],
             },
           };
         }
@@ -1300,6 +1347,7 @@ const plugin = {
         ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
         ...(byPass ? { pass: byPass } : {}),
+        ...(alwaysAllowed ? { always_allowed: alwaysAllowed } : {}),
         ...(notice ? { notice } : {}),
         ...(scannedSelfEdit ? { skill_review: true, self_edit: { kind: hostKind, store: declaredStore } } : {}),
         ...(hostKind && !scannedSelfEdit ? { host_process: hostKind } : {}),
@@ -1351,6 +1399,27 @@ const plugin = {
               api.logger.warn(`${LOG} could not set the suggested grant: ${String(err)}`);
             }
           }
+          let alwaysId: string | null = null;
+          if (decision === "allow-always" && !remember && standingOffer && !onError) {
+            // Approved for good on an MCP tool call with no grant to set: that tool on that server (alwaysAllow.ts).
+            const offer = standingOffer;
+            try {
+              const kept = alwaysAllow.add(cfg.stateDir, {
+                key: String(offer.key),
+                tool: String(offer.tool),
+                server: String(offer.server),
+                identity: String(offer.identity),
+                risk: Number(offer.risk),
+                seen: (offer.warnings as string[]).map(String),
+                requestId,
+                now: new Date(),
+              });
+              if (kept) alwaysId = String(kept.id);
+              else api.logger.warn(`${LOG} could not keep the Always answer: ${alwaysAllow.FILE} cannot be read`);
+            } catch (err) {
+              api.logger.warn(`${LOG} could not keep the Always answer: ${String(err)}`);
+            }
+          }
           try {
             await store.withSession(sid, () => {
               const s = store.loadSession(sid);
@@ -1367,6 +1436,7 @@ const plugin = {
             resolution: decision,
             decision: final,
             ...(grantId ? { grant_id: grantId } : {}),
+            ...(alwaysId ? { always_allow: alwaysId } : {}),
           });
         };
       }
