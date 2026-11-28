@@ -27,6 +27,8 @@ export interface ScanResponse {
   floors_applied?: Array<Record<string, unknown>>;
   relief_applied?: Array<Record<string, unknown>>;
   reasons?: Array<{ code: string; signal?: string; subject?: string | null; detail?: unknown }>;
+  /** What the owner's grants did to this score; read through `history.grantEffectLines`, never trusted as typed. */
+  grant_effect?: unknown;
   /** Grants that would each let the call through next time; read through `grants.responseHints`, never trusted as typed. */
   grant_hints?: unknown;
   tool_description?: { category?: string; template?: string } | null;

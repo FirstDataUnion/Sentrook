@@ -1335,3 +1335,43 @@ A destination grant naming a chat platform (`discord:<channel id>`, as a cron jo
 - PlanIR `pending_call` gains an optional `send_platform`: for a message send whose arguments name no platform, the chat platform the plugin says it goes out on (OpenClaw: the account's channel in the host config, else the session's). Only the plugin sets it; it is left out of the judge's views, so their requests are unchanged.
 - `prepare.entities.send_platform` reads it when the send names no platform itself and it is a chat platform; the batch rule is unchanged (every send in the batch must be on the same platform). It counts only for a pattern's platform prefix, over the send's channel targets (`platform_targets`): never a direct message (`user:`, `dm:`), an address or a target that names another platform. Entity extraction is unchanged. A channel target is checked as an address against the send's platform too, so a bare number on WhatsApp, SMS or iMessage (a phone number) is never covered, reported or named.
 - Tests: must stay silent (a cron delivery grant and config bindings `discord:<id>` and `discord:channel:<id>` relieve `channel:<id>` and bare-id sends whose platform is reported), must still fire (no platform reported, another platform reported, a non-chat platform, the send's own argument naming another platform, `user:<id>`, `dm:<id>`, another channel, a target naming another platform, a batch with a sibling on another platform, a call that is not a send, a phone number on WhatsApp, SMS or iMessage), the platform-named leak cases with the platform reported instead of named, and the field kept out of the judge views.
+### Grants: a send whose every destination the owner granted, `conv-v11` (2026-11-27)
+A matched destination grant removes its subject's distrust and untrusted origin. In the owner's own chat those are
+usually 0 already, so an owner who granted their own service, and the key that goes with it, still saw routine sends
+reviewed or blocked: the score came from the call judge's misalignment, the consequence a retry carried from an earlier
+stopped call, and the reach of any off-host send, none of which a grant touched.
+- `converge.granted_send` (parameter `granted_send`, off by default): on a send whose every host, recipient or channel
+  in a sending role (the call, a sibling, a written file, a later run) is covered by a matched `destination` grant,
+  and every send is written out (a shell command of local commands and `curl` with a short list of options and every URL
+  written in full, no background job or process substitution; Python whose
+  every request is aimed at a URL written in the code, read as code), with no floor, concealment and the new content's exposure
+  below 0.3, no tainted session, and nothing sensitive held but the env file the call's key comes from:
+  - the call judge's misalignment is held to 0.20 when it is below 0.5 (a send it reads as off-request keeps its full
+    value: a grant covers where, never what);
+  - a retry's carried consequence is dropped unless the owner denied a matched earlier step (a review nobody answered,
+    or the scanner's own block, is not the owner's refusal);
+  - below the same 0.5, reach is held to 0.67 and the call judge's sensitivity to 0.34 (a credential's rule-based
+    sensitivity and every floor stay).
+- `conv-v11` is `conv-v10` with it on. `sentrook serve` and `sentrook scan` default to it (`SENTROOK_CONVERGENCE`);
+  `conv-v1` to `conv-v10` stay selectable, unchanged.
+- Response: `grant_effect` (null when no grant matched): the grants that matched, the risk with the same answers and no
+  grant, the risk-tree leaves the grants lowered, and the largest leaves they left, in plain words. Both plugins' `why`
+  show it.
+- Tests: must stay silent (a key sent to its granted host from the owner's chat, two named keys in a fresh session, a
+  scheduled post to the job's granted delivery channel, a retry of a send stopped by an unanswered review or the
+  scanner); must still fire (the whole env file to an ungranted host, a look-alike of the granted host, a second
+  ungranted destination, a granted send beside `git push`, `rsync`, `aws s3`, `docker push`, `npm publish`, `curl -K` or an address from a
+  variable, a sibling that sends by another route, code that also reaches an unwritten target, a credential grant without a destination
+  grant, a tainted session, a session holding other sensitive data, a send the judge reads as
+  off-request, concealment or instructions in content, a retry of a send the owner denied keeps its carry); the
+  grant effect when grants helped, when they changed nothing, and with no grant.
+
+### Short owner replies: the agent's last message beside them, `call-v12` (2026-11-27)
+- PlanIR: `request.prior_agent_message`, the agent's last message to the owner before an owner chat message of at most 300 characters (a reply such as "yes", "go with A" or "try again"). It is the agent's text, never the owner's words; the plugins redact it and cut it to 2,000 characters, one third head and two thirds tail, with the cut points kept out of placeholders.
+- Plugins: Hermes sends the last assistant text of the session's previous turn, OpenClaw the last assistant message before the current one in the run's messages (with `allowConversationAccess`). Only on the owner's own chat message; not on a longer message, another sender's message, a turn the host starts itself, a scheduled run, a sub-agent or the background review.
+- View `call-v8` (`trim-v10`): `call-v7` plus the field when the request is at most 300 characters, cut to 1,500. Every other view drops it, so their states are unchanged.
+- Question set `call-v12`: `call-v11` on the `call-v8` view plus one block, `prior_message`, sent to the request and scope questions only when the view shows the field. When the reply accepts, picks from or retries what the agent's message proposes, the action and the targets the message writes out count as named by the owner. Without the field its questions are `call-v11`'s byte for byte. `MEASURED_QUESTION_TOKENS`: `call-v12` 10,600 (`call-v11`'s 10,100 plus the 273 to 413 tokens the block and the message cost on the same states, measured live).
+- The rule side never reads the field: a host, recipient or package the agent's message names does not become request-named, so the entity, reputation and lineage rules judge it as before.
+- Suite: no frozen case carries the field and no call state refits under the new budget, so a strict replay of both splits (call-v12 / exposure-v2 / conv-v11, 3 repeats, policy p1, evaluation-only cases included) has 0 misses and every case is unchanged; the gate passes on both splits.
+- `sentrook serve` and `sentrook scan` default to `call-v12`; `call-v1` to `call-v11` stay selectable.
+- Tests: `test_call_v12` (the set is `call-v11` plus the block on the new view; without a shown message the view and body are `call-v11`'s; the 300-character limit; every other view drops the field; the cut; the rule side never reads it; the probe; the reserve; the default), `test_question_set_pins` (`call-v12` with and without the block), and both plugins' tests for when the message is sent.

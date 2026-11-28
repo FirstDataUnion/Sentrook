@@ -229,6 +229,78 @@
       "title": "FloorApplied",
       "type": "object"
     },
+    "GrantEffect": {
+      "additionalProperties": true,
+      "description": "What the owner's grants did to this call's score, so the owner can see why a grant did or did not help.",
+      "properties": {
+        "grants": {
+          "description": "The grants that matched this call",
+          "items": {
+            "type": "string"
+          },
+          "title": "Grants",
+          "type": "array"
+        },
+        "lowered": {
+          "description": "The risk-tree leaves the grants lowered; empty when they changed nothing",
+          "items": {
+            "type": "string"
+          },
+          "title": "Lowered",
+          "type": "array"
+        },
+        "risk_without": {
+          "description": "The risk this call scores with the same answers and no grant (floors applied)",
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Risk Without",
+          "type": "number"
+        },
+        "unchanged": {
+          "description": "The largest parts of the score the grants did not change (at most four, highest first)",
+          "items": {
+            "$ref": "#/$defs/GrantEffectPart"
+          },
+          "title": "Unchanged",
+          "type": "array"
+        }
+      },
+      "required": [
+        "grants",
+        "risk_without"
+      ],
+      "title": "GrantEffect",
+      "type": "object"
+    },
+    "GrantEffectPart": {
+      "additionalProperties": true,
+      "description": "One part of the score the owner's grants did not change.",
+      "properties": {
+        "signal": {
+          "description": "The risk-tree leaf, e.g. suspicion.misalignment",
+          "title": "Signal",
+          "type": "string"
+        },
+        "text": {
+          "description": "The part in plain words, for the owner",
+          "title": "Text",
+          "type": "string"
+        },
+        "value": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "signal",
+        "value",
+        "text"
+      ],
+      "title": "GrantEffectPart",
+      "type": "object"
+    },
     "GrantHint": {
       "additionalProperties": true,
       "description": "A grant the owner could set so that a call like this would usually not be reviewed next time (the next scan's\nmodel sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the\nscanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds\nthe risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an\n`enforced` decision or a call with an independent strong signal. A `credential` hint ties the key a call sends\nto the host it sends it to; its re-score also runs the rule-based probes again with the grant in place.",
@@ -856,6 +928,18 @@
       },
       "title": "Floors Applied",
       "type": "array"
+    },
+    "grant_effect": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GrantEffect"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "What the owner's grants did to this score; null when no grant matched the call"
     },
     "grant_hints": {
       "description": "Up to three grants, each of which alone would bring this call below the review line next time, lowest resulting risk first. Empty when none would, and on every call below the line.",

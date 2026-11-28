@@ -11,6 +11,11 @@ since the version the catalog pins.
   them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same
   (`user:<id>`, `dm:<id>`). The setup skill says to write a binding with its platform, as `send_message` names the
   target.
+- When you answer the agent with a short message (300 characters or less, such as "yes", "go with A" or "try
+  again"), each call of that turn also sends the agent's last message before it, so the scanner can see what you
+  agreed to instead of reading your reply alone. It is sent as the agent's words, never as your request, redacted and
+  cut to 2,000 characters (start and end). It is not sent with a longer message, someone else's message, a turn Hermes
+  starts itself or the background review.
 - Your own message in a group chat or server channel now counts as yours when you are listed individually in
   `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`, as the OpenClaw plugin already does: routine work you ask for
   from a private channel is scored like a direct message instead of as someone else's request. Other members still
@@ -24,6 +29,9 @@ since the version the catalog pins.
   same job asked again. Every other new warning, a retry after a refusal included, still asks. The 10 points count
   from your answer, not from a call Session let through. The prompt now says "also covers the same parties at a
   similar risk". Passes on held calls are unchanged: no higher score and no new warning.
+- `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
+  lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
+  "the request does not clearly ask for this call"). Shown when the scanner sends it.
 - The setup skill does the looking itself: it works out what is routine from the agent's own scheduled jobs, skills,
   MCP servers and the setup report, shows you a short list to keep or drop, and asks once whether anything else
   should not need approval, instead of asking you a list of questions. It suggests doing the first setup in the

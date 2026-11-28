@@ -39,7 +39,18 @@ import * as passes from "./passes.ts";
 import * as runNow from "./runNow.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, describe as describeCall, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL_NAMES, toolKind, triggerKind, unwrapToolCall } from "./planir.ts";
+import {
+  buildPlanir,
+  heartbeatEventsOf,
+  hostLabels,
+  PLUGIN_VERSION,
+  priorAgentTextOf,
+  sessionRef,
+  TOOL_CALL_NAMES,
+  toolKind,
+  triggerKind,
+  unwrapToolCall,
+} from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { invalidEndpointEffect, type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -638,6 +649,12 @@ const plugin = {
       safely("before_prompt_build", () => {
         const runId = event?.runId ?? ctx?.runId;
         const patch: Json = { currentUserMessage: event?.currentUserMessage, prompt: event?.prompt };
+        // The agent's message a short reply from the owner answers (sent only with such a reply, `planir.ts`): read
+        // once, at the run's first prompt build, before the run's own messages can be in the list.
+        if (runId && !store.loadRun(runId).priorAgentRead) {
+          patch.priorAgentRead = true;
+          patch.priorAgentText = priorAgentTextOf(event?.messages, event?.currentUserMessage ?? event?.prompt);
+        }
         // OpenClaw's own background process (selfEdit.ts): recognised here, where raw model runs never arrive.
         const kind = selfEdit.runKindOf(runId, ctx, event?.prompt);
         if (kind) {

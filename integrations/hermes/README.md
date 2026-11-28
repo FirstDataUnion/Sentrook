@@ -114,7 +114,8 @@ hermes sentrook history 5
 
 Each row is one scan: time, tool, risk score, the action Sentrook took, and the review outcome.
 `hermes sentrook why last` shows the most recent scan in detail: risk, tier scores, reason codes and the entities it
-found (hosts, files, recipients, channels).
+found (hosts, files, recipients, channels). When one of your grants matched the call, it also says what the grants
+lowered (or that they changed nothing) and which parts of the score no grant covers.
 
 If the history is empty, the agent has not made a tool call since the restart.
 
@@ -932,6 +933,10 @@ Data Union Ltd:
   request and the turn it came from, and the note is sent as content. A message another Hermes plugin injects into
   the chat is not recognised and is sent as the turn's request, as before: Hermes does not tell plugins which
   messages were injected.
+- **The agent's last message before a short message of yours** (300 characters or less, such as "yes" or "go with
+  A"), so the scanner can see what you agreed to: the last text the agent wrote on the turn before. It goes only
+  with your own chat messages, marked as the agent's words, not yours, and cut to 2,000 characters (the start and
+  the end, where a question usually is).
 - **New tool results and file contents since the last check** (up to 256 KB; head and tail are kept), **and your
   last 20 actions** (the session's earlier calls, arguments capped at 4 KB each; `history_limit` changes the
   number).

@@ -416,6 +416,38 @@ def turn_seen(turn: dict[str, Any]) -> bool:
     return bool(turn.get("pre_llm_call") or turn.get("user_message") or turn.get("platform"))
 
 
+#: The agent's last message goes with an owner's message of at most this many characters (a reply such as "yes" or
+#: "go with A"), cut to `PRIOR_MESSAGE_CAP_CHARS`: one third head, two thirds tail, where a proposal usually is.
+PRIOR_MESSAGE_REQUEST_MAX_CHARS = 300
+PRIOR_MESSAGE_CAP_CHARS = 2000
+_PLACEHOLDER = re.compile(r"⟦[^⟦⟧]{0,80}⟧")
+
+
+def prior_message(text: str, redactor: Redactor) -> str:
+    """The agent's message as sent: redacted first, then cut, with the cut points moved out of any placeholder so
+    none is split (a cut before redaction could leave part of a secret the redactor no longer recognises)."""
+    t = redactor.string(text.strip())
+    cap = PRIOR_MESSAGE_CAP_CHARS
+    if len(t) <= cap:
+        return t
+    end = cap // 3
+    start = len(t) - (cap - end)
+    for m in _PLACEHOLDER.finditer(t):
+        s, e = m.span()
+        if s < end < e:
+            end = s
+        if s < start < e:
+            start = e
+    return f"{t[:end]} …[{start - end} characters cut]… {t[start:]}"
+
+
+def previous_turn_id(sess: dict[str, Any], turn_id: Any) -> Any:
+    """The session's turn before `turn_id` (the last one when `turn_id` is not counted yet), or None."""
+    turns = sess.get("turns") or []
+    i = turns.index(turn_id) if turn_id in turns else len(turns)
+    return turns[i - 1] if i >= 1 else None
+
+
 def _sent_entry(h: dict[str, Any]) -> dict[str, Any]:
     out = {k: v for k, v in h.items() if not k.startswith("_")}
     if out.get("decision") in _SENT_DECISION:
@@ -438,6 +470,7 @@ def build_planir(
     self_edit: dict[str, Any] | None = None,
     request_turn: dict[str, Any] | None = None,
     last_request: dict[str, Any] | None = None,
+    prior_turn: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
 
@@ -453,7 +486,11 @@ def build_planir(
     `last_request`: the session's last request turn (`request_turn_id`). A call on a turn Hermes started with
     an event notice, or on a turn that fired no `pre_llm_call`, carries its request with `carried_from_turn`
     when `host_turns.carries` allows; such a turn, and one Hermes started with a standing instruction, is
-    never an owner message (`host_turns.trigger_for`)."""
+    never an owner message (`host_turns.trigger_for`).
+    `prior_turn`: the session's turn before this one (`previous_turn_id`). On a turn that began with the owner's own
+    message of at most `PRIOR_MESSAGE_REQUEST_MAX_CHARS`, its last assistant text goes as
+    `request.prior_agent_message` (`prior_message`): the proposal a reply such as "yes" answers. It is the agent's
+    text, never put in `request.text`."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -481,6 +518,7 @@ def build_planir(
         else None
     )
     carried_from: int | None = None
+    prior_agent_message: str | None = None
     if request_turn is not None:
         request_text = _request_of(request_turn)
         if not request_text.strip():
@@ -504,6 +542,14 @@ def build_planir(
         trigger = host_turns.trigger_for(trigger, host.trigger if host else "system")
     else:
         request_text = _request_of(turn)
+        owner_reply = (
+            trigger["kind"] == "message"
+            and trigger["sender"]["relation"] == "owner"
+            and len(request_text.strip()) <= PRIOR_MESSAGE_REQUEST_MAX_CHARS
+        )
+        prior_text = str((prior_turn or {}).get("assistant_text") or "").strip()
+        if owner_reply and prior_text:
+            prior_agent_message = prior_message(prior_text, redactor)
     # A background call's turn is the number of the owner turn its request came from.
     request_turn_no = req_no if request_turn is not None else None
 
@@ -581,6 +627,11 @@ def build_planir(
         "request": {
             "text": redactor.string(request_text),
             "carried_from_turn": carried_from,
+            **(
+                {"prior_agent_message": prior_agent_message}
+                if prior_agent_message and not is_sub
+                else {}
+            ),
         },
         "new_inputs": sent_inputs,
         "history": history,

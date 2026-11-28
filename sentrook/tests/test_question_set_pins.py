@@ -83,6 +83,13 @@ BLOCK_SET_PINS = {
         "6870687a28854de30b343436434e4b1c3e66c28d1a26e86d6e9778a72acd008c",
         "51c8f929bf71f3f4e678adca2d4c480f8a426ff4bdc9913fdfb447e47d58d794",
     ),
+    # without a `prior_message` block (no agent message beside a short reply), call-v12 sends call-v11's questions
+    "call-v12": (
+        "c02b34878a669a8e5602cc57e0c23dec4fed406450c4518c945c6f34b0f829bc",
+        "91f9747e6bc569986617701a9898d61d54b6075051f40be8fb7f23d61b9bca6a",
+        "6870687a28854de30b343436434e4b1c3e66c28d1a26e86d6e9778a72acd008c",
+        "51c8f929bf71f3f4e678adca2d4c480f8a426ff4bdc9913fdfb447e47d58d794",
+    ),
 }
 
 #: Sets with a question sent only with a `services` block (`question_when`): the questions with that block alone and
@@ -102,6 +109,10 @@ SERVICES_SET_PINS = {
         "5a3f67d8c2488a6e4a57c3054b306bb0c62dd9003a9deef081437b8269032cc6",
     ),
     "call-v11": (
+        "a604dae1a919230a612201b3d90a6d4c29344e32acd000dd7ba68278255cb22e",
+        "5a3f67d8c2488a6e4a57c3054b306bb0c62dd9003a9deef081437b8269032cc6",
+    ),
+    "call-v12": (
         "a604dae1a919230a612201b3d90a6d4c29344e32acd000dd7ba68278255cb22e",
         "5a3f67d8c2488a6e4a57c3054b306bb0c62dd9003a9deef081437b8269032cc6",
     ),
@@ -125,7 +136,41 @@ SECRETS_SET_PINS = {
         "8050753b76650e364057dabbb0839733fe5398fdbc07e5755ad53e9bb62f2595",
         "05fa96a020fc1f6c19267609bce4cea022bc02eafff6eeb99c5717f03cf81443",
     ),
+    "call-v12": (
+        "8050753b76650e364057dabbb0839733fe5398fdbc07e5755ad53e9bb62f2595",
+        "05fa96a020fc1f6c19267609bce4cea022bc02eafff6eeb99c5717f03cf81443",
+    ),
 }
+
+
+#: Sets with a block sent only when the view shows the agent's message beside a short owner reply (`prior_message`):
+#: the questions with that block alone and with every other block too (the largest form, which `built_questions()`
+#: gives).
+PRIOR = {"text": "yes", "prior_agent_message": "Shall I file both?"}
+PRIOR_STATES = [
+    {"request": PRIOR, "pending_call": {"tool": "exec", "arguments": {}}},
+    {
+        "request": PRIOR,
+        "pending_call": {"tool": "exec", "arguments": {}, "batch": {"siblings": [{}]}},
+        "reputation": [{"value": "a.example"}],
+        "services": SERVICES,
+        "secrets_sent": SECRETS_SENT,
+    },
+]
+PRIOR_SET_PINS = {
+    "call-v12": (
+        "16c326b77a237c5231ac1405186713c48489fd704987c4c6c20078ab1caaf0cc",
+        "40a94e634980a050dd5d5f61f9fa1324ebc452174893f46e043af27c0cd19860",
+    ),
+}
+
+
+@pytest.mark.parametrize(("name", "pins"), sorted(PRIOR_SET_PINS.items()))
+def test_a_set_with_a_prior_message_block_builds_the_questions_pinned_with_it(name, pins):
+    qs = load_question_set(name)
+    for state, pin in zip(PRIOR_STATES, pins, strict=True):
+        assert _sha(build_body(qs, state, model="m", provider={})["questions"]) == pin
+    assert _sha(qs.built_questions()) == pins[-1]
 
 
 @pytest.mark.parametrize(("name", "pins"), sorted(BLOCK_SET_PINS.items()))
@@ -134,9 +179,11 @@ def test_a_block_set_builds_the_questions_pinned_for_each_state_shape(name, pins
     for state, pin in zip(STATES, pins, strict=True):
         assert _sha(build_body(qs, state, model="m", provider={})["questions"]) == pin
     # with no state, the largest form: every block, as with both a batch and a reputation block (and a services
-    # block and a secrets_sent block, for a set that has them)
+    # block, a secrets_sent block and a prior_message block, for a set that has them)
     largest = (
-        SECRETS_SET_PINS[name][-1]
+        PRIOR_SET_PINS[name][-1]
+        if name in PRIOR_SET_PINS
+        else SECRETS_SET_PINS[name][-1]
         if name in SECRETS_SET_PINS
         else SERVICES_SET_PINS[name][-1]
         if name in SERVICES_SET_PINS
