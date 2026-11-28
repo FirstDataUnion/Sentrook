@@ -300,6 +300,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
       return setup.run(configOf(ctx), rest, o.by, new Date(), CMD, o.record, o.beforeWrite, {
         openclawDir: ctx.openclawDir ?? openclawDir(ctx.env),
         hostConfig: ctx.hostConfig,
+        hostVersion: ctx.hostVersion,
       });
     },
   },

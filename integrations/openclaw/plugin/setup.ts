@@ -1053,6 +1053,8 @@ export interface Sources {
   /** OpenClaw's config (its MCP servers). */
   hostConfig: unknown;
   code?: () => string;
+  /** OpenClaw's version where the plugin runtime gives it, for a trusted server (`trust.serverSupport`). */
+  hostVersion?: unknown;
 }
 
 /** Builds the screen, keeps its items with a new code (`setup.json`), and returns its text. */
@@ -1174,7 +1176,16 @@ function storedItem(raw: unknown): (Entry & { tags: string[]; proposals: string[
 }
 
 /** `apply <code> ...`: sets the chosen items of the screen the code belongs to, in one locked pass. */
-export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd: Cmd, record: RecordFn, beforeWrite: () => void): string {
+export function apply(
+  cfg: PluginConfig,
+  rest: string,
+  by: Entry,
+  now: Date,
+  cmd: Cmd,
+  record: RecordFn,
+  beforeWrite: () => void,
+  hostVersion?: unknown,
+): string {
   const parsed = parseApply(rest, cmd);
   if (typeof parsed === "string") return parsed;
   const refused = `That is not the code on the setup screen, or it has expired: ${openText(cmd)}`;
@@ -1215,7 +1226,7 @@ export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd
             continue;
           }
           const [line, change] = TRUST_KINDS.has(item.kind)
-            ? applyTrust(cfg, item, tags, by, now, n, beforeWrite)
+            ? applyTrust(cfg, item, tags, by, now, n, beforeWrite, hostVersion)
             : applyOne(cfg, data, item, tags, parsed, by, now, n);
           lines.push(line);
           if (change) (change.kind === "settings" ? trusts : changes).push(change);
@@ -1305,10 +1316,11 @@ function applyTrust(
   now: Date,
   n: number,
   beforeWrite: () => void,
+  hostVersion?: unknown,
 ): [string, Entry | null] {
   const kind = item.kind === "trusted_chat" ? "chat" : "user";
   const rest = `add ${item.pattern}${item.owner_only ? " --owner-only" : ""} --confirm`;
-  const { reply, change } = trust.run(cfg, kind, rest, by, {}, {}, now, (sub) => `/sentrook-${sub}`, beforeWrite);
+  const { reply, change } = trust.run(cfg, kind, rest, by, { hostVersion }, {}, now, (sub) => `/sentrook-${sub}`, beforeWrite);
   if (change === null) return [`${n}. Not set: ${reply}`, null];
   return [`${n}. ${reply}`, { ...change, kind: "settings", source: tags }];
 }
@@ -1428,7 +1440,7 @@ export function run(
   const verb = (space < 0 ? trimmed : trimmed.slice(0, space)).toLowerCase();
   const more = space < 0 ? "" : trimmed.slice(space + 1);
   if (!verb) return showScreen(cfg, now, cmd, src, beforeWrite);
-  if (verb === "apply") return apply(cfg, more, by, now, cmd, record, beforeWrite);
+  if (verb === "apply") return apply(cfg, more, by, now, cmd, record, beforeWrite, src.hostVersion);
   if (verb === "discard") return discard(cfg, more, by, now, cmd, record, beforeWrite);
   return usage(cmd);
 }

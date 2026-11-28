@@ -638,3 +638,38 @@ test("the setup screen describes a whole server", () => {
   assert.match(warning!, /including ones created later/);
   assert.match(reviews!, /members there may approve/);
 });
+
+test("a server proposed on the setup screen is not set on an OpenClaw that does not name a message's server", () => {
+  const oc = mkdtempSync(path.join(tmpdir(), "sentrook-trust-server-setup-"));
+  const state = path.join(oc, "sentrook");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(
+    path.join(state, "proposals.json"),
+    JSON.stringify({
+      version: 1,
+      proposals: [
+        {
+          id: "p-bbbbbb",
+          session_ref: "s_000000000002",
+          created_at: "2026-11-28T11:00:00Z",
+          expires_at: "2026-11-29T11:00:00Z",
+          items: [{ trusted_chat: `discord:server:${SERVER}`, reason: "The team server" }],
+        },
+      ],
+    }),
+  );
+  writeFileSync(path.join(state, "traffic.jsonl"), "");
+  const cfg = resolveConfig({ trafficLog: { enabled: true } }, { OPENCLAW_STATE_DIR: oc, HOME: oc });
+  const by = { basis: ["local_terminal"], channel: null, sender_ref: null };
+  const run = (args: string, hostVersion: string) =>
+    setup.run(cfg, args, by, new Date("2026-11-28T12:00:00Z"), (s) => `/sentrook-${s}`, () => undefined, () => undefined, {
+      openclawDir: oc,
+      hostConfig: {},
+      code: () => "4821",
+      hostVersion,
+    });
+  assert.ok(run("", "2026.10.9").includes(`Trust the whole server \`discord:server:${SERVER}\``));
+  const reply = run("apply 4821", "2026.10.9");
+  assert.match(reply, /Not set: A whole server cannot be trusted here/);
+  assert.ok(!existsSync(path.join(state, "trust.json")) || !readFileSync(path.join(state, "trust.json"), "utf8").includes("server:"));
+});
