@@ -6,6 +6,9 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The `sentrook-guide` skill's "Working well with Sentrook" section adds one habit: when the agent asks you to
+  confirm something, it writes out in that message what it will do (the service or place, and what it will send,
+  write or change), since Sentrook reads the agent's last message beside a short reply such as "yes".
 - **Always** on an MCP tool call now means always. Answered on your own turn, it also covers that tool on that
   server for 30 days, in any session: a later call of the same tool on the same server (its configured address or
   package), whatever page or file it writes, at most 10 points higher and below the block line, with no new warning,
