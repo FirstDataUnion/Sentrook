@@ -1405,3 +1405,10 @@ stopped call, and the reach of any off-host send, none of which a grant touched.
   that shows a value or is missing or cut, a file-read tool, a session that already held the flag.
 - Tests: `test_output_only_read` (the shapes recognised and a wide set that is not, output lines, token round trip,
   linear growth).
+  
+### Trusted chats and users (2026-11-28)
+- PlanIR: sender basis `plugin_allowlist:chat`, a member of a chat the owner marked as trusted. The relation is `trusted` (request origin 0.3, as for a trusted sender), never the owner; a scanner that predates the basis reads it as `unknown` and still scores the relation.
+- Plugins: `trust-chat` and `trust-user` owner commands (direct message or terminal only, `--confirm` after a warning) and the `trusted_chats` / `trusted_senders` settings (OpenClaw `trustedChats`; `trustedSenders` also takes `<platform>:<id>`). Members of a trusted chat may answer its reviews; `--owner-only` holds them for the owner. On Hermes a Session answer in a trusted chat covers the job there and never sets a grant. Grants, snooze and owner commands stay the owner's.
+- Setup: the setup report lists the group chats the agent was used in (calls, how many people by keyed id, the owner's own calls, trusted or not); the propose tool takes `trusted_chat` and `trusted_sender` items; the setup screen shows them with warnings and sets them with its code; the skills and agent rules explain trust and say never to change it on a chat's request.
+- Guardrail (ruleset 9): an edit of a host config file, or of an `.env` file, whose text names a trust setting (`trusted_chats`, `trustedSenders` and the like) takes the `guardrail.config_entry` floor, as one naming the plugin does; an `.env` edit naming the plugin does too. Other config and `.env` edits are unchanged.
+- Tests: `test_context_trusted_chat_member_is_trusted_not_other`, the trust-setting guardrail cases in `test_aira_detectors`, and both plugins' trust tests (sender parity in the shared fixture, commands, holds, proposals, setup screen and report goldens).

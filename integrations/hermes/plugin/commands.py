@@ -43,6 +43,7 @@ from . import (
     setup,
     skill_review,
     snooze,
+    trust,
 )
 from .auth import missing_credentials
 from .config import HIDE_SETTING, PluginConfig, hermes_home, resolve_config
@@ -374,6 +375,56 @@ def run_attended(
     return _changed(cfg, owner_settings.run_attended(cfg, rest, who, now, CMD), who, "settings")
 
 
+def _run_trust(
+    kind: str,
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
+) -> str:
+    cfg = resolve_config(settings, env)
+    if who is None:
+        return refusal(f"trust-{kind}")
+    here = dict(chat or {})
+    here["chat_id"] = here.get("owner_chat_id") or here.get("chat_id") or ""
+    result = trust.run(
+        cfg,
+        kind,
+        rest,
+        who,
+        here,
+        dict(os.environ) if env is None else env,
+        datetime.now(UTC),
+        CMD,
+        lambda fn: owner_settings._change(cfg.state_dir, fn),
+    )
+    return _changed(cfg, result, who, "settings")
+
+
+def run_trust_chat(
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
+) -> str:
+    return _run_trust("chat", rest, settings, env, who, chat, send)
+
+
+def run_trust_user(
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
+) -> str:
+    return _run_trust("user", rest, settings, env, who, chat, send)
+
+
 def run_setup(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
@@ -544,6 +595,25 @@ COMMANDS: dict[str, Subcommand] = {
         args="add|remove|list [platform] [--confirm]",
         owner_only=True,
         cli_rest=True,
+    ),
+    "trust-chat": Subcommand(
+        "list, add or remove a group chat whose members you all know: their messages count as from someone you "
+        "trust, not a stranger (never as yours); members answer its reviews unless added with --owner-only; "
+        "adding needs --confirm",
+        run_trust_chat,
+        args="add|remove|list [<platform>:<chat id>] [--owner-only] [--confirm]",
+        owner_only=True,
+        cli_rest=True,
+        chat=True,
+    ),
+    "trust-user": Subcommand(
+        "list, add or remove a person you know: their messages count as from someone you trust, not a "
+        "stranger (never as yours); adding needs --confirm",
+        run_trust_user,
+        args="add|remove|list [<platform>:<user id>] [--confirm]",
+        owner_only=True,
+        cli_rest=True,
+        chat=True,
     ),
     "setup": Subcommand(
         "what would stop Sentrook asking about routine work: channels your cron jobs deliver to, your MCP "

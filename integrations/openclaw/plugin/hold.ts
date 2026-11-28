@@ -30,7 +30,9 @@
  *   call from that source within 7 days, with nothing started, and allow always and deny are bound to the source. A
  *   run with no source has nothing to bind to: it offers allow only, bound to the call's exact arguments. The notice
  *   lists only the answers the hold offers. A wider grant the scanner suggests is never set by an answer: `why` shows
- *   its command, for the owner to set by hand.
+ *   its command, for the owner to set by hand. A review in a chat the owner trusts with `--owner-only` (trust.ts), on
+ *   anyone's turn but the owner's, is held the same way, bound to the exact call, and the agent is told to say in the
+ *   chat that it is waiting for the owner (`HELD_CHAT_TEXT`).
  * - A later hold of the same job (or source) and action, at no higher risk and with no new warning, updates the waiting hold
  *   (its count and when it was last seen) and sends no new notice.
  * - One notice per cron run: the first hold of a run (`runKey`, a sub-agent of the run included) sends the notice and
@@ -91,6 +93,11 @@ const ID = /^h-[0-9a-f]{6}$/;
 
 export const HELD_TEXT =
   "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run.";
+/** A call held in a chat the owner trusts with reviews held for them (trust.ts): the people there are waiting. */
+export const HELD_CHAT_TEXT =
+  "Sentrook held this tool call for the owner's approval, so it did not run. Tell the people in this chat that you " +
+  "are waiting for the owner to approve it. Do not retry it until someone says the owner has allowed it; then the " +
+  "same call can run once.";
 
 type Entry = Record<string, any>;
 

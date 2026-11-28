@@ -45,7 +45,7 @@ for (const [what, rel] of Object.entries(FILES)) {
   test(`every command the ${what} names exists in OpenClaw, in OpenClaw's spelling`, () => {
     const text = read(rel);
     const named: string[] = [];
-    for (const m of text.matchAll(/\/sentrook(?:-([a-z]+)|\s+([a-z]+))/g)) {
+    for (const m of text.matchAll(/\/sentrook(?:-([a-z-]+)|\s+([a-z]+))/g)) {
       if (m[1]) {
         assert.ok(OWNER_COMMANDS.has(m[1]), `/sentrook-${m[1]} is not an OpenClaw command (${rel})`);
         named.push(m[1]);
@@ -55,7 +55,7 @@ for (const [what, rel] of Object.entries(FILES)) {
         named.push(m[2]!);
       }
     }
-    for (const m of text.matchAll(/openclaw sentrook ([a-z]+)/g)) {
+    for (const m of text.matchAll(/openclaw sentrook ([a-z-]+)/g)) {
       assert.ok(CLI_VERBS.has(m[1]!), `openclaw sentrook ${m[1]} does not exist (${rel})`);
     }
     assert.ok(named.length > 0, `${rel} names commands`);
@@ -79,7 +79,9 @@ test("the rules forbid every owner command that changes what Sentrook allows", (
     // every owner command but the ones that only show something, the revoke under passes and the apply under setup
     const shows = new Set(["history", "why", "report", "grants", "passes", "setup"]);
     for (const verb of Object.keys(OWNER_SUBCOMMANDS).filter((v) => !shows.has(v))) {
-      assert.ok(text.includes(`\`/sentrook-${verb}\``), `${rel} forbids /sentrook-${verb}`);
+      // a command that lists too is forbidden by its changes (`/sentrook-trust-chat add`)
+      const forbidden = text.includes(`\`/sentrook-${verb}\``) || text.includes(`\`/sentrook-${verb} add\``);
+      assert.ok(forbidden, `${rel} forbids /sentrook-${verb}`);
     }
     assert.ok(text.includes("`/sentrook-passes revoke`"), `${rel} forbids /sentrook-passes revoke`);
     assert.ok(text.includes("`/sentrook-setup apply`"), `${rel} forbids /sentrook-setup apply`);

@@ -117,10 +117,19 @@ HERMES_CHAT = {"direct": "dm", "group": "group"}
 
 @pytest.mark.parametrize("case", PARITY["cases"], ids=lambda c: c["name"])
 def test_the_same_group_facts_give_the_same_sender_as_openclaw(case):
+    from plugin.trust import Trust
+
     user = "u-owner" if case["owner"] else "u-member"
-    sent = sender_of("discord", facts(HERMES_CHAT[case["chat"]], user), None, ALLOW)
+    f = {**facts(HERMES_CHAT[case["chat"]], user), "chat_id": "c-1"}
+    trusted = Trust(
+        frozenset({f"discord:{user}"} if case.get("trusted_user") else set()),
+        {"discord:c-1": False} if case.get("trusted_chat") else {},
+    )
+    sent = sender_of("discord", f, None, ALLOW, trusted)
     assert sent["relation"] == case["relation"]
     assert ("group_chat" in sent["basis"]) is case["group_chat"]
+    if "allowlist" in case:
+        assert sent["basis"][0] == case["allowlist"]
 
 
 # ---- other members' lines in front of the owner's message ----------------------------------------------------

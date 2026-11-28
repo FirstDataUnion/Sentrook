@@ -231,6 +231,10 @@ class PluginConfig:
     #: Hide the calls (redacted arguments) that `/sentrook why`, held-save notices and the dashboard show by
     #: default. Anyone who can open the dashboard or read the owner's chat reads them.
     hide_tool_calls: bool = False
+    #: Trusted users (`platform:user id`) and chats (`platform:chat id`, or `{chat, owner_only}`) from the config,
+    #: as given; `trust` reads them with the ones the owner set by command.
+    trusted_senders: Any = None
+    trusted_chats: Any = None
 
 
 def hermes_home(env: dict[str, str]) -> Path:
@@ -473,4 +477,6 @@ def resolve_config(
             _str(cfg.get("owner_channel")) or _str(env.get("SENTROOK_OWNER_CHANNEL")) or ""
         ).lower(),
         hide_tool_calls=_bool(cfg.get(HIDE_SETTING, env.get("SENTROOK_HIDE_TOOL_CALLS")), False),
+        trusted_senders=cfg.get("trusted_senders") or env.get("SENTROOK_TRUSTED_SENDERS"),
+        trusted_chats=cfg.get("trusted_chats") or env.get("SENTROOK_TRUSTED_CHATS"),
     )

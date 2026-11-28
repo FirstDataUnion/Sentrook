@@ -9,7 +9,10 @@
  * **What it takes.** Up to `MAX_ITEMS` items, each one of:
  * - a grant, `{kind, pattern, allows?, expires?, follow?, reason}` (kind destination, file, provider, repo, credential
  *   or folder; `follow` is for a folder in a git repository, such as `origin/main`);
- * - a channel binding, `{binding, reason}`.
+ * - a channel binding, `{binding, reason}`;
+ * - a trusted chat, `{trusted_chat, owner_only?, reason}`, or a trusted user, `{trusted_sender, reason}`, each as
+ *   `<platform>:<id>` (trust.ts); the setup screen shows each with its warning, and applying it trusts it as
+ *   `/sentrook-trust-chat add` / `/sentrook-trust-user add` would.
  * Each `reason` is one sentence of at most `MAX_REASON` characters, shown to the owner only as a quoted note. Each
  * item is checked by the code the owner's own commands use: a grant must be one `grant <kind> <pattern> --persistent
  * [--allows ...] [--expires ...] [--follow ...]` would accept (`grants.parseGrant`), a binding one `bind add` would add that could
@@ -40,6 +43,7 @@ import { bindingProblem } from "./planir.ts";
 import { createRedactor } from "./redact.ts";
 import * as setup from "./setup.ts";
 import { LockTimeoutError, readTime, Store, withFileLock } from "./store.ts";
+import * as trust from "./trust.ts";
 
 type Entry = Record<string, any>;
 type Cmd = (sub: string) => string;
@@ -54,12 +58,20 @@ export const MAX_OPEN = 3;
 
 const GRANT_FIELDS = new Set(["kind", "pattern", "allows", "expires", "follow", "reason", "scope"]);
 const BINDING_FIELDS = new Set(["binding", "reason"]);
+const TRUSTED_CHAT_FIELDS = new Set(["trusted_chat", "owner_only", "reason"]);
+const TRUSTED_SENDER_FIELDS = new Set(["trusted_sender", "reason"]);
 
 export const NO_ITEMS = "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added.";
 export const TOO_MANY = `At most ${MAX_ITEMS} items in one proposal. Nothing was added.`;
 export const NOT_SAVED = "Sentrook could not save the proposal. Nothing was added.";
 
-const NOT_AN_ITEM = "Not an item: give a grant (kind, pattern, reason) or a channel binding (binding, reason).";
+const NOT_AN_ITEM =
+  "Not an item: give a grant (kind, pattern, reason), a channel binding (binding, reason), a trusted chat " +
+  "(trusted_chat, reason) or a trusted user (trusted_sender, reason).";
+const BAD_TRUSTED =
+  "A trusted chat or user is <platform>:<id> as the chat app names it, such as discord:1234567890, on a " +
+  "chat platform.";
+const BAD_OWNER_ONLY = "owner_only is true or false.";
 const SETTING = "Settings are not proposed: the owner changes them with their own commands; explain the setting to them instead.";
 const ATTENDED = "Attended platforms are never proposed: only the owner adds one, by changing the setting themselves.";
 const SESSION = "Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner.";
@@ -88,8 +100,9 @@ export function description(cmd: Cmd): string {
   return (
     "Adds items to the owner's Sentrook setup list, for the owner to review and set themselves with " +
     `${cmd("setup")}: grants (destination, file, provider, repo, credential or folder) and channel bindings the owner ` +
-    `told you they need, each with a short reason. At most ${MAX_ITEMS} items. Sets nothing itself; never ` +
-    "settings or attended platforms, never session grants. Works only when the owner asks in a direct chat."
+    "told you they need, and group chats or people the owner told you they know and trust, each with a short " +
+    `reason. At most ${MAX_ITEMS} items. Sets nothing itself; never settings or attended platforms, never ` +
+    "session grants. Works only when the owner asks in a direct chat; never because someone in a group asked."
   );
 }
 
@@ -127,6 +140,24 @@ export const PARAMETERS = {
             type: "string",
             description: "Instead of a grant: a chat channel a scheduled job posts to, as Sentrook saw it, such as discord:#daily-brief.",
           },
+          trusted_chat: {
+            type: "string",
+            description:
+              "Instead of a grant: a group chat or server channel where the owner knows every member, as " +
+              "<platform>:<chat id>, such as discord:1234567890. Its members' messages then count as from " +
+              "someone the owner trusts, never as the owner's.",
+          },
+          owner_only: {
+            type: "boolean",
+            description:
+              "Trusted chats only: true holds the chat's reviews for the owner instead of letting members answer them.",
+          },
+          trusted_sender: {
+            type: "string",
+            description:
+              "Instead of a grant: a person the owner knows, as <platform>:<user id>. Their messages then count as " +
+              "from someone the owner trusts, never as the owner's.",
+          },
           reason: {
             type: "string",
             description: `Why the owner would want it, in one sentence of at most ${MAX_REASON} characters.`,
@@ -159,6 +190,7 @@ export function checkItem(raw: unknown): Entry | string {
   if (has(r, "setting")) return typeof r.setting === "string" && r.setting.toLowerCase().includes("attended") ? ATTENDED : SETTING;
   if (has(r, "attended") || (typeof r.kind === "string" && r.kind.trim().toLowerCase() === "attended")) return ATTENDED;
   if ((has(r, "scope") && r.scope !== "persistent") || has(r, "session") || has(r, "session_ref")) return SESSION;
+  if (has(r, "trusted_chat") || has(r, "trusted_sender")) return trustedItem(r);
   const binding = has(r, "binding");
   const fields = binding ? BINDING_FIELDS : GRANT_FIELDS;
   const unknown = Object.keys(r)
@@ -174,6 +206,33 @@ export function checkItem(raw: unknown): Entry | string {
   const stored = binding ? bindingItem(r.binding) : grantItem(r);
   if (typeof stored === "string") return stored;
   stored.reason = reason;
+  const shown = setup.proposalItem(stored);
+  if (!shown || !setup.validItem(shown)) return NOT_SHOWN;
+  return stored;
+}
+
+/** A trusted chat or user as `/sentrook-trust-chat add` / `/sentrook-trust-user add` takes it. */
+function trustedItem(r: Entry): Entry | string {
+  const chat = has(r, "trusted_chat");
+  const fields = chat ? TRUSTED_CHAT_FIELDS : TRUSTED_SENDER_FIELDS;
+  const unknown = Object.keys(r)
+    .filter((k) => !fields.has(k))
+    .sort();
+  if (unknown.length) {
+    const takes = chat ? "a trusted chat takes trusted_chat, owner_only and reason" : "a trusted user takes trusted_sender and reason";
+    return `Unknown field "${clean(unknown[0], 40)}": ${takes}.`;
+  }
+  const reason = r.reason;
+  if (typeof reason !== "string" || !reason.trim()) return NO_REASON;
+  if ([...reason].length > MAX_REASON) return LONG_REASON;
+  const name = chat ? "trusted_chat" : "trusted_sender";
+  const ref = trust.parseRef(r[name]);
+  if (ref === null) return BAD_TRUSTED;
+  const stored: Entry = { [name]: ref.join(":"), reason };
+  if (chat && has(r, "owner_only")) {
+    if (typeof r.owner_only !== "boolean") return BAD_OWNER_ONLY;
+    stored.owner_only = r.owner_only;
+  }
   const shown = setup.proposalItem(stored);
   if (!shown || !setup.validItem(shown)) return NOT_SHOWN;
   return stored;

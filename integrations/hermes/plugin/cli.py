@@ -198,8 +198,10 @@ def _rest(cmd: str, args: argparse.Namespace) -> str:
         words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
     if cmd == "snooze" and args.all:
         words.append("--all")
-    if cmd == "attended" and args.confirm:
+    if cmd in ("attended", "trust-chat", "trust-user") and args.confirm:
         words.append("--confirm")
+    if cmd == "trust-chat" and args.owner_only:
+        words.append("--owner-only")
     if cmd == "report":
         words += [f"--{f}" for f in REPORT_FLAGS if getattr(args, f)]
     return " ".join(words)
@@ -238,6 +240,19 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
                     action="store_true",
                     help="add a platform Sentrook treats as unattended",
                 )
+            elif name in ("trust-chat", "trust-user"):
+                p.add_argument(
+                    "sentrook_arg", nargs="*", metavar="add|remove|list [<platform>:<id>]"
+                )
+                p.add_argument(
+                    "--confirm", action="store_true", help="add after reading the warning"
+                )
+                if name == "trust-chat":
+                    p.add_argument(
+                        "--owner-only",
+                        action="store_true",
+                        help="hold the chat's reviews for you instead of letting members answer",
+                    )
             elif name == "notify":
                 p.add_argument("sentrook_arg", nargs="*", metavar="<platform>|off|status")
             elif COMMANDS[name].cli_rest:

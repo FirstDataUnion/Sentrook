@@ -9,5 +9,6 @@
   "attended_platforms": ["api_server", "[web](https://evil.example)"],
   "unsent_grants": 1,
   "shadowed_skills": ["sentrook-setup"],
-  "traffic_log": true
+  "traffic_log": true,
+  "trusted": {"chats": {"discord:111": false, "telegram:-100333": true}, "users": 2}
 }

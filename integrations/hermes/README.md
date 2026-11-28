@@ -362,6 +362,8 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
 | `notify here\|off\|status\|<platform>` | Where Sentrook's notices go (see [Where notices go](#where-notices-go)). `here` stores the chat you send it in; `<platform>` that platform's home channel (the form for the command line); `off` goes back to `owner_channel` in the config |
 | `attended add\|remove\|list [platform] [--confirm]` | Platforms where a person answers Hermes's approval prompts, besides the chat platforms and apps (see [Attended platforms](#attended-platforms)). Adding one loosens Sentrook |
+| `trust-chat add\|remove\|list [<platform>:<chat id>] [--owner-only] [--confirm]` | Group chats or server channels where you know every member (see [Trusted chats and users](#trusted-chats-and-users)). Adding one needs `--confirm` |
+| `trust-user add\|remove\|list [<platform>:<user id>] [--confirm]` | People you know, in any chat (see [Trusted chats and users](#trusted-chats-and-users)). Adding one needs `--confirm` |
 | `setup [apply <code> [1,3] \| discard <id>]` | What would stop Sentrook asking about routine work, each item described by Sentrook; `apply` with the code the list ends with sets them, `--expires 90d` or `--until-revoked` changes how long the grants last (see [Set up with /sentrook setup](#set-up-with-sentrook-setup)) |
 | `help` | Lists the commands, and says where notices go and which platforms are attended |
 
@@ -460,7 +462,7 @@ whole answer is "Setup needs the owner in a direct chat." Each call is recorded 
 ### The agent's setup proposals
 
 The agent has a second tool, `sentrook_propose_setup`, which the setup skill uses at hand-over: it adds what you told
-the agent (a service, a folder, a key name, a channel a job posts to) to your `/sentrook setup` list, up to 20 items
+the agent (a service, a folder, a key name, a channel a job posts to, a group chat or person you know) to your `/sentrook setup` list, up to 20 items
 at a time, each with a short reason. It sets nothing: you read each item on the list in Sentrook's words and set it
 with the list's code. Each item must be one `/sentrook grant ... --persistent` or `/sentrook bind add` would accept;
 the agent is told which it did not add and why. It never takes settings, attended platforms or grants for one
@@ -557,6 +559,41 @@ and some things stay for a direct message or the terminal: a snooze does not app
 **Always** and **Session** never set a suggested grant (the prompt shows the command instead); **Session** covers only
 the exact action; a subagent's reviews are held for you; and owner commands (`/sentrook …` other than `status` and
 `help`) are refused. A private channel counts as a group too.
+
+#### Trusted chats and users
+
+In a private server where you know everyone, other members' messages need not count as a stranger's. Mark the chat as
+trusted, or the people you know, from a direct message with the bot or the terminal:
+
+```
+/sentrook trust-chat add discord:1234567890 --confirm
+/sentrook trust-user add discord:2345678901 --confirm
+```
+
+A chat or user is written `<platform>:<id>`, with the ids the chat app uses (in Discord, turn on Developer Mode and use
+**Copy Channel ID** or **Copy User ID**). Without `--confirm` the command shows its warning and changes nothing.
+Every member's message in a trusted chat (a thread in it included), and a trusted user's message in any chat, is sent
+to Sentrook as from someone you trust: scored well below a stranger's, above your own. Trusted is never you: grants,
+settings and owner commands stay yours, a snooze still does not apply in groups, and Sentrook's floors still apply.
+Hermes does not tell plugins a member's roles, so a role cannot be trusted; trust the chat or each person.
+
+Reviews in a trusted chat ask in the chat, and any member Hermes lets answer may approve them, unless you narrow
+that with `approvals.approvers` in Hermes's config. A **Session** answer there covers the same job for that chat, but
+never sets a grant. Add a chat with `--owner-only` to have its reviews held for you instead: a member's call that
+needs review does not run, the agent says in the chat that it is waiting for you, you get a notice where notices go,
+and `/sentrook allow <id>` (from a direct message or the terminal) lets that exact call through once when the agent
+tries again. Your own messages in such a chat still ask in the chat.
+
+Only you change trust, and never from inside a group (Sentrook refuses there, your own messages included). The
+agent may suggest a trusted chat or user on your setup list (see [The agent's setup proposals](#the-agents-setup-proposals)), only when
+you ask it in a direct message; you set it with the list's code. `/sentrook trust-chat list` and `trust-user list`
+show what is trusted; `remove` undoes it. The settings `trusted_chats` and `trusted_senders` hold more that only the
+config can change. Every change is written to the traffic log, naming the platform, never the id. Sentrook blocks the
+agent from changing who is trusted itself, by its settings file, Hermes's `config.yaml` or an `.env` file.
+
+For the setup report's list of group chats, each scan in a group chat is logged with the chat's id and a keyed
+fingerprint of who wrote (never their id or name). A report you save to send us (`/sentrook report --save`) includes
+that record.
 
 A subagent you start from your own direct message on a chat platform, the TUI or the desktop app is attended too:
 Hermes shows its approval prompt in that chat (on a chat platform also after your turn has ended, while the
@@ -1029,8 +1066,8 @@ In short, for anyone deciding whether to install it:
   failed sends you one notice per job (per session for other runs) every 6 hours at most. If you withdraw consent on
   the FIDU portal it sends you one notice saying scans stopped. Those notices are the only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
-  the traffic log, grants, snooze state, held calls, passes and denials, where notices go and the attended platforms
-  you added, when each job last had a scan-failure notice, whether the consent-withdrawn notice was sent, the agent's setup proposals and the last `/sentrook setup`
+  the traffic log, grants, snooze state, held calls, passes and denials, where notices go, the attended platforms
+  and the trusted chats and users you added, when each job last had a scan-failure notice, whether the consent-withdrawn notice was sent, the agent's setup proposals and the last `/sentrook setup`
   list with its code, and the conversation logs above), or to the paths you set for them (`state_dir`,
   `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and secret redaction
   are on (and, when you open `/sentrook setup`, your MCP servers), and the cron jobs in `cron/jobs.json` (a running
@@ -1061,6 +1098,8 @@ settings (see [step 2](#2-sign-in)).
 | `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. `/sentrook notify here` sets a chat instead and wins over this (see [Where notices go](#where-notices-go)). With neither set, a held call's notice goes only to its job's delivery chat or your direct message ([With no target set](#with-no-target-set)) |
 | `hide_tool_calls` | `false` | Hides the calls (secrets masked) that `/sentrook why`, background-save notices and the dashboard show. Anyone who can read your chat or open the dashboard reads them, so turn this on where others can. `dashboard_show_calls` is replaced by this and does nothing |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Either way they never ask (see [Background skill and memory saves](#background-skill-and-memory-saves)). A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
+| `trusted_chats` | | Group chats where you know every member, as `<platform>:<chat id>` entries, or `{chat, owner_only: true}` to have their reviews held for you (see [Trusted chats and users](#trusted-chats-and-users)). `/sentrook trust-chat add` adds more |
+| `trusted_senders` | | People you know, as `<platform>:<user id>` entries. `/sentrook trust-user add` adds more |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
 | `channel_bindings` | | Channels this deployment normally delivers to |

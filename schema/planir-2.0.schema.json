@@ -1027,6 +1027,7 @@
         "host_owner_flag",
         "plugin_allowlist:sender",
         "plugin_allowlist:role",
+        "plugin_allowlist:chat",
         "host_allowlist_dm",
         "group_chat",
         "host_open_access",

@@ -6,7 +6,7 @@
  * blocks. Every request and response is redacted on the host and appended to a local traffic log.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { homedir } from "node:os";
 
 import { agentRules, reportedTool, shadowingSkills, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
@@ -65,6 +65,7 @@ import * as setupReport from "./setupReport.ts";
 import * as snooze from "./snooze.ts";
 import { type HistoryEntry, type JobRunLink, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
+import * as trust from "./trust.ts";
 
 type Json = Record<string, unknown>;
 type Resolution = "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled";
@@ -419,6 +420,10 @@ const plugin = {
         shadowed_skills: [...new Set(shadowed)],
         traffic_log: cfg.trafficLog.enabled,
         held_waiting: hold.waiting(cfg.stateDir, now),
+        trusted: (() => {
+          const t = trustOf(cfg);
+          return { chats: Object.fromEntries(t.chats), users: trust.userCount(t) };
+        })(),
       };
       const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);
       const log = cfg.trafficLog.enabled ? cfg.trafficLog.path : null;
@@ -606,6 +611,25 @@ const plugin = {
         fn();
       } catch (err) {
         api.logger.warn(`${LOG} ${name} failed: ${String(err)}`);
+      }
+    };
+
+    /**
+     * A turn in a group chat, for the setup report's list of group chats (`setup.readEvidence`): the chat as
+     * `platform:chat id` (a thread's own chat), and who wrote by a key under the install's salt, never their id.
+     */
+    const groupRecord = (g: { chat: string; senderId: string | null }): Record<string, string> => ({
+      chat: g.chat,
+      ...(g.senderId ? { sender: createHmac("sha256", `sentrook group sender|${store.salt()}`).update(g.senderId).digest("hex").slice(0, 16) } : {}),
+    });
+
+    /** The trusted users and chats in force (trust.ts); the config's alone when the trust file cannot be read. */
+    const trustOf = (cfg: PluginConfig): trust.Trust => {
+      try {
+        return trust.of(cfg);
+      } catch (err) {
+        api.logger.warn(`${LOG} could not read the trusted chats and users: ${String(err)}`);
+        return trust.fromConfig(cfg);
       }
     };
 
@@ -1001,6 +1025,7 @@ const plugin = {
         hostVersion,
         hostProcess: hostKind !== null,
         selfEdit: selfEditBlock,
+        trust: trustOf(cfg),
       });
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
@@ -1010,7 +1035,14 @@ const plugin = {
       // even one the owner's own chat started: OpenClaw refuses a plugin's approval request from a subagent's run (its
       // gateway identity has no approvals scope), so its reviews are held, bound to the parent session (`runSource`),
       // whatever `approval.scheduledIntentKinds` says.
-      const unattended = timing.unattended || runKind !== null || triggerKind === "subagent";
+      // A chat the owner trusts with --owner-only (trust.ts): a review there on anyone's turn but the owner's is held for
+      // the owner, bound to the exact call, as on a run nobody can answer. Elsewhere reviews are answered as before.
+      const trustedHold =
+        built.trustedChat !== null &&
+        built.trustedChat[1] &&
+        triggerKind === "message" &&
+        built.planir.trigger?.sender?.relation !== "owner";
+      const unattended = timing.unattended || runKind !== null || triggerKind === "subagent" || trustedHold;
 
       let result: ScanOk | ScanFailure;
       let oidc: ReturnType<typeof resolveOidcCredentials> = null;
@@ -1238,7 +1270,7 @@ const plugin = {
             if (rerunId && settled.id === rerunId) noteRun(cfg, rerunId, { passed: true });
           } else {
             entry.decision = "held";
-            hook = { block: true, blockReason: hold.HELD_TEXT };
+            hook = { block: true, blockReason: trustedHold ? hold.HELD_CHAT_TEXT : hold.HELD_TEXT };
             held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, {
               sid,
               jobId,
@@ -1249,6 +1281,7 @@ const plugin = {
               ...(jobId ? runIdentity(jobId, jobRunId) : { runKey: null, runStart: null }),
               acts: passes.acts(built.toolKind, resp),
               jobRun: jobRun ? store.loadRun(jobRun.run_id) : null,
+              trustedChat: trustedHold ? built.trustedChat![0] : null,
             });
             if (rerunId && typeof held?.id === "string") noteRun(cfg, rerunId, { held: held.id });
           }
@@ -1341,6 +1374,7 @@ const plugin = {
         mode: cfg.mode,
         verdict,
         decision: entry.decision,
+        ...(built.group ? { group: groupRecord(built.group) } : {}),
         ...(snoozed ? { snoozed: true } : {}),
         ...(relaxed ? { relaxed: true } : {}),
         ...(strong ? { relaxed_strong: true } : {}),
@@ -1883,15 +1917,19 @@ const plugin = {
         runStart?: Date | null;
         acts?: boolean;
         jobRun?: RunContext | null;
+        /** A hold in a trusted chat with --owner-only: the chat's `platform:id`, named by its platform only. */
+        trustedChat?: string | null;
       },
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
       const source = bound.jobId ? null : (bound.source ?? null);
       // a sub-agent's hold names the job as its cron run does (the run's prompt tag gives the name)
-      const { where } = bound.jobRun
-        ? unattendedRun(sref, "scheduled", bound.jobRun, null, bound.jobId, null, true)
-        : unattendedRun(sref, triggerKind, run, null, bound.jobId, source);
+      const { where } = bound.trustedChat
+        ? { where: hold.whereText(`trusted ${bound.trustedChat.slice(0, bound.trustedChat.indexOf(":"))} chat`, sref) }
+        : bound.jobRun
+          ? unattendedRun(sref, "scheduled", bound.jobRun, null, bound.jobId, null, true)
+          : unattendedRun(sref, triggerKind, run, null, bound.jobId, source);
       const { target, via } = noticeRoute(bound.jobId);
       const outbound = outboundOf();
       let notice: Json = target ? queuedTo(target, via) : { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };

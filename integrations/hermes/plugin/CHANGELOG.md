@@ -23,6 +23,14 @@ since the version the catalog pins.
 - `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
   lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
   "the request does not clearly ask for this call"). Shown when the scanner sends it.
+- Trusted chats and users: `/sentrook trust-chat add <platform>:<chat id>` marks a group chat or server channel where
+  you know every member, and `/sentrook trust-user add <platform>:<user id>` a person you know (or the settings
+  `trusted_chats` and `trusted_senders`). Their messages are sent as from someone you trust, not a stranger, never as
+  yours. Members of a trusted chat may answer its reviews, and a Session answer there covers the job in that chat
+  without setting a grant; add the chat with `--owner-only` to have its reviews held for you instead. Only you set
+  trust, from a direct message or the terminal, with `--confirm` after a warning. The setup report lists the group
+  chats the agent was used in and how many people wrote there, the agent can propose a trusted chat or user on your
+  setup list, and the setup skill explains when to use each.
 - `hermes sentrook verify` lists the channel bindings no message send in the traffic log would carry (a binding is sent
   only with a send that shows its channel, so one written another way relieves nothing), and the setup report counts
   them as a gap. A `<platform>:<id>` binding is no longer sent for a send to a person whose id is the same

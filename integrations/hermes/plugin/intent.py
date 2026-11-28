@@ -6,6 +6,8 @@ Hermes has no owner flag; its gateway allowlist is a yes/no admission gate. The 
 - owner (basis `group_chat`): a group, channel or thread message from a sender individually on one of those lists,
   as the OpenClaw plugin sends an owner in a group. The basis keeps what needs the owner alone in the room off:
   the scanner's attended-owner ceiling, the snooze, remembered Session answers and grants, owner commands;
+- trusted (basis `plugin_allowlist:sender`, or `plugin_allowlist:chat` in a chat the owner trusts; plus `group_chat`
+  in a group): a user or chat the owner marked as trusted (`trust`). Trusted is never the owner;
 - other (basis `group_chat`): any other group, channel or thread message;
 - other (basis `host_open_access`): a DM admitted only by allow-all (or a grant the plugin cannot see);
 - unknown (basis `none`): cron, subagent, API-server and webhook runs.
@@ -112,7 +114,16 @@ def session_facts() -> dict[str, str]:
     except Exception:  # noqa: BLE001 - not running under the gateway
         return {}
     out: dict[str, str] = {}
-    for name in ("PLATFORM", "SOURCE", "CHAT_TYPE", "CHAT_ID", "USER_ID", "ACTOR_ID", "KEY"):
+    for name in (
+        "PLATFORM",
+        "SOURCE",
+        "CHAT_TYPE",
+        "CHAT_ID",
+        "PARENT_CHAT_ID",
+        "USER_ID",
+        "ACTOR_ID",
+        "KEY",
+    ):
         try:
             value = get_session_env(f"HERMES_SESSION_{name}", "")
         except Exception:  # noqa: BLE001
@@ -347,38 +358,55 @@ def _truthy(env: dict[str, str], name: str) -> bool:
     return env.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
+def _sender_id(facts: dict[str, str], sender_id: Any) -> str:
+    """The turn's actor where Hermes names one (`HERMES_SESSION_ACTOR_ID`, who asked this turn), else the session's
+    user (the session route, empty in a shared group session), else the hook's sender id."""
+    return facts.get("actor_id") or facts.get("user_id") or (str(sender_id) if sender_id else "")
+
+
 def _allowlisted(platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]) -> bool:
-    """The sender is individually on `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`. The sender is the turn's
-    actor where Hermes names one (`HERMES_SESSION_ACTOR_ID`, who asked this turn), else the session's user (the
-    session route, empty in a shared group session), else the hook's sender id."""
+    """The sender (`_sender_id`) is individually on `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`."""
     up = platform.upper()
-    uid = facts.get("actor_id") or facts.get("user_id") or (str(sender_id) if sender_id else "")
+    uid = _sender_id(facts, sender_id)
     return bool(uid) and uid in (
         _env_set(env, f"{up}_ALLOWED_USERS") | _env_set(env, "GATEWAY_ALLOWED_USERS")
     )
 
 
 def sender_of(
-    platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
+    platform: str,
+    facts: dict[str, str],
+    sender_id: Any,
+    env: dict[str, str],
+    trust: Any = None,
 ) -> dict[str, Any]:
+    """Who sent the turn. `trust` (`trust.Trust`) adds the owner's trusted users and chats: a trusted user is
+    `trusted` (basis `plugin_allowlist:sender`) in any chat, and anyone else in a trusted chat is `trusted` (basis
+    `plugin_allowlist:chat`), each with `group_chat` in a group. The owner stays the owner; trusted is never the
+    owner."""
     if platform in LOCAL_PLATFORMS:
         return {"relation": "owner", "basis": ["host_allowlist_dm"]}
     if platform in NON_CHAT_PLATFORMS:
         return {"relation": "unknown", "basis": ["none"]}
     chat_type = (facts.get("chat_type") or "").lower()
-    if chat_type and chat_type != "dm":
-        if _allowlisted(platform, facts, sender_id, env):
-            return {"relation": "owner", "basis": ["group_chat"]}
-        return {"relation": "other", "basis": ["group_chat"]}
     if not chat_type:
         return {"relation": "unknown", "basis": ["none"]}
+    group = chat_type != "dm"
     if _allowlisted(platform, facts, sender_id, env):
-        return {"relation": "owner", "basis": ["host_allowlist_dm"]}
+        return {"relation": "owner", "basis": ["group_chat" if group else "host_allowlist_dm"]}
+    if trust is not None:
+        shared = ["group_chat"] if group else []
+        if trust.sender(platform, _sender_id(facts, sender_id)):
+            return {"relation": "trusted", "basis": ["plugin_allowlist:sender", *shared]}
+        if group and trust.chat(platform, facts) is not None:
+            return {"relation": "trusted", "basis": ["plugin_allowlist:chat", "group_chat"]}
+    if group:
+        return {"relation": "other", "basis": ["group_chat"]}
     return {"relation": "other", "basis": ["host_open_access"]}
 
 
 def conversation_sender_of(
-    platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
+    platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str], trust: Any = None
 ) -> dict[str, Any]:
     """Who wrote a message in the conversation a background save is judged against: `sender_of`.
 
@@ -388,7 +416,7 @@ def conversation_sender_of(
 
     if in_background_review():
         return {"relation": "unknown", "basis": ["none"]}
-    return sender_of(platform, facts, sender_id, env)
+    return sender_of(platform, facts, sender_id, env, trust)
 
 
 def environ() -> dict[str, str]:

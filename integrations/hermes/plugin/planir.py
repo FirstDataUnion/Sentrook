@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import build, host_turns
+from . import build, host_turns, trust
 from .config import TOO_BROAD, PluginConfig, destination_ok, nothing_literal
 from .intent import (
     approvals_off,
@@ -507,10 +507,11 @@ def build_planir(
     req_tid = request_turn_id(sess)
     req_no = sess["turns"].index(req_tid) + 1 if req_tid in sess["turns"] else None
     platform = resolve_platform(turn.get("platform"), facts, env)
+    trusted = trust.of(cfg)
     trigger = {
         "kind": trigger_kind(platform),
         "channel": channel_of(platform),
-        "sender": sender_of(platform, facts, turn.get("sender_id"), env),
+        "sender": sender_of(platform, facts, turn.get("sender_id"), env, trusted),
     }
     host = (
         host_turns.FORMS.get(str(turn.get("host_turn")))
@@ -673,4 +674,8 @@ def build_planir(
         "history_args": cap_args(args, cfg.history_args_cap_bytes),
         "subagent": is_sub,
         "platform": platform,
+        # The trusted chat this turn is in (`trust.Trust.chat`): (`platform:chat id`, owner-only), or None.
+        "trusted_chat": trusted.chat(platform, facts)
+        if (facts.get("chat_type") or "dm").lower() != "dm"
+        else None,
     }
