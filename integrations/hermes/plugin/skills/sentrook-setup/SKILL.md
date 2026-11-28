@@ -38,8 +38,13 @@ There are two entry points:
    install guide's "Check the setup" table; never ask for the scan credentials or handle them yourself. If Sentrook
    is not signed in, the owner runs `hermes sentrook login` in a terminal on this machine; never run it yourself (Sentrook
    blocks it). After any install or update of the plugin, every Hermes process that was already running keeps the old plugin until it restarts: the owner restarts hermes-serve (the desktop app's backend), the gateway and the dashboard. Until they do, `verify` fails its `running build` line and `/sentrook status` says `restart needed`.
-3. **Make sure approval cards reach the owner.** Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, **Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that they wrote from a direct message and that their account is on the platform's allowed users.
-4. **Work out what is routine yourself.** Look, do not ask:
+3. **Notices, before anything else is set.** Ask the owner to send `/sentrook notify here`
+   as a direct message to you in the chat app where they want to hear about held calls (not in a group or channel,
+   where Sentrook refuses it, and not here, if this is the terminal or app). Do this first, even if the rest of setup waits: a scheduled job whose calls
+   are held otherwise fails without telling anyone. If `hermes sentrook verify` or `hermes sentrook status` warns that held calls are
+   waiting with no notice target, say so. If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook notify here` as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test notice there, and `/sentrook notify status` says whether it arrived. Until then a scheduled job's held-call notice goes only to the job's own delivery chat, or to the owner's direct message where Sentrook can find one; other notices are not sent, and the call waits.
+4. **Make sure approval cards reach the owner.** Hermes shows its approval buttons in the chat itself on Telegram, Discord, Slack and most other chat apps, with nothing to set up. Tell the owner, in one sentence, that a card with **Once**, **Session**, **Always** and **Deny** buttons is Sentrook asking. On Feishu the app needs its card callback set up first (Hermes's Feishu guide). If the owner says a card never arrived, check that they wrote from a direct message and that their account is on the platform's allowed users.
+5. **Work out what is routine yourself.** Look, do not ask:
    - your scheduled jobs: `hermes cron list` (what they do, where they post);
    - your skills and MCP servers: `hermes skills list`, `hermes mcp list`;
    - in the owner's direct chat, the `sentrook_setup_report` tool: what is set, and what Sentrook has seen and the
@@ -48,13 +53,11 @@ There are two entry points:
 
    From that, draft the items for "Hand over": the services you send to, the folders you work in, the API key names
    you use (names only), the channels your jobs post to, your MCP servers.
-5. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
+6. **Propose, then ask once.** Show the owner a short numbered list, one line per item: what it lets through and
    why you think it is routine. Ask which to keep, and: "Is there anything else you ask me to do regularly that
    should not need approval?" If your work reads instructions from a repository or folder (a job's instructions,
    project notes), also ask whether the owner writes and maintains it themselves; if so, it can be a trusted folder
    (see "Trusted folders"). Only the owner can say this: never assume it.
-6. **Notices.** Ask the owner to send `/sentrook notify here` as a direct message to you in the chat app where they want
-   to hear about held calls (not here, if this is the terminal or app). If they ask why: When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook notify here` as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test notice there, and `/sentrook notify status` says whether it arrived. Until then no notice is sent: held calls still wait, but nobody is told.
 7. **Hand over** (next section). Explain attended chats only if the owner runs scheduled jobs or asks:
    Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local terminal count as attended. A subagent of the owner's own chat, TUI or desktop app asks there too (not from the local terminal, where Hermes answers a subagent's prompt itself, nor while `delegation.subagent_auto_approve` is on); one nobody answers in time is held. The API server, cron jobs, webhooks and their subagents do not: a call there that needs review is held for the owner's `/sentrook allow` or `/sentrook deny` instead of asking. If a UI in front of the API server shows Hermes's approval prompts, the owner can add it with `/sentrook attended add api_server --confirm`. That loosens Sentrook, so only suggest it when the owner really answers prompts there.
 

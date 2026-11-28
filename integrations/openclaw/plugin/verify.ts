@@ -10,7 +10,7 @@ import { configProblemsSummary, type PluginConfig, resolveConfig } from "./confi
 import { noticeStatus } from "./backgroundSave.ts";
 import * as grants from "./grants.ts";
 import { bindingProblemsSummary, clean, unsentSummary } from "./grants.ts";
-import { NOTIFY_UNSET, targetText } from "./hold.ts";
+import { NOTIFY_UNSET, targetText, unsetWarning } from "./hold.ts";
 import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
 import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
@@ -131,9 +131,14 @@ export async function runVerify(
       `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}` +
       (unreached ? `; no message send in the traffic log matches: ${unreached}` : ""),
   });
-  // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
+  // Failed when calls are held and no notify target is set: the owner is told only where a fallback reaches them.
   const target = new Store(cfg.stateDir).loadNotify();
-  checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
+  const unset = unsetWarning(cfg.stateDir, target, new Date());
+  checks.push({
+    name: "held-call notices",
+    ok: !unset,
+    detail: (target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}`) + (unset ? `. ${unset}` : ""),
+  });
   // Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
   const passState = passes.counts(cfg.stateDir, new Date());
   checks.push({ name: "held-call passes", ok: passState !== "passes file unreadable", detail: passState });

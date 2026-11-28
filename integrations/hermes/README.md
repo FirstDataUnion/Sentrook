@@ -123,7 +123,9 @@ If the history is empty, the agent has not made a tool call since the restart.
 
 First, tell Sentrook where to reach you. When a scheduled job or another run nobody watches tries something
 Sentrook wants you to check, it stops that call and sends you a notice. In a direct message with the agent, send
-`/sentrook notify here` (see [Where notices go](#where-notices-go)). Until you do, those calls are held silently.
+`/sentrook notify here` (see [Where notices go](#where-notices-go)). Do this first: until you do, a held call's
+notice goes only to the chat its job delivers to, or to your direct message where Hermes can address you, and
+otherwise nobody is told.
 
 Sentrook doesn't know which destinations and files are routine for your deployment, and it does not work this out
 by itself over time: approving the same kind of call again and again does not make it ask less. What makes routine work stop
@@ -634,7 +636,8 @@ Where nobody can answer a review (the runs above), the call is **held**:
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
 - You get one notice where you told Sentrook to send them (see [Where notices go](#where-notices-go)). Until you
-  do, nothing is sent, the call is still held, and `status` and `verify` say notices are not sent. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
+  do, the notice goes only to the chat the job delivers to or your direct message ([With no target
+  set](#with-no-target-set)); the call is still held either way, and `status` and `verify` warn while calls wait. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
   was held, which run (a cron job by its id, and its name in quotes), the tool and its target, a broad category,
   and the commands. Read the risk, the reasons and any grant Sentrook suggests with `/sentrook why <id>`.
 - The notice is sent with Hermes's own `hermes send` command, which works from every Hermes process: the gateway,
@@ -719,8 +722,26 @@ for example:
 > Notices: the telegram chat where you sent /sentrook notify here (set by command). When a scheduled job or another
 > run nobody watches tries something Sentrook wants you to check, Sentrook stops that call and tells you there.
 
-> Notices not set: calls held on scheduled jobs and other runs nobody watches are held silently. In the chat where
-> you want notices, send /sentrook notify here.
+> Notices not set: a call held on a scheduled job or another run nobody watches is announced only in the chat the
+> job delivers to, or in your direct message where Hermes can address you; otherwise it is held silently. In a
+> direct message with the agent, send /sentrook notify here.
+
+#### With no target set
+
+With neither `notify` nor `owner_channel` set, the notice of a held call (and a run's end line, and the line on how a
+run started for your answer went) goes to:
+
+1. the chat the cron job delivers its own output to: its `deliver` setting, when it names a chat (`origin`, the chat
+   the job was made in; `<platform>:<chat>`; or `<platform>`, that platform's home channel). `local`, `all` and a job
+   with no origin name no chat of the job's own, so nothing is sent there;
+2. else your direct message, where Hermes can address you: on Telegram, when `TELEGRAM_ALLOWED_USERS` lists only you
+   (a private chat's id is your user id). Several people on the list, a wildcard or `GATEWAY_ALLOWED_USERS` name no
+   one owner, so nothing is sent.
+
+It never goes to a home channel or group the job does not deliver to. The notice ends with a line saying where it
+went and how to set a target, and is not tried again later. Answer it from a direct message with the agent: the
+commands are refused in a group. Until you set a target, `status` and `verify` warn (and `verify` fails) while held
+calls are waiting, and the setup report lists it as its first gap.
 
 ### Attended platforms
 
@@ -1037,7 +1058,7 @@ settings (see [step 2](#2-sign-in)).
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server`. `/sentrook attended add` adds more without editing the config (see [Attended platforms](#attended-platforms)) |
-| `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. `/sentrook notify here` sets a chat instead and wins over this (see [Where notices go](#where-notices-go)). No notice is sent until one of them is set |
+| `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. `/sentrook notify here` sets a chat instead and wins over this (see [Where notices go](#where-notices-go)). With neither set, a held call's notice goes only to its job's delivery chat or your direct message ([With no target set](#with-no-target-set)) |
 | `hide_tool_calls` | `false` | Hides the calls (secrets masked) that `/sentrook why`, background-save notices and the dashboard show. Anyone who can read your chat or open the dashboard reads them, so turn this on where others can. `dashboard_show_calls` is replaced by this and does nothing |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Either way they never ask (see [Background skill and memory saves](#background-skill-and-memory-saves)). A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |

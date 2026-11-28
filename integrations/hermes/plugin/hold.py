@@ -5,7 +5,9 @@ process with no terminal. There the plugin holds the call:
 - the call does not run, and the agent is told it is held for the owner's approval and must not be
   retried in this run (`HELD_TEXT`);
 - the owner gets one notice, in the chat set by `/sentrook notify here` or else on the home channel of the
-  platform set by `notify <platform>` or `owner_channel` (see `owner_settings`): which run, the
+  platform set by `notify <platform>` or `owner_channel` (see `owner_settings`); with none of them set, in the chat the
+  cron job delivers to, else the owner's direct message where Hermes can address one (`fallback_target`), never a
+  home channel or group the job does not deliver to: which run, the
   tool and its target as a review prompt names them, the block category, the hold's id and the answers it
   offers. Hermes copies what `send_message` sends into the agent's own transcript, so the notice carries
   nothing a steered agent could use; the owner reads the risk, reasons and suggested grant with `why <id>`;
@@ -1430,6 +1432,156 @@ def notice_target(n: Notify, homes: list[str]) -> tuple[str | None, str]:
     return None, f"owner_channel {n.platform} has no home channel"
 
 
+def connected_platforms() -> list[str]:
+    """The platforms Hermes's gateway config connects, by name; empty when the config cannot be read."""
+    try:
+        from gateway.config import load_gateway_config
+
+        return sorted(
+            str(getattr(p, "value", p)) for p in load_gateway_config().get_connected_platforms()
+        )
+    except Exception as exc:  # noqa: BLE001 - no gateway config: nothing connected
+        logger.debug("connected platforms not readable: %s", exc)
+        return []
+
+
+# ---- where the notice goes when no target is set ------------------------------------------------------------------
+
+#: How a notice found a target with none set (`fallback_target`): the chat the cron job delivers to, or the owner's
+#: direct message.
+VIA_JOB = "job_delivery"
+VIA_DM = "owner_dm"
+#: Origins Hermes never sends a cron job's output to (it cannot push there).
+_NON_PUSH = frozenset({"api_server"})
+_PLATFORM_NAME = re.compile(r"[a-z][a-z0-9_-]{1,40}")
+#: Delivery tokens that name no chat: no delivery, a broadcast to every home channel, Hermes's own rooms and bot chats.
+_NO_CHAT = frozenset({"local", "all", "room", "bot-chat"})
+_CHAT = re.compile(r"[^\s:]{1,200}")
+#: Platforms where a person's user id is also the chat id of their direct message with the bot, so Hermes can send
+#: to it: on Telegram a private chat's id is the user's id (positive; groups and channels are negative).
+_DM_BY_USER_ID = {"telegram": re.compile(r"[1-9][0-9]{0,19}")}
+
+
+def _chat(v: Any) -> str | None:
+    s = str(v).strip() if isinstance(v, (str, int)) and not isinstance(v, bool) else ""
+    return s if _CHAT.fullmatch(s) else None
+
+
+def _origin_chat(origin: Any, platform: str | None = None) -> str | None:
+    """`platform:chat[:thread]` for the chat a job was made in, when Hermes can deliver to it (and it is on
+    `platform`, when given)."""
+    if not isinstance(origin, dict):
+        return None
+    p = str(origin.get("platform") or "").strip().lower()
+    chat = _chat(origin.get("chat_id"))
+    if not _PLATFORM_NAME.fullmatch(p) or p in _NON_PUSH or chat is None:
+        return None
+    if platform is not None and p != platform:
+        return None
+    thread = _chat(origin.get("thread_id")) if origin.get("thread_id") not in (None, "") else None
+    return f"{p}:{chat}" + (f":{thread}" if thread else "")
+
+
+def job_delivery_target(job: Any, homes: list[str]) -> str | None:
+    """Where cron job `job` (its record in Hermes's job file) delivers its own output, as `hermes send --to` takes
+    it; None when it delivers nowhere the plugin can name for certain. Its first delivery that is one of:
+    - `origin`: the chat the job was made in (Hermes's own `origin` record). With no origin Hermes picks a home channel
+      itself, which is not the job's own choice, so none;
+    - `<platform>:<chat>`: that chat;
+    - `<platform>`: that platform's home channel, else the job's origin chat on that platform, as Hermes resolves it.
+    `local`, `all` (a broadcast to every home channel), Hermes's own rooms and bot chats name no chat."""
+    if not isinstance(job, dict):
+        return None
+    deliver = job.get("deliver")
+    tokens = (
+        deliver
+        if isinstance(deliver, list)
+        else deliver.split(",")
+        if isinstance(deliver, str)
+        else []
+    )
+    for token in tokens:
+        t = str(token).strip()
+        low = t.lower()
+        if low == "origin":
+            if found := _origin_chat(job.get("origin")):
+                return found
+            continue
+        platform, sep, rest = low.partition(":")
+        if not _PLATFORM_NAME.fullmatch(platform) or platform in _NO_CHAT:
+            continue
+        if sep:
+            chat = t.partition(":")[2].strip()
+            if chat and not any(c.isspace() for c in chat) and len(chat) <= 200:
+                return f"{platform}:{chat}"
+            continue
+        if platform in homes:
+            return platform
+        if found := _origin_chat(job.get("origin"), platform):
+            return found
+    return None
+
+
+def owner_dm_target(env: dict[str, str], connected: list[str]) -> str | None:
+    """The owner's direct message, as `hermes send --to` takes it, when Hermes's allowlist names exactly one person
+    on a connected platform where a user id is also their chat with the bot (`_DM_BY_USER_ID`); else None. Several
+    people on the list, a wildcard, or `GATEWAY_ALLOWED_USERS` (not tied to one platform) name no one owner."""
+    for platform, user_id in sorted(_DM_BY_USER_ID.items()):
+        if platform not in connected:
+            continue
+        ids = {
+            s.strip()
+            for s in env.get(f"{platform.upper()}_ALLOWED_USERS", "").split(",")
+            if s.strip()
+        }
+        if len(ids) == 1 and user_id.fullmatch(only := next(iter(ids))):
+            return f"{platform}:{only}"
+    return None
+
+
+def fallback_target(
+    job: Any, env: dict[str, str], homes: list[str], connected: list[str]
+) -> tuple[str | None, str]:
+    """(where a notice goes when the owner has set no target, or None; how: `VIA_JOB` or `VIA_DM`, "" for none).
+    The cron job's own delivery first (`job_delivery_target`, None for a run of no job), then the owner's direct
+    message (`owner_dm_target`). Never a home channel or group the job does not deliver to."""
+    if to := job_delivery_target(job, homes):
+        return to, VIA_JOB
+    if to := owner_dm_target(env, connected):
+        return to, VIA_DM
+    return None, ""
+
+
+def fallback_note(via: str, cmd: Cmd) -> str:
+    """The line a notice sent by `fallback_target` ends with: where it went and how to set a target."""
+    notify = cmd("notify")
+    if via == VIA_JOB:
+        return (
+            "No notice target is set, so this notice went to the chat this job delivers to. Answer it in a direct "
+            f"message to the agent, and send {notify} here there to choose where notices go."
+        )
+    return (
+        "No notice target is set, so this notice went to your direct message. Send "
+        f"{notify} here in the chat where you want notices."
+    )
+
+
+#: Status and verify, when calls are held and no target is set.
+UNSET_WARNING = (
+    "WARNING: {n} held call(s) waiting and no notice target is set, so their notices go only to a job's own "
+    "delivery chat or your direct message where Sentrook can find one. Send /sentrook notify here in a direct "
+    "message to the agent"
+)
+
+
+def unset_warning(state_dir: Path, n: Notify, now: datetime) -> str:
+    """`UNSET_WARNING` when holds are waiting and the owner has set no notice target; "" otherwise."""
+    if notice_target(n, [])[1] != NO_OWNER_CHANNEL:
+        return ""
+    count = waiting(state_dir, now)
+    return UNSET_WARNING.format(n=count) if count else ""
+
+
 def target_label(to: str) -> str:
     """The target as the traffic log records it: the platform, and "chat" for one chat, never its id."""
     platform, chat, _ = to.partition(":")
@@ -1563,7 +1715,8 @@ def status_line(state_dir: Path, n: Notify, now: datetime) -> str:
             f"{_clean(most.get('held_at'), 20)})"
         )
     where = f"notices to the {target_text(target)}" if target else f"notices not sent ({why})"
-    return f"{held}; {where}"
+    warning = unset_warning(state_dir, n, now)
+    return f"{held}; {where}" + (f"; {warning}" if warning else "")
 
 
 #: Notice threads still running, so a test (or a short-lived process) can wait for them.

@@ -135,11 +135,14 @@ def run_verify(
     )
     checks.append(("approval prompts", True, owner_settings.attended_line(cfg)))
     target, why = hold.owner_target(notify)
+    # Failed when calls are held and no target is set: the owner is told only where a fallback reaches them.
+    unset = hold.unset_warning(cfg.state_dir, notify, datetime.now(UTC))
     checks.append(
         (
             "held-call notices",
-            True,
-            f"to the {hold.target_text(target)}" if target else f"not sent: {why}",
+            not unset,
+            (f"to the {hold.target_text(target)}" if target else f"not sent: {why}")
+            + (f". {unset}" if unset else ""),
         )
     )
     # Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.

@@ -244,8 +244,9 @@ HOSTS: dict[str, dict] = {
                 "When a call is held, a scan fails on an unattended run, or a background save is held or let "
                 "through, Sentrook sends the owner a notice. The owner chooses where by sending `{{cmd notify}} here` "
                 "as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test "
-                "notice there, and `{{cmd notify}} status` says whether it arrived. Until then no notice is sent: "
-                "held calls still wait, but nobody is told."
+                "notice there, and `{{cmd notify}} status` says whether it arrived. Until then a scheduled job's held-call "
+                "notice goes only to the job's own delivery chat, or to the owner's direct message where Sentrook can find "
+                "one; other notices are not sent, and the call waits."
             ),
             "attended_explain": (
                 "Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local "
@@ -348,7 +349,7 @@ HOSTS: dict[str, dict] = {
             "cli_prefix_host": "openclaw",
             "local_places": "the Control UI (`openclaw dashboard`) or the terminal (`openclaw tui`) on the machine",
             "chat_app_reason": (
-                "a step Sentrook checks needs an approval card, and until step 3 is done the card may not reach this "
+                "a step Sentrook checks needs an approval card, and until step 4 is done the card may not reach this "
                 "chat, so a blocked step could leave you both stuck"
             ),
             "approval_route": (
@@ -383,7 +384,8 @@ HOSTS: dict[str, dict] = {
                 "When a call is held, a scan fails on an unattended run, or a background save is held, drafted or "
                 "let through, Sentrook sends the owner a notice. The owner chooses where by sending "
                 "`{{cmd notify}} here` as a direct message to you on the chat where they want them (not in a group "
-                "or channel). Until then no notice is sent: held calls still wait, but nobody is told."
+                "or channel). Until then a scheduled job's held-call notice goes only to the job's own delivery chat, or to the "
+                "owner's direct message where Sentrook can find one; other notices are not sent, and the call waits."
             ),
             "attended_explain": (
                 "Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control "

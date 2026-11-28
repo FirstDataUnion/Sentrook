@@ -13,6 +13,13 @@ since the version the catalog pins.
   never matched again and every call asked. Another tool, another server, a host, recipient or channel the answered
   call did not name, a floor, a rule that always asks or a block still asks; a group chat keeps nothing. The prompt
   says so, `/sentrook grants` lists these answers and `/sentrook revoke <id>` removes one.
+- With no notice target set, a held call's notice (and a run's end line, and the line on how a started run went) no
+  longer goes nowhere: it goes to the chat the cron job delivers its own output to (`deliver` of `origin`,
+  `<platform>:<chat>` or `<platform>`), else to your Telegram direct message when `TELEGRAM_ALLOWED_USERS` lists only
+  you. It never goes to a home channel or group the job does not deliver to, and it ends with a line saying where it
+  went and how to set a target. While calls are held with no target set, `status` warns, `verify` fails its held-call
+  notices check and the setup report lists it as its first gap. The setup skill now asks for `/sentrook notify here`
+  right after checking the install.
 - `/sentrook why` says what your grants did to a scan: which grants matched, the risk without them and the parts they
   lowered, or that they matched but changed nothing, then the largest parts of the score no grant covers (for example
   "the request does not clearly ask for this call"). Shown when the scanner sends it.

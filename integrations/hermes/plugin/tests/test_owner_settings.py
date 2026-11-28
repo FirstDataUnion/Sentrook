@@ -466,8 +466,9 @@ def test_status_verify_and_help_show_the_same_explanations(h):
     notices = owner_settings.notify_line(owner_settings.notify_of(cfg))
     attended = owner_settings.attended_line(cfg)
     assert notices == (
-        "Notices not set: calls held on scheduled jobs and other runs nobody watches are held "
-        "silently. In the chat where you want notices, send /sentrook notify here."
+        "Notices not set: a call held on a scheduled job or another run nobody watches is announced only in "
+        "the chat the job delivers to, or in your direct message where Hermes can address you; otherwise it is "
+        "held silently. In a direct message with the agent, send /sentrook notify here."
     )
     assert attended.startswith("Attended platforms: none added.")
     assert notices in status_lines(h)

@@ -373,6 +373,10 @@ def test_setup_has_the_agent_look_and_propose_instead_of_questioning_the_owner(h
 def test_setup_asks_for_notices_in_the_chat_app_the_owner_wants_them_in(host):
     text = _setup(host)
     assert "as a direct message to you in the chat app where they want" in text
+    # an early step: before the approval cards and before anything is proposed
+    notices = text.index("3. **Notices, before anything else is set.**")
+    assert notices < text.index("4. **Make sure approval cards reach the owner.**")
+    assert notices < text.index("**Propose, then ask once.**")
 
 
 @pytest.mark.parametrize("host", list(render.HOSTS))
