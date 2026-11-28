@@ -22,6 +22,24 @@
       "sentrook_propose_setup"
     ]
   },
+  "toolMetadata": {
+    "sentrook_setup_report": {
+      "profiles": [
+        "minimal",
+        "coding",
+        "messaging",
+        "full"
+      ]
+    },
+    "sentrook_propose_setup": {
+      "profiles": [
+        "minimal",
+        "coding",
+        "messaging",
+        "full"
+      ]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": true,

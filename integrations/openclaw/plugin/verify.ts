@@ -15,6 +15,7 @@ import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
 import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
 import * as setup from "./setup.ts";
+import { setupToolsCheck } from "./setupTools.ts";
 import { Store } from "./store.ts";
 import * as trust from "./trust.ts";
 
@@ -153,6 +154,9 @@ export async function runVerify(
   checks.push(...memoryWriterChecks(opts.hostConfig));
   // Reported, not failed: a workspace, project or managed skill with the name of one the plugin ships replaces it.
   checks.push(shadowCheck(opts.hostConfig, env, { home: opts.home }));
+  // Reported, not failed: an allow or deny list that hides the agent's setup tools; /sentrook-setup still works.
+  const setupTools = setupToolsCheck(opts.hostConfig);
+  if (setupTools) checks.push(setupTools);
   // Reported, not failed: another plugin's tool ran under the name of one of the plugin's own, so every call of it is
   // scanned.
   for (const [tool, since] of Object.entries(new Store(cfg.stateDir).loadForeignTools())) {
