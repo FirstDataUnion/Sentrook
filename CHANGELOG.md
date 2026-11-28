@@ -1335,6 +1335,7 @@ A destination grant naming a chat platform (`discord:<channel id>`, as a cron jo
 - PlanIR `pending_call` gains an optional `send_platform`: for a message send whose arguments name no platform, the chat platform the plugin says it goes out on (OpenClaw: the account's channel in the host config, else the session's). Only the plugin sets it; it is left out of the judge's views, so their requests are unchanged.
 - `prepare.entities.send_platform` reads it when the send names no platform itself and it is a chat platform; the batch rule is unchanged (every send in the batch must be on the same platform). It counts only for a pattern's platform prefix, over the send's channel targets (`platform_targets`): never a direct message (`user:`, `dm:`), an address or a target that names another platform. Entity extraction is unchanged. A channel target is checked as an address against the send's platform too, so a bare number on WhatsApp, SMS or iMessage (a phone number) is never covered, reported or named.
 - Tests: must stay silent (a cron delivery grant and config bindings `discord:<id>` and `discord:channel:<id>` relieve `channel:<id>` and bare-id sends whose platform is reported), must still fire (no platform reported, another platform reported, a non-chat platform, the send's own argument naming another platform, `user:<id>`, `dm:<id>`, another channel, a target naming another platform, a batch with a sibling on another platform, a call that is not a send, a phone number on WhatsApp, SMS or iMessage), the platform-named leak cases with the platform reported instead of named, and the field kept out of the judge views.
+
 ### Grants: a send whose every destination the owner granted, `conv-v11` (2026-11-27)
 A matched destination grant removes its subject's distrust and untrusted origin. In the owner's own chat those are
 usually 0 already, so an owner who granted their own service, and the key that goes with it, still saw routine sends
@@ -1352,6 +1353,11 @@ stopped call, and the reach of any off-host send, none of which a grant touched.
     or the scanner's own block, is not the owner's refusal);
   - below the same 0.5, reach is held to 0.67 and the call judge's sensitivity to 0.34 (a credential's rule-based
     sensitivity and every floor stay).
+- Not covered either when the call, a sibling, a written file or any earlier step of the session sets a proxy
+  (`https_proxy=` and the other proxy variables, `ProxyHandler`, `proxies=`) or names curl's config file (`.curlrc`,
+  `CURL_HOME`): HTTP clients read both.
+- Grant hints: a `destination` candidate is also re-scored with the granted-send relief as it would apply once the
+  grant is set, so the hint for the owner's own service is offered where that relief would clear the call.
 - `conv-v11` is `conv-v10` with it on. `sentrook serve` and `sentrook scan` default to it (`SENTROOK_CONVERGENCE`);
   `conv-v1` to `conv-v10` stay selectable, unchanged.
 - Response: `grant_effect` (null when no grant matched): the grants that matched, the risk with the same answers and no

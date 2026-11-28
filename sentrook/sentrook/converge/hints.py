@@ -38,7 +38,9 @@ pairs the grant's relief would remove (`relief.compute_relief`'s grant rule, for
 covers) to the ones relief already removed, merges and computes the tiers again. Nothing is asked again. A
 grant also lowers what the rule-based probes say about a sanctioned entity (an origin, a look-alike check);
 the re-score keeps their answers as they are, so it never shows a lower risk than a second scan with the
-grant in place would, given the same model answers.
+grant in place would, given the same model answers. A `destination` candidate is also re-scored with the
+granted-send relief (`converge.granted_send`) as it would apply once the grant is set, when the parameters turn
+that relief on: the same coverage, gate and limits, with the candidate counted as a matched destination grant.
 """
 
 from __future__ import annotations
@@ -61,6 +63,7 @@ from .attended import (
     withheld,
 )
 from .formulas import compute
+from .granted_send import granted_send
 from .merge import Claim, merge
 from .params import ConvergenceParams
 from .relief import Relief
@@ -105,6 +108,10 @@ def rank_key(hint: GrantHint, entity_kind: EntityKind | None) -> tuple:
     """Lowest risk first; on a tie the narrower pattern (a full address, a channel, a path or a provider before a
     host), then the pattern itself."""
     return (hint.risk, 1 if entity_kind is EntityKind.HOST else 0, hint.kind, hint.pattern)
+
+
+#: The grant ref a hint's re-score gives the grant it proposes.
+_HINT_REF = "hint"
 
 
 @dataclass(frozen=True)
@@ -322,15 +329,26 @@ def grant_hints(
         key = (cand.kind, cand.pattern, cand.allows)
         if key in found:
             continue
-        pairs = _relieved_pairs(prepared, cand) - excluded
-        if not pairs:
+        covers = _relieved_pairs(prepared, cand)
+        pairs = covers - excluded
+        relief_too = cand.kind == "destination" and params.granted_send is not None
+        if not covers or (not pairs and not relief_too):
             continue
-        tiers = compute(
-            merge(claims, excluded | pairs),
-            envelopes,
-            params,
-            exposure_unjudged=exposure_unjudged,
-        )
+        hinted = merge(claims, excluded | pairs)
+        tiers = compute(hinted, envelopes, params, exposure_unjudged=exposure_unjudged)
+        if tiers.risk >= line and relief_too:
+            # with this grant set, every destination may be granted: the granted-send relief would apply too
+            covered = {eid: _HINT_REF for _, eid in covers if eid is not None}
+            gs = granted_send(
+                prepared, claims, hinted, envelopes, params.granted_send, extra=covered
+            )
+            if gs is not None:
+                tiers = compute(
+                    merge(gs.claims, excluded | pairs),
+                    envelopes,
+                    params,
+                    exposure_unjudged=exposure_unjudged,
+                )
         if tiers.risk >= line:
             continue
         relieves = list(
