@@ -21,15 +21,21 @@ for (const c of FIXTURE.cases) {
   test(`sender parity: ${c.name}`, () => {
     const requester = { senderIsOwner: c.owner, senderId: c.owner ? "u-owner" : "u-member", channel: "discord" };
     // the case's chat: a server channel, or the member's direct chat (never a trusted chat, whatever the list says)
-    const chatId = c.chat === "group" ? "c-ops" : "d-member";
+    const chatId = c.chat_id ?? (c.chat === "group" ? "c-ops" : "d-member");
+    const chats = [
+      ...(c.trusted_chat ? [`discord:${chatId}`] : []),
+      ...(c.trusted_chat_id ? [`discord:${c.trusted_chat_id}`] : []),
+      ...(c.trusted_server ? [`discord:server:${c.trusted_server}`] : []),
+    ];
     const cfg = {
       ...CFG,
       trustedSenders: c.trusted_user ? [`discord:${requester.senderId}`] : [],
-      trustedChats: c.trusted_chat ? [{ chat: `discord:${chatId}`, ownerOnly: false }] : [],
+      trustedChats: chats.map((chat) => ({ chat, ownerOnly: false })),
     };
     const sent = senderOf(requester, { trigger: "user" }, cfg, c.chat, "message", {
       platform: "discord",
       chat: { platform: "discord", id: chatId },
+      server: c.server ?? null,
     });
     assert.equal(sent.relation, c.relation);
     assert.equal(sent.basis.includes("group_chat"), c.group_chat);

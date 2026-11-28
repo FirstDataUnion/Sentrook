@@ -120,10 +120,18 @@ def test_the_same_group_facts_give_the_same_sender_as_openclaw(case):
     from plugin.trust import Trust
 
     user = "u-owner" if case["owner"] else "u-member"
-    f = {**facts(HERMES_CHAT[case["chat"]], user), "chat_id": "c-1"}
+    chat_id = case.get("chat_id", "c-1")
+    f = {**facts(HERMES_CHAT[case["chat"]], user), "chat_id": chat_id}
+    if "server" in case:
+        f["scope_id"] = case["server"]
+    chats = {f"discord:{chat_id}": False} if case.get("trusted_chat") else {}
+    if "trusted_chat_id" in case:
+        chats[f"discord:{case['trusted_chat_id']}"] = False
+    if "trusted_server" in case:
+        chats[f"discord:server:{case['trusted_server']}"] = False
     trusted = Trust(
         frozenset({f"discord:{user}"} if case.get("trusted_user") else set()),
-        {"discord:c-1": False} if case.get("trusted_chat") else {},
+        chats,
     )
     sent = sender_of("discord", f, None, ALLOW, trusted)
     assert sent["relation"] == case["relation"]

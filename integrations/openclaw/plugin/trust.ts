@@ -8,6 +8,14 @@
  * there is `trusted` (basis `plugin_allowlist:chat` and `group_chat`). A thread or topic in a trusted chat is covered
  * too: OpenClaw's session key for it starts with its chat's. The owner's own messages stay the owner's.
  *
+ * A trusted Discord server (`/sentrook-trust-chat add discord:server:<server id>`, or the same text in `trustedChats`)
+ * covers every channel and thread in it, including ones created later. OpenClaw names the server only on the message
+ * that starts a turn (`message_received`, `metadata.guildId`), not in the tool hook, so the plugin keeps which server
+ * each Discord room is in (`Store.noteServer`) and a turn matches when its room's server is trusted. The `server:` word
+ * keeps a server entry apart from a channel entry: a channel id is never read as a server id or the other way round. A
+ * direct message is never covered by a server entry. Only Discord for now; a server entry on another platform, or on
+ * an OpenClaw older than one that names the server, is refused when it is added.
+ *
  * Trusted is never the owner. Grants, bindings, settings, the setup screen and every owner command stay the owner's
  * alone, from a direct message, the Control UI or the command line; the scanner's floors apply whoever sent the turn;
  * a trusted turn is not one the owner attends (no snooze, no grant set by approving a review).
@@ -82,6 +90,36 @@ export const PLATFORMS: ReadonlySet<string> = new Set([
 ]);
 /** Entries kept per list. */
 export const MAX_ENTRIES = 200;
+/** The word that makes a trusted-chat entry a whole server: `discord:server:<server id>`. */
+export const SERVER = "server:";
+/** Platforms whose server OpenClaw names on a message, so a server entry can be matched. */
+export const SERVER_PLATFORMS: ReadonlySet<string> = new Set(["discord"]);
+/** A Discord server (guild) id: a number. OpenClaw may fall back to a configured name, which never matches. */
+export const SERVER_ID = /^[0-9]{1,25}$/;
+/** The first OpenClaw checked to name a Discord message's server to plugins (`message_received` `metadata.guildId`). */
+export const SERVER_FLOOR: readonly [number, number, number] = [2026, 11, 2];
+
+/** `platform:server:<id>`: a whole-server entry. */
+export function isServer(key: string): boolean {
+  return key.slice(key.indexOf(":") + 1).toLowerCase().startsWith(SERVER);
+}
+
+/**
+ * Null when this OpenClaw names a message's server (its version is at least `SERVER_FLOOR`, or unknown: then `verify`
+ * says whether a server has been seen); else why not.
+ */
+export function serverSupport(hostVersion: unknown): string | null {
+  if (typeof hostVersion !== "string" || !hostVersion.trim()) return null;
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(hostVersion.trim());
+  if (!m) return null;
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < 3; i++) {
+    if (parts[i]! !== SERVER_FLOOR[i]) {
+      return parts[i]! > SERVER_FLOOR[i]! ? null : `OpenClaw ${clean(hostVersion, 30)} does not tell plugins which server a message came from (${SERVER_FLOOR.join(".")} or later does)`;
+    }
+  }
+  return null;
+}
 export const OWNER_ONLY = "--owner-only";
 const FILE = "trust.json";
 
@@ -110,7 +148,28 @@ export function parseRef(raw: unknown): [string, string] | null {
   const platform = text.slice(0, at).toLowerCase();
   const id = text.slice(at + 1);
   if (!PLATFORM.test(platform) || !PLATFORMS.has(platform) || !ID.test(id)) return null;
+  if (id.toLowerCase().startsWith(SERVER)) {
+    const sid = id.slice(SERVER.length);
+    if (!SERVER_PLATFORMS.has(platform) || !SERVER_ID.test(sid)) return null;
+    return [platform, SERVER + sid];
+  }
   return [platform, id];
+}
+
+/** Why `raw`, written as a server entry, cannot be one; null when it is not written as one or is fine. */
+export function serverProblem(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  const at = text.indexOf(":");
+  if (at < 0) return null;
+  const platform = text.slice(0, at).toLowerCase();
+  const id = text.slice(at + 1);
+  if (!id.toLowerCase().startsWith(SERVER)) return null;
+  if (!SERVER_PLATFORMS.has(platform)) {
+    return `A whole server can be trusted only on Discord for now; on ${clean(platform, 40)}, trust each chat by its id instead`;
+  }
+  if (!SERVER_ID.test(id.slice(SERVER.length))) return "A Discord server id is a number: write it as discord:server:<server id>";
+  return null;
 }
 
 const keyOf = (ref: [string, string]) => `${ref[0]}:${ref[1]}`;
@@ -148,6 +207,8 @@ export function chatProblem(item: unknown): string | null {
     item = rec.chat;
   }
   if (typeof item !== "string") return "not <platform>:<chat id> text or { chat, owner_only }; ignored";
+  const server = item.split(",").map(serverProblem).find(Boolean);
+  if (server) return `${server}; ignored`;
   return item.split(",").every((p) => !p.trim() || parseRef(p)) ? null : "not <platform>:<chat id> on a chat platform; ignored";
 }
 
@@ -212,11 +273,31 @@ export function isTrustedSender(t: Trust, platform: string | null, senderId: unk
   return ids.some((i) => t.senders.has(`${p}:${i}`.toLowerCase()));
 }
 
-/** The trusted chat `platform:chatId` names: [key, owner-only], or null. */
-export function trustedChat(t: Trust, platform: string | null, chatId: string | null): [string, boolean] | null {
-  if (!platform || !chatId) return null;
-  const key = `${platform}:${chatId}`.toLowerCase();
-  return t.chats.has(key) ? [key, t.chats.get(key)!] : null;
+/**
+ * The trusted chat a room is in: by its id (`platform:chatId`), or by the server OpenClaw named for it (`serverId`,
+ * Discord only) as `platform:server:<id>`; [key, owner-only], or null. A chat id is only matched against chat entries
+ * and a server id against server entries. When a chat and its server are both trusted, the chat's key is given,
+ * owner-only when either entry says so.
+ */
+export function trustedChat(
+  t: Trust,
+  platform: string | null,
+  chatId: string | null,
+  serverId: string | null = null,
+): [string, boolean] | null {
+  if (!platform) return null;
+  const p = platform.toLowerCase();
+  const found: string[] = [];
+  if (chatId && !chatId.toLowerCase().startsWith(SERVER)) {
+    const key = `${p}:${chatId}`.toLowerCase();
+    if (t.chats.has(key)) found.push(key);
+  }
+  if (serverId && SERVER_PLATFORMS.has(p) && SERVER_ID.test(serverId)) {
+    const key = `${p}:${SERVER}${serverId}`;
+    if (t.chats.has(key)) found.push(key);
+  }
+  if (!found.length) return null;
+  return [found[0]!, found.some((k) => t.chats.get(k) === true)];
 }
 
 // ---- the explanations ---------------------------------------------------------------------------------
@@ -236,8 +317,13 @@ export function trustLine(cfg: Pick<PluginConfig, "trustedSenders" | "trustedCha
   const users = userCount(t);
   if (!t.chats.size && !users) return "Trusted chats and users: none. Messages from anyone but you in a group count as a stranger's.";
   const held = [...t.chats.values()].filter(Boolean).length;
+  const servers = [...t.chats.keys()].filter(isServer).length;
   let chats = `${t.chats.size} trusted chat${t.chats.size !== 1 ? "s" : ""}`;
-  if (held) chats += ` (${held} hold reviews for you)`;
+  const notes = [
+    ...(servers ? [`${servers} whole server${servers !== 1 ? "s" : ""}`] : []),
+    ...(held ? [`${held} hold reviews for you`] : []),
+  ];
+  if (notes.length) chats += ` (${notes.join(", ")})`;
   return `Trusted: ${chats}, ${users} trusted user${users !== 1 ? "s" : ""}. ${TRUSTED_IS}`;
 }
 
@@ -247,10 +333,14 @@ function clean(s: unknown, cap = 60): string {
 
 export function chatWarning(key: string, ownerOnly: boolean, openPlatform: boolean, cmd: Cmd): string {
   const platform = key.slice(0, key.indexOf(":"));
+  const server = isServer(key);
+  const where = server ? "in any channel or thread of this server, including ones created later," : "in this chat,";
   const who = openPlatform
     ? `OpenClaw answers any group on ${platform} (channels.${platform}.groupPolicy is open), so everyone who can post ` +
-      "in this chat, now and later, counts as someone you trust"
-    : "Everyone who can post there, now and later, counts as someone you trust";
+      `${where} now and later, counts as someone you trust`
+    : server
+      ? `Everyone who can post ${where} now and later, counts as someone you trust`
+      : "Everyone who can post there, now and later, counts as someone you trust";
   const reviews = ownerOnly
     ? `Sentrook will hold its reviews for you: you answer them with ${cmd("allow")} from your direct message, the ` +
       "Control UI or the command line."
@@ -259,8 +349,9 @@ export function chatWarning(key: string, ownerOnly: boolean, openPlatform: boole
       `with ${OWNER_ONLY} to have reviews held for you).`;
   const flag = ownerOnly ? ` ${OWNER_ONLY}` : "";
   return (
-    `Warning: ${who}. ${reviews} ${TRUSTED_IS} Trust a chat only on a private server where you know every member, ` +
-    `never an open or public group. To trust it: ${cmd("trust-chat")} add ${key}${flag} --confirm`
+    `Warning: ${who}. ${reviews} ${TRUSTED_IS} Trust a ` +
+    (server ? "server only when you know every member and who can join it" : "chat only on a private server where you know every member") +
+    `, never an open or public group. To trust it: ${cmd("trust-chat")} add ${key}${flag} --confirm`
   );
 }
 
@@ -273,7 +364,7 @@ export function userWarning(key: string, cmd: Cmd): string {
 
 function usage(kind: "chat" | "user", cmd: Cmd): string {
   const c = cmd(`trust-${kind}`);
-  const ref = kind === "chat" ? "<platform>:<chat id>" : "<platform>:<user id>";
+  const ref = kind === "chat" ? "<platform>:<chat id>|discord:server:<server id>" : "<platform>:<user id>";
   const extra = kind === "chat" ? ` [${OWNER_ONLY}]` : "";
   return `usage: ${c} add ${ref}${extra} [--confirm], ${c} remove ${ref} or ${c} list`;
 }
@@ -282,7 +373,9 @@ function listText(cfg: Pick<PluginConfig, "trustedSenders" | "trustedChats" | "s
   const t = of(cfg);
   const rows =
     kind === "chat"
-      ? [...t.chats].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `- ${k}${v ? " (reviews held for you)" : ""}`)
+      ? [...t.chats]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => `- ${k}${isServer(k) ? " (every channel and thread in this server)" : ""}${v ? " (reviews held for you)" : ""}`)
       : [...new Set([...t.senders, ...[...t.bare].filter((b) => !parseRef(b))])].sort().map((k) => `- ${k}`);
   const head = trustLine(cfg);
   return rows.length ? [head, ...rows].join("\n") : head;
@@ -293,6 +386,8 @@ export interface CommandChat {
   channel?: unknown;
   senderId?: unknown;
   sessionKey?: unknown;
+  /** OpenClaw's version where the plugin runtime gives it, for a server entry (`serverSupport`). */
+  hostVersion?: unknown;
 }
 
 /** The ids the command's own direct chat goes by on its channel (the peer in the session key, and the sender). */
@@ -343,6 +438,8 @@ export function run(
   if (op === "list" && args.length <= 1) return { reply: listText(cfg, kind), change: null };
   if ((op !== "add" && op !== "remove") || args.length !== 2) return { reply: usage(kind, cmd), change: null };
   const ref = parseRef(args[1]);
+  const problem = kind === "chat" ? serverProblem(args[1]) : null;
+  if (problem) return { reply: `${problem}. Nothing was changed.\n${usage(kind, cmd)}`, change: null };
   if (ref === null) {
     return {
       reply:
@@ -374,6 +471,12 @@ export function run(
     }, beforeWrite);
   }
 
+  if (kind === "chat" && isServer(key)) {
+    const why = serverSupport(chat.hostVersion);
+    if (why) {
+      return { reply: `A whole server cannot be trusted here: ${why}. Trust each chat by its id instead. Nothing was changed.`, change: null };
+    }
+  }
   if (kind === "chat") {
     const own = ownDirectIds(chat);
     if (own && own.platform === platform && own.ids.has(ident.toLowerCase())) {
@@ -410,7 +513,10 @@ export function run(
     const undo = `To undo: ${cmd(`trust-${kind}`)} remove ${key}.`;
     if (kind === "user") return { reply: `Trusted ${key}. ${TRUSTED_IS} ${undo}`, change: record };
     const reviews = ownerOnly ? "Its reviews are held for you." : "Its reviews are answered as OpenClaw allows there.";
-    return { reply: `Trusted ${key}: its members' messages count as from someone you trust. ${reviews} ${undo}`, change: record };
+    const whom = isServer(key)
+      ? "messages from its members in every channel and thread, including ones created later, count"
+      : "its members' messages count";
+    return { reply: `Trusted ${key}: ${whom} as from someone you trust. ${reviews} ${undo}`, change: record };
   }, beforeWrite);
 }
 

@@ -54,7 +54,10 @@ In short, for anyone deciding whether to install it:
   `{ chat, owner_only }`), and a person you know (`/sentrook-trust-user add <platform>:<user id> --confirm`, or
   `trustedSenders`). Their messages then count as from someone you trust, never as yours: grants, settings and every
   Sentrook command stay yours, and Sentrook still stops anything risky. A thread or topic in a trusted chat is covered;
-  a direct chat is never a trusted chat. Reviews there are answered as OpenClaw allows (its approvers); a chat added
+  a direct chat is never a trusted chat. A whole Discord server, every channel and thread in it including ones created
+  later, is `discord:server:<server id>` (Discord's **Copy Server ID**): it matches once OpenClaw has named that server
+  on a message in the room (OpenClaw 2026.11.2 or later), never a direct message, and `openclaw sentrook verify` says
+  whether a server has been seen yet. Reviews there are answered as OpenClaw allows (its approvers); a chat added
   with `--owner-only` holds them for you instead, answered with `/sentrook-allow`. Each command warns first, runs only
   where the other owner commands run (never in a group), and lists with `list` and undoes with `remove`; each change is
   logged by platform, never by id.

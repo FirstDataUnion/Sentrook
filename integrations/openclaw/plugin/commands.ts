@@ -73,6 +73,8 @@ export interface CommandContext {
   hostConfig?: unknown;
   /** OpenClaw's state directory as the gateway started with it (its job store), for `setup`. */
   openclawDir?: string;
+  /** OpenClaw's version where the plugin runtime gives it, for a trusted server (`trust.serverSupport`). */
+  hostVersion?: unknown;
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
@@ -298,6 +300,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
       return setup.run(configOf(ctx), rest, o.by, new Date(), CMD, o.record, o.beforeWrite, {
         openclawDir: ctx.openclawDir ?? openclawDir(ctx.env),
         hostConfig: ctx.hostConfig,
+        hostVersion: ctx.hostVersion,
       });
     },
   },
@@ -308,7 +311,7 @@ function trustText(ctx: CommandContext, kind: "chat" | "user", rest: string): st
   return changed(
     ctx,
     `trust-${kind}`,
-    (cfg, o) => trust.run(cfg, kind, rest, o.by, ctx.chat ?? {}, ctx.hostConfig, new Date(), CMD, o.beforeWrite),
+    (cfg, o) => trust.run(cfg, kind, rest, o.by, { ...(ctx.chat ?? {}), hostVersion: ctx.hostVersion }, ctx.hostConfig, new Date(), CMD, o.beforeWrite),
     "settings",
   );
 }

@@ -22,6 +22,24 @@
       "sentrook_propose_setup"
     ]
   },
+  "toolMetadata": {
+    "sentrook_setup_report": {
+      "profiles": [
+        "minimal",
+        "coding",
+        "messaging",
+        "full"
+      ]
+    },
+    "sentrook_propose_setup": {
+      "profiles": [
+        "minimal",
+        "coding",
+        "messaging",
+        "full"
+      ]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
@@ -94,7 +112,7 @@
         "description": "People you know: a list of <platform>:<user id> (such as discord:1234567890; a bare sender id still works). Their messages count as from someone you trust, not a stranger, but never as yours. /sentrook-trust-user adds more without editing config."
       },
       "trustedChats": {
-        "description": "Group chats or server channels where you know every member: a list of <platform>:<chat id>, or of { chat, owner_only }. Every member's message there counts as from someone you trust, never as yours; a thread or topic in the chat is covered. With owner_only true, a review on anyone's turn but yours there is held for you to answer with /sentrook-allow. /sentrook-trust-chat adds more without editing config."
+        "description": "Group chats or server channels where you know every member: a list of <platform>:<chat id> (or discord:server:<server id> for every channel and thread of a Discord server), or of { chat, owner_only }. Every member's message there counts as from someone you trust, never as yours; a thread or topic in the chat is covered. With owner_only true, a review on anyone's turn but yours there is held for you to answer with /sentrook-allow. /sentrook-trust-chat adds more without editing config."
       },
       "trustedRoles": {
         "description": "Chat role ids whose members' messages are sent as from a trusted sender: a list."

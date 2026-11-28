@@ -47,6 +47,7 @@
     "selfEdit.ts",
     "setup.ts",
     "setupReport.ts",
+    "setupTools.ts",
     "snooze.ts",
     "store.ts",
     "traffic.ts",

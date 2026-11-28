@@ -15,7 +15,9 @@ import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
 import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
 import * as setup from "./setup.ts";
+import { setupToolsCheck } from "./setupTools.ts";
 import { Store } from "./store.ts";
+import * as trust from "./trust.ts";
 
 export interface VerifyCheck {
   name: string;
@@ -44,6 +46,8 @@ export async function runVerify(
     hostConfig?: unknown;
     /** The home folder, for `~` in OpenClaw's config and the personal skills folder; the user's own when not given. */
     home?: string;
+    /** OpenClaw's version where the plugin runtime gives it; unknown on the command line. */
+    hostVersion?: unknown;
   } = {},
 ): Promise<VerifyCheck[]> {
   const env = envWithOpenclawDotenv(opts.env ?? process.env);
@@ -131,6 +135,7 @@ export async function runVerify(
       `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}` +
       (unreached ? `; no message send in the traffic log matches: ${unreached}` : ""),
   });
+  checks.push(trustCheck(cfg, opts.hostVersion));
   // Failed when calls are held and no notify target is set: the owner is told only where a fallback reaches them.
   const target = new Store(cfg.stateDir).loadNotify();
   const unset = unsetWarning(cfg.stateDir, target, new Date());
@@ -149,12 +154,43 @@ export async function runVerify(
   checks.push(...memoryWriterChecks(opts.hostConfig));
   // Reported, not failed: a workspace, project or managed skill with the name of one the plugin ships replaces it.
   checks.push(shadowCheck(opts.hostConfig, env, { home: opts.home }));
+  // Reported, not failed: an allow or deny list that hides the agent's setup tools; /sentrook-setup still works.
+  const setupTools = setupToolsCheck(opts.hostConfig);
+  if (setupTools) checks.push(setupTools);
   // Reported, not failed: another plugin's tool ran under the name of one of the plugin's own, so every call of it is
   // scanned.
   for (const [tool, since] of Object.entries(new Store(cfg.stateDir).loadForeignTools())) {
     checks.push({ name: OWN_TOOL_LABELS[tool] ?? tool, ok: true, detail: `warning: ${FOREIGN_TEXT} (since ${since})` });
   }
   return checks;
+}
+
+/**
+ * The trusted chats in force; failed for a trusted server this OpenClaw cannot match (it does not name a message's
+ * server), and noted when no Discord message has named its server to the plugin yet.
+ */
+export function trustCheck(cfg: PluginConfig, hostVersion: unknown): VerifyCheck {
+  let line: string;
+  let servers = 0;
+  try {
+    line = trust.trustLine(cfg).split(". ")[0]!;
+    servers = [...trust.of(cfg).chats.keys()].filter(trust.isServer).length;
+  } catch (err) {
+    return { name: "trusted chats", ok: false, detail: `cannot be read: ${String(err).slice(0, 120)}` };
+  }
+  if (!servers) return { name: "trusted chats", ok: true, detail: line };
+  const why = trust.serverSupport(hostVersion);
+  if (why) {
+    return { name: "trusted chats", ok: false, detail: `${line}; the trusted servers never match: ${why}. Trust each chat by its id instead` };
+  }
+  const seen = new Store(cfg.stateDir).serverSeenAt();
+  return {
+    name: "trusted chats",
+    ok: true,
+    detail: seen
+      ? `${line}; OpenClaw last named a Discord message's server at ${seen}`
+      : `${line}; no Discord message has named its server to the plugin yet (a trusted server matches once one does)`,
+  };
 }
 
 export function formatVerifyReport(checks: VerifyCheck[]): string {

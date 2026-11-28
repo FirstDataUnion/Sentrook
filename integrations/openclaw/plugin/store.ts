@@ -135,6 +135,8 @@ export interface JobRunLink {
 
 /** The session links `jobruns.json` keeps, newest last. */
 const JOB_RUN_LINKS = 500;
+/** Group rooms whose server `servers.json` keeps (trust.ts), newest last. */
+const SERVER_ROOMS = 1000;
 
 export interface GrantsFile {
   version?: number;
@@ -574,6 +576,40 @@ export class Store {
     if (!existsSync(dir)) return false;
     rmSync(dir, { recursive: true, force: true });
     return true;
+  }
+
+  /**
+   * Keeps the server OpenClaw named for a group room (`platform:room id` -> a Discord guild id) and when one was last
+   * seen, for trusted servers (trust.ts). A room's server never changes; the oldest rooms go past `SERVER_ROOMS`.
+   */
+  noteServer(room: string, server: string, now = new Date()): void {
+    const file = path.join(this.dir, "servers.json");
+    withFileLock(file, () => {
+      const cur = this.readJson<Record<string, any>>(file, {});
+      const rooms: Record<string, string> =
+        cur.rooms && typeof cur.rooms === "object" && !Array.isArray(cur.rooms) ? cur.rooms : {};
+      const seen = `${now.toISOString().slice(0, 19)}Z`;
+      if (rooms[room] === server && typeof cur.seen_at === "string" && cur.seen_at.slice(0, 13) === seen.slice(0, 13)) return;
+      delete rooms[room];
+      rooms[room] = server;
+      const keys = Object.keys(rooms);
+      for (const k of keys.slice(0, Math.max(0, keys.length - SERVER_ROOMS))) delete rooms[k];
+      this.writeJson(file, { version: 1, rooms, seen_at: seen });
+    });
+  }
+
+  /** The server OpenClaw named for a group room (`noteServer`), or null. */
+  serverOf(room: string): string | null {
+    const cur = this.readJson<Record<string, any>>(path.join(this.dir, "servers.json"), {});
+    const rooms = cur.rooms && typeof cur.rooms === "object" && !Array.isArray(cur.rooms) ? cur.rooms : {};
+    const v = Object.hasOwn(rooms, room) ? rooms[room] : null;
+    return typeof v === "string" && v ? v : null;
+  }
+
+  /** When OpenClaw last named a room's server (`noteServer`), or null when it never has. */
+  serverSeenAt(): string | null {
+    const cur = this.readJson<Record<string, any>>(path.join(this.dir, "servers.json"), {});
+    return typeof cur.seen_at === "string" ? cur.seen_at : null;
   }
 
   setParent(child: string, parent: string): void {

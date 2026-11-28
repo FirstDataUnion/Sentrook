@@ -18,9 +18,11 @@ import { resolveConfig } from "./config.ts";
 import * as hold from "./hold.ts";
 import { roomRefusal } from "./owner.ts";
 import plugin from "./index.ts";
-import { senderOf } from "./planir.ts";
+import { senderOf, serverOfMessage } from "./planir.ts";
 import * as setup from "./setup.ts";
-import { fromConfig, parseRef } from "./trust.ts";
+import { Store } from "./store.ts";
+import { fromConfig, parseRef, run as trustRun, serverProblem, serverSupport, trustedChat } from "./trust.ts";
+import { trustCheck } from "./verify.ts";
 
 const CHAT = "4242424242";
 const ROOM = `agent:main:discord:channel:${CHAT}`;
@@ -254,7 +256,7 @@ function registered(pluginConfig: Record<string, unknown> = {}, hostConfig: Reco
   };
   const command = async (name: string, args: string, ctx: Record<string, unknown> = DM) =>
     (await commands[name].handler({ ...ctx, args })).text as string;
-  return { commands, sent, records, call, command };
+  return { commands, sent, records, call, command, fire };
 }
 
 const stored = () => {
@@ -491,4 +493,183 @@ test("a trusted chat the agent proposed is shown with its warning and set from t
   assert.deepEqual(rec.source, ["p-aaaaaa"]);
   // once trusted, the screen no longer lists it
   assert.ok(!run("").includes(`Trust the chat \`discord:${CHAT}\``));
+});
+
+// ---- a trusted Discord server ------------------------------------------------------------------------------------
+
+const SERVER = "111";
+
+test("a member in any channel or thread of a trusted server is trusted; elsewhere they stay other", () => {
+  const cfg = cfgWith([`discord:server:${SERVER}`]);
+  const inServer = (id: string, server: string | null) => ({ ...place(id), server });
+  assert.deepEqual(senderOf(member, {}, cfg, "group", "message", inServer(CHAT, SERVER)), TRUSTED_MEMBER);
+  assert.deepEqual(senderOf(member, {}, cfg, "group", "message", inServer("5555", SERVER)), TRUSTED_MEMBER);
+  // another server, or no server known for the room
+  assert.deepEqual(senderOf(member, {}, cfg, "group", "message", inServer(CHAT, "222")), OTHER_IN_GROUP);
+  assert.deepEqual(senderOf(member, {}, cfg, "group", "message", inServer(CHAT, null)), OTHER_IN_GROUP);
+  // a direct chat is never covered
+  assert.deepEqual(senderOf(member, {}, cfg, "direct", "message", { platform: "discord", server: SERVER }), {
+    relation: "other",
+    basis: ["none"],
+  });
+});
+
+test("a channel id equal to a server id is not the server, nor the other way round", () => {
+  // on Discord an old #general channel can share its server's id
+  assert.deepEqual(
+    senderOf(member, {}, cfgWith([`discord:server:${SERVER}`]), "group", "message", { ...place(SERVER), server: "222" }),
+    OTHER_IN_GROUP,
+  );
+  assert.deepEqual(
+    senderOf(member, {}, cfgWith([`discord:${SERVER}`]), "group", "message", { ...place("333"), server: SERVER }),
+    OTHER_IN_GROUP,
+  );
+  assert.deepEqual(trustedChat(fromConfig(cfgWith([`discord:server:${SERVER}`])), "discord", `server:${SERVER}`), null);
+});
+
+test("an owner-only entry wins when a chat and its server are both trusted", () => {
+  const t = fromConfig({ trustedChats: [{ chat: `discord:${CHAT}`, ownerOnly: false }, { chat: `discord:server:${SERVER}`, ownerOnly: true }] });
+  assert.deepEqual(trustedChat(t, "discord", CHAT, SERVER), [`discord:${CHAT}`, true]);
+  assert.deepEqual(trustedChat(t, "discord", "5555", SERVER), [`discord:server:${SERVER}`, true]);
+});
+
+test("a server entry needs Discord and a number, and is normalised", () => {
+  for (const raw of ["discord:server:", "discord:server:abc", "slack:server:T123", "telegram:server:1"]) {
+    assert.equal(parseRef(raw), null, raw);
+  }
+  assert.deepEqual(parseRef(`Discord:SERVER:${SERVER}`), ["discord", `server:${SERVER}`]);
+  assert.match(serverProblem("slack:server:T1")!, /^A whole server can be trusted only on Discord/);
+  assert.match(serverProblem("discord:server:x")!, /^A Discord server id is a number/);
+  assert.equal(serverProblem("discord:123"), null);
+});
+
+test("the server a message's room is in is read from message_received, as a number only", () => {
+  const ev = (guildId: unknown) => ({ metadata: { guildId } });
+  assert.deepEqual(serverOfMessage(ev(SERVER), ROOM, {}), { room: `discord:${CHAT}`, server: SERVER });
+  assert.deepEqual(serverOfMessage(ev(SERVER), `${ROOM}:thread:77`, {}), { room: `discord:${CHAT}`, server: SERVER });
+  assert.equal(serverOfMessage(ev("my-server"), ROOM, {}), null); // a configured name, never an id
+  assert.equal(serverOfMessage(ev(111), ROOM, {}), null); // a number has lost digits
+  assert.equal(serverOfMessage(ev(SERVER), "agent:main:discord:direct:8111222333", {}), null);
+  assert.equal(serverOfMessage(ev(SERVER), "agent:main:slack:channel:c0general", {}), null);
+  assert.equal(serverOfMessage({}, ROOM, {}), null);
+});
+
+test("a server is refused on an OpenClaw that does not name a message's server", () => {
+  assert.equal(serverSupport(undefined), null);
+  assert.equal(serverSupport("2026.11.2"), null);
+  assert.equal(serverSupport("2027.1.0-beta.1"), null);
+  assert.match(serverSupport("2026.10.9")!, /does not tell plugins which server/);
+  const cfg = resolveConfig({}, process.env);
+  const by = { basis: ["local_terminal"] };
+  const out = trustRun(cfg, "chat", `add discord:server:${SERVER} --confirm`, by, { hostVersion: "2026.10.9" }, {}, new Date(), (s) => `/sentrook-${s}`, () => undefined);
+  assert.match(out.reply, /^A whole server cannot be trusted here: OpenClaw 2026\.10\.9 does not tell plugins/);
+  assert.equal(out.change, null);
+  assert.equal(stored().trusted_chats, undefined);
+});
+
+test("adding a server warns that every channel is covered, then needs --confirm; list says so", async () => {
+  const r = registered();
+  const warn = await r.command("sentrook-trust-chat", `add discord:server:${SERVER}`);
+  assert.ok(warn.startsWith("Warning: Everyone who can post in any channel or thread of this server, including ones created later,"), warn);
+  assert.match(warn, /Trust a server only when you know every member and who can join it/);
+  assert.equal(stored().trusted_chats, undefined);
+  const done = await r.command("sentrook-trust-chat", `add discord:server:${SERVER} --confirm`);
+  assert.ok(done.startsWith(`Trusted discord:server:${SERVER}: messages from its members in every channel and thread`), done);
+  assert.equal(stored().trusted_chats[0].chat, `discord:server:${SERVER}`);
+  const [rec] = r.records("settings");
+  assert.equal(rec.platform, "discord");
+  assert.ok(!JSON.stringify(rec).includes(SERVER));
+  const list = await r.command("sentrook-trust-chat", "list");
+  assert.ok(list.includes(`- discord:server:${SERVER} (every channel and thread in this server)`), list);
+  assert.ok(list.includes("(1 whole server)"), list);
+  for (const [args, why] of [["add slack:server:T1 --confirm", /only on Discord/], ["add discord:server:general --confirm", /is a number/]] as const) {
+    assert.match(await r.command("sentrook-trust-chat", args), why);
+  }
+  assert.equal(stored().trusted_chats.length, 1);
+});
+
+test("a server cannot be trusted from inside it", async () => {
+  const r = registered();
+  const inRoom = { ...DM, sessionKey: ROOM };
+  assert.equal(await r.command("sentrook-trust-chat", `add discord:server:${SERVER} --confirm`, inRoom), roomRefusal("trust-chat"));
+  assert.match(
+    await r.command("sentrook-trust-chat", `add discord:server:${SERVER} --confirm`, { ...inRoom, senderId: "u-member", senderIsOwner: false }),
+    /^Only the owner can run/,
+  );
+  assert.deepEqual(stored(), {});
+});
+
+test("a call from any channel of a trusted server is sent as trusted once OpenClaw named the room's server", async () => {
+  const r = registered({ trustedChats: [`discord:server:${SERVER}`] });
+  const room = "agent:main:discord:channel:5555";
+  // before any message named the server, the room is not known to be in it
+  await r.call("c0", "member", "r-0", room);
+  assert.deepEqual(scans.at(-1).trigger.sender, OTHER_IN_GROUP);
+  await r.fire("message_received", { content: "hi", metadata: { guildId: SERVER } }, { sessionKey: room, channelId: "discord" });
+  await r.call("c1", "member", "r-1", room);
+  assert.deepEqual(scans.at(-1).trigger.sender, TRUSTED_MEMBER);
+  await r.call("c2", "member", "r-2", `${room}:thread:9`);
+  assert.deepEqual(scans.at(-1).trigger.sender, TRUSTED_MEMBER);
+  // a room in another server
+  const elsewhere = "agent:main:discord:channel:6666";
+  await r.fire("message_received", { content: "hi", metadata: { guildId: "222" } }, { sessionKey: elsewhere, channelId: "discord" });
+  await r.call("c3", "member", "r-3", elsewhere);
+  assert.deepEqual(scans.at(-1).trigger.sender, OTHER_IN_GROUP);
+});
+
+test("verify names a trusted server and whether OpenClaw has named a message's server", async () => {
+  const cfg = resolveConfig({ trustedChats: [`discord:server:${SERVER}`, `discord:${CHAT}`] }, process.env);
+  let check = trustCheck(cfg, undefined);
+  assert.ok(check.ok);
+  assert.match(check.detail, /^Trusted: 2 trusted chats \(1 whole server\)/);
+  assert.match(check.detail, /no Discord message has named its server to the plugin yet/);
+  check = trustCheck(cfg, "2026.10.9");
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /the trusted servers never match: OpenClaw 2026\.10\.9 does not tell plugins/);
+  mkdirSync(stateDir, { recursive: true });
+  new Store(stateDir).noteServer(`discord:${CHAT}`, SERVER, new Date("2026-11-28T12:00:00Z"));
+  assert.match(trustCheck(cfg, "2026.11.5").detail, /OpenClaw last named a Discord message's server at 2026-11-28T12:00:00Z/);
+});
+
+test("the setup screen describes a whole server", () => {
+  const item = { kind: "trusted_chat", pattern: `discord:server:${SERVER}`, owner_only: false };
+  assert.ok(setup.describe(item, null).startsWith(`Trust the whole server \`discord:server:${SERVER}\``));
+  const [warning, reviews] = setup.itemWarnings(item);
+  assert.match(warning!, /including ones created later/);
+  assert.match(reviews!, /members there may approve/);
+});
+
+test("a server proposed on the setup screen is not set on an OpenClaw that does not name a message's server", () => {
+  const oc = mkdtempSync(path.join(tmpdir(), "sentrook-trust-server-setup-"));
+  const state = path.join(oc, "sentrook");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(
+    path.join(state, "proposals.json"),
+    JSON.stringify({
+      version: 1,
+      proposals: [
+        {
+          id: "p-bbbbbb",
+          session_ref: "s_000000000002",
+          created_at: "2026-11-28T11:00:00Z",
+          expires_at: "2026-11-29T11:00:00Z",
+          items: [{ trusted_chat: `discord:server:${SERVER}`, reason: "The team server" }],
+        },
+      ],
+    }),
+  );
+  writeFileSync(path.join(state, "traffic.jsonl"), "");
+  const cfg = resolveConfig({ trafficLog: { enabled: true } }, { OPENCLAW_STATE_DIR: oc, HOME: oc });
+  const by = { basis: ["local_terminal"], channel: null, sender_ref: null };
+  const run = (args: string, hostVersion: string) =>
+    setup.run(cfg, args, by, new Date("2026-11-28T12:00:00Z"), (s) => `/sentrook-${s}`, () => undefined, () => undefined, {
+      openclawDir: oc,
+      hostConfig: {},
+      code: () => "4821",
+      hostVersion,
+    });
+  assert.ok(run("", "2026.10.9").includes(`Trust the whole server \`discord:server:${SERVER}\``));
+  const reply = run("apply 4821", "2026.10.9");
+  assert.match(reply, /Not set: A whole server cannot be trusted here/);
+  assert.ok(!existsSync(path.join(state, "trust.json")) || !readFileSync(path.join(state, "trust.json"), "utf8").includes("server:"));
 });

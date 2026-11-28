@@ -13,7 +13,7 @@ import { destinationOk, type GrantConfig, nothingLiteral, type PluginConfig, TOO
 import { capArgs, type Redactor } from "./redact.ts";
 import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
-import { fromConfig, isTrustedSender, parseRef, type Trust, trustedChat } from "./trust.ts";
+import { fromConfig, isTrustedSender, parseRef, SERVER_ID, SERVER_PLATFORMS, type Trust, trustedChat } from "./trust.ts";
 
 /** History decisions sent as `review_timed_out`. */
 const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
@@ -427,12 +427,30 @@ export function groupChatOfKey(sessionKey: unknown, config: any): { platform: st
   return m ? { platform: m[1]!, id: m[2]! } : null;
 }
 
+/**
+ * The server a message's room is in, as OpenClaw names it on `message_received` (`metadata.guildId`, set from the
+ * channel's space for a Discord server message): the room as `platform:room id` (`groupChatOfKey`, a thread being the
+ * room it is in) and the server id. Null for a direct chat, a platform without server entries, or an id that is not a
+ * number (OpenClaw may fall back to a configured server name).
+ */
+export function serverOfMessage(event: any, sessionKey: unknown, config: any): { room: string; server: string } | null {
+  const raw = event?.metadata?.guildId;
+  // Text only: a Discord id as a JavaScript number has lost its last digits.
+  const server = typeof raw === "string" ? raw.trim() : "";
+  if (!SERVER_ID.test(server)) return null;
+  const room = groupChatOfKey(sessionKey, config);
+  if (!room || !SERVER_PLATFORMS.has(room.platform)) return null;
+  return { room: `${room.platform}:${room.id}`, server };
+}
+
 /** Where a turn came from, for the trusted users and chats (trust.ts). */
 export interface TurnPlace {
   /** The turn's channel as OpenClaw names it (`discord`, `telegram`, ...), lower case. */
   platform?: string | null;
   /** The group or channel room the turn is in (`groupChatOfKey`); never a direct chat. */
   chat?: { platform: string; id: string } | null;
+  /** The server OpenClaw named for that room (`Store.serverOf`, a Discord guild id); null when none is known. */
+  server?: string | null;
 }
 
 /**
@@ -475,7 +493,7 @@ export function senderOf(
   if (roles.some((r) => cfg.trustedRoles.includes(r))) {
     return { relation: "trusted", basis: ["plugin_allowlist:role", ...shared] };
   }
-  if (requester && group && trustedChat(trust, place.chat?.platform ?? null, place.chat?.id ?? null)) {
+  if (requester && group && trustedChat(trust, place.chat?.platform ?? null, place.chat?.id ?? null, place.server ?? null)) {
     return { relation: "trusted", basis: ["plugin_allowlist:chat", "group_chat"] };
   }
   if (requester) return { relation: "other", basis: group ? ["group_chat"] : ["none"] };
@@ -808,6 +826,8 @@ export interface BuildInput {
   selfEdit?: Record<string, unknown> | null;
   /** The trusted users and chats in force (`trust.of`); the config's alone when not given. */
   trust?: Trust;
+  /** The server OpenClaw named for a group room (`Store.serverOf`), for a trusted server; none known when not given. */
+  serverOf?: (room: { platform: string; id: string }) => string | null;
 }
 
 export interface Built {
@@ -908,11 +928,13 @@ export function buildPlanir(b: BuildInput): Built {
   const trust = b.trust ?? fromConfig(cfg);
   const room = chatKind === "group" && !b.hostProcess ? groupChatOfKey(sessionKey, b.hostConfig) : null;
   const rawChannel = ctx.requester?.channel ?? run.channel ?? run.messageProvider;
+  const server = room && b.serverOf ? b.serverOf(room) : null;
   const sender = senderOf(ctx.requester, run, cfg, chatKind, kind, {
     platform: typeof rawChannel === "string" && rawChannel ? rawChannel.toLowerCase() : null,
     chat: room,
+    server,
   }, trust);
-  const inTrusted = room ? trustedChat(trust, room.platform, room.id) : null;
+  const inTrusted = room ? trustedChat(trust, room.platform, room.id, server) : null;
   // A short message from the owner goes with the agent's message before it, as the agent's text (never in `text`).
   const prior =
     !b.hostProcess &&

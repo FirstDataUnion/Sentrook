@@ -579,6 +579,18 @@ to Sentrook as from someone you trust: scored well below a stranger's, above you
 settings and owner commands stay yours, a snooze still does not apply in groups, and Sentrook's floors still apply.
 Hermes does not tell plugins a member's roles, so a role cannot be trusted; trust the chat or each person.
 
+To trust a whole Discord server, every channel and thread in it including ones created later, write
+`discord:server:<server id>` (in Discord, right-click the server icon and use **Copy Server ID**):
+
+```
+/sentrook trust-chat add discord:server:1234567890 --confirm
+```
+
+A message matches when Hermes reports that server for it, so direct messages from its members are not covered, and a
+channel id is never taken for a server id. Trust a server only when you know every member and who can join it. Only
+Discord servers can be trusted this way for now; on other platforms trust each chat. `hermes sentrook verify` fails a
+trusted server if this Hermes cannot say which server a message came from.
+
 Reviews in a trusted chat ask in the chat, and any member Hermes lets answer may approve them, unless you narrow
 that with `approvals.approvers` in Hermes's config. A **Session** answer there covers the same job for that chat, but
 never sets a grant. Add a chat with `--owner-only` to have its reviews held for you instead: a member's call that
@@ -1100,7 +1112,7 @@ settings (see [step 2](#2-sign-in)).
 | `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. `/sentrook notify here` sets a chat instead and wins over this (see [Where notices go](#where-notices-go)). With neither set, a held call's notice goes only to its job's delivery chat or your direct message ([With no target set](#with-no-target-set)) |
 | `hide_tool_calls` | `false` | Hides the calls (secrets masked) that `/sentrook why`, background-save notices and the dashboard show. Anyone who can read your chat or open the dashboard reads them, so turn this on where others can. `dashboard_show_calls` is replaced by this and does nothing |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Either way they never ask (see [Background skill and memory saves](#background-skill-and-memory-saves)). A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
-| `trusted_chats` | | Group chats where you know every member, as `<platform>:<chat id>` entries, or `{chat, owner_only: true}` to have their reviews held for you (see [Trusted chats and users](#trusted-chats-and-users)). `/sentrook trust-chat add` adds more |
+| `trusted_chats` | | Group chats where you know every member, as `<platform>:<chat id>` (or `discord:server:<server id>` for a whole Discord server) entries, or `{chat, owner_only: true}` to have their reviews held for you (see [Trusted chats and users](#trusted-chats-and-users)). `/sentrook trust-chat add` adds more |
 | `trusted_senders` | | People you know, as `<platform>:<user id>` entries. `/sentrook trust-user add` adds more |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
