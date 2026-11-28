@@ -731,6 +731,15 @@ export function validItem(cand: Entry): Entry | null {
 /** The warnings an item carries from its own kind, pattern and allows. */
 export function itemWarnings(item: Entry): string[] {
   const out: string[] = [];
+  if (item.kind === "trusted_chat" && trust.isServer(item.pattern)) {
+    out.push(
+      "everyone who can post in any channel or thread of this server, including ones created later, counts as " +
+        "someone you trust; trust a server only when you know every member and who can join it, never an open or " +
+        "public one",
+    );
+    if (!item.owner_only) out.push("members there may approve the agent's reviews");
+    return out;
+  }
   if (item.kind === "trusted_chat") {
     out.push(
       "everyone who can post in this chat, now and later, counts as someone you trust; trust only a chat on a " +
@@ -800,6 +809,13 @@ export function lifetimeText(item: Entry, minutes: number | null): string {
 /** The item's first line, in the plugin's words: what it lets through, from where, and for how long. */
 export function describe(item: Entry, minutes: number | null): string {
   const p: string = item.pattern;
+  if (item.kind === "trusted_chat" && trust.isServer(p)) {
+    const held = item.owner_only ? "; its reviews are held for you" : "";
+    return (
+      `Trust the whole server \`${p}\`: messages from its members in every channel and thread, including ones ` +
+      `created later, count as from someone you know, not a stranger (never as yours)${held}, until you remove it.`
+    );
+  }
   if (item.kind === "trusted_chat") {
     const held = item.owner_only ? "; its reviews are held for you" : "";
     return (
@@ -938,7 +954,7 @@ export function build(
     }
     const ids = [...new Set(agent.map((s) => s.id as string))];
     for (const id of ids) lines.push(`Proposed by the agent (${id})${backed ? "." : ", not seen yet."}`);
-    if (item.kind === "trusted_chat" && ev.available) {
+    if (item.kind === "trusted_chat" && ev.available && !trust.isServer(item.pattern)) {
       const seen = ev.groups.get(item.pattern);
       if (seen === undefined) lines.push("Sentrook has not seen the agent used in this chat lately.");
       else {
@@ -1037,6 +1053,8 @@ export interface Sources {
   /** OpenClaw's config (its MCP servers). */
   hostConfig: unknown;
   code?: () => string;
+  /** OpenClaw's version where the plugin runtime gives it, for a trusted server (`trust.serverSupport`). */
+  hostVersion?: unknown;
 }
 
 /** Builds the screen, keeps its items with a new code (`setup.json`), and returns its text. */
@@ -1158,7 +1176,16 @@ function storedItem(raw: unknown): (Entry & { tags: string[]; proposals: string[
 }
 
 /** `apply <code> ...`: sets the chosen items of the screen the code belongs to, in one locked pass. */
-export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd: Cmd, record: RecordFn, beforeWrite: () => void): string {
+export function apply(
+  cfg: PluginConfig,
+  rest: string,
+  by: Entry,
+  now: Date,
+  cmd: Cmd,
+  record: RecordFn,
+  beforeWrite: () => void,
+  hostVersion?: unknown,
+): string {
   const parsed = parseApply(rest, cmd);
   if (typeof parsed === "string") return parsed;
   const refused = `That is not the code on the setup screen, or it has expired: ${openText(cmd)}`;
@@ -1199,7 +1226,7 @@ export function apply(cfg: PluginConfig, rest: string, by: Entry, now: Date, cmd
             continue;
           }
           const [line, change] = TRUST_KINDS.has(item.kind)
-            ? applyTrust(cfg, item, tags, by, now, n, beforeWrite)
+            ? applyTrust(cfg, item, tags, by, now, n, beforeWrite, hostVersion)
             : applyOne(cfg, data, item, tags, parsed, by, now, n);
           lines.push(line);
           if (change) (change.kind === "settings" ? trusts : changes).push(change);
@@ -1289,10 +1316,11 @@ function applyTrust(
   now: Date,
   n: number,
   beforeWrite: () => void,
+  hostVersion?: unknown,
 ): [string, Entry | null] {
   const kind = item.kind === "trusted_chat" ? "chat" : "user";
   const rest = `add ${item.pattern}${item.owner_only ? " --owner-only" : ""} --confirm`;
-  const { reply, change } = trust.run(cfg, kind, rest, by, {}, {}, now, (sub) => `/sentrook-${sub}`, beforeWrite);
+  const { reply, change } = trust.run(cfg, kind, rest, by, { hostVersion }, {}, now, (sub) => `/sentrook-${sub}`, beforeWrite);
   if (change === null) return [`${n}. Not set: ${reply}`, null];
   return [`${n}. ${reply}`, { ...change, kind: "settings", source: tags }];
 }
@@ -1412,7 +1440,7 @@ export function run(
   const verb = (space < 0 ? trimmed : trimmed.slice(0, space)).toLowerCase();
   const more = space < 0 ? "" : trimmed.slice(space + 1);
   if (!verb) return showScreen(cfg, now, cmd, src, beforeWrite);
-  if (verb === "apply") return apply(cfg, more, by, now, cmd, record, beforeWrite);
+  if (verb === "apply") return apply(cfg, more, by, now, cmd, record, beforeWrite, src.hostVersion);
   if (verb === "discard") return discard(cfg, more, by, now, cmd, record, beforeWrite);
   return usage(cmd);
 }

@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import build, grants, hold, login, owner_settings, passes, setup, skill_review
+from . import build, grants, hold, login, owner_settings, passes, setup, skill_review, trust
 from .auth import (
     ConsentWithdrawn,
     clear_scan_token_cache,
@@ -148,6 +148,7 @@ def run_verify(
     # Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
     state = passes.counts(cfg.state_dir, datetime.now(UTC))
     checks.append(("held-call passes", state != "passes file unreadable", state))
+    checks.append(("trusted chats", *trust.verify_check(cfg)))
     # Reported, not failed: Hermes's background saves never ask, so without a notice target the owner learns of
     # one that was let through, held or blocked only from history.
     checks.append(

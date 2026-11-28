@@ -120,6 +120,8 @@ def session_facts() -> dict[str, str]:
         "CHAT_TYPE",
         "CHAT_ID",
         "PARENT_CHAT_ID",
+        # The Discord server (guild) or Slack workspace the chat is in; empty in a direct message.
+        "SCOPE_ID",
         "USER_ID",
         "ACTOR_ID",
         "KEY",
@@ -130,6 +132,17 @@ def session_facts() -> dict[str, str]:
             value = ""
         out[name.lower()] = value if isinstance(value, str) else ""
     return out
+
+
+def scope_support() -> str | None:
+    """None when Hermes's gateway reports the server (Discord guild) a turn's chat is in, as
+    `HERMES_SESSION_SCOPE_ID` in `session_facts`; else why not (for a trusted server, `trust`). Every Hermes the
+    plugin supports binds that variable per turn wherever the gateway session context exists."""
+    try:
+        from gateway.session_context import get_session_env  # noqa: F401
+    except Exception:  # noqa: BLE001 - an install without the gateway package
+        return "this Hermes has no gateway session context, so it cannot say which server a message came from"
+    return None
 
 
 def resolve_platform(turn_platform: Any, facts: dict[str, str], env: dict[str, str]) -> str:
