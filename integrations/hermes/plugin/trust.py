@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from . import intent
 from .config import PluginConfig
 from .intent import ATTENDED_PLATFORMS
 from .store import Store
@@ -64,16 +65,7 @@ def is_server(key: str) -> bool:
 
 def server_support() -> str | None:
     """None when this Hermes reports a turn's server id (`HERMES_SESSION_SCOPE_ID`); else why not."""
-    try:
-        from gateway import session_context
-    except Exception:  # noqa: BLE001 - an install without the gateway package
-        return "this Hermes has no gateway session context, so it cannot say which server a message came from"
-    names = getattr(session_context, "_VAR_MAP", None)
-    if isinstance(names, dict) and "HERMES_SESSION_SCOPE_ID" not in names:
-        return (
-            "this Hermes does not report which server a message came from (HERMES_SESSION_SCOPE_ID)"
-        )
-    return None
+    return intent.scope_support()
 
 
 @dataclass(frozen=True)

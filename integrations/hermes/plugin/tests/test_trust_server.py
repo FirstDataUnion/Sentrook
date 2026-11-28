@@ -9,6 +9,7 @@ a message came from. The same owner-only protections as a trusted chat apply.
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -139,15 +140,15 @@ def test_hermes_session_facts_carry_the_server_id(monkeypatch):
 
 def test_server_support_reads_the_gateway(monkeypatch):
     monkeypatch.undo()  # the real check, not the fixture's
+    monkeypatch.setitem(sys.modules, "gateway", None)
+    assert "no gateway session context" in trust.server_support()
     mod = types.ModuleType("gateway.session_context")
-    mod._VAR_MAP = {"HERMES_SESSION_SCOPE_ID": object()}
-    gw = types.ModuleType("gateway")
-    gw.session_context = mod
-    monkeypatch.setitem(sys.modules, "gateway", gw)
+    mod.get_session_env = lambda name, default="": default
+    monkeypatch.setitem(sys.modules, "gateway", types.ModuleType("gateway"))
     monkeypatch.setitem(sys.modules, "gateway.session_context", mod)
     assert trust.server_support() is None
-    mod._VAR_MAP = {"HERMES_SESSION_CHAT_ID": object()}
-    assert "does not report which server" in trust.server_support()
+    # The gateway is read in intent.py only, beside the session facts (no new private import for the validator).
+    assert "gateway" not in Path(trust.__file__).read_text()
 
 
 # ---- the owner's command -----------------------------------------------------------------------------------
