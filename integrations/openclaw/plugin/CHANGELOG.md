@@ -1,5 +1,25 @@
 # @firstdataunion/sentrook-openclaw
 
+## 2.0.0-beta.16
+
+### Minor Changes
+
+- 1891003: Trusted chats can now be a whole Discord server: `/sentrook-trust-chat add discord:server:<server id> --confirm` (or
+  the same text in `trustedChats`) covers every channel and thread in it, including ones created later. OpenClaw names a
+  room's server on the messages it receives, so a room matches once a message there has named its server (OpenClaw
+  2026.11.2 or later; an older OpenClaw refuses the entry). Direct messages from its members are not covered, and a
+  channel id is never taken for a server id. `--owner-only` works as for a chat. Only Discord servers for now: a server
+  entry on another platform is refused. `list` marks whole servers, `openclaw sentrook verify` has a trusted-chats line
+  that says whether a server has been seen yet, and the setup skill and setup list suggest a server only where you know
+  every member and who can join.
+
+### Patch Changes
+
+- 35ad866: The agent's setup tools (`sentrook_setup_report` and `sentrook_propose_setup`) are now offered when OpenClaw's config
+  sets a tool profile (`tools.profile`, for example `coding`): the plugin manifest lists them for every profile, so the
+  agent can help you set Sentrook up. `openclaw sentrook verify` warns when a `tools.allow` or `tools.deny` list (global
+  or one agent's) still hides them, with the setting to change; `/sentrook-setup` works either way.
+
 ## 2.0.0-beta.15
 
 ### Minor Changes
