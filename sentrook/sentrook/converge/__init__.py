@@ -16,7 +16,7 @@ from ..aira.detectors import call_label
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..planir.models import ToolKind
 from ..prepare import INPUT_TOO_LARGE, Prepared, kernel_effects_of, kernel_hashes
-from ..prepare.entities import EntityKind
+from ..prepare.entities import EntityKind, Role
 from ..prepare.save_adds import SaveReading
 from ..probes.base import Envelope
 from ..response.models import (
@@ -34,7 +34,7 @@ from ..response.models import (
     RiskTree,
     SuspicionTier,
 )
-from ..state.token import PendingMarks, call_hash, encode_state
+from ..state.token import OUTPUT_KINDS, PendingMarks, call_hash, encode_state
 from .attended import DEFAULT_BLOCK_LINE, relaxable, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
@@ -170,8 +170,38 @@ def _mint_session_sets(
             _add_new(marks.sensitive, binding.writes)
         if any(h in state.tainted or h in marks.tainted for h in binding.takes):
             _add_new(marks.tainted, binding.writes)
+    marks.output_only = _output_only(prepared, envelopes, marks)
     state.add_pending(marks)
     return marks
+
+
+def _output_only(prepared: Prepared, envelopes: list[Envelope], marks: PendingMarks) -> str:
+    """The call's own sensitive read reaches the session only through the output it returns: AIRA found nothing but
+    the read (`output_only_read`), no other probe marked the session, the call writes no local file, and it acts on
+    no party off this machine unless the credential-home check holds (the key goes only to its own service). The
+    next scan then reads that output (`state.token.settle_pending`). Returns how it is read (`shell`, `code`), or ""."""
+    if SessionFlag.HOLDS_SENSITIVE not in marks.flags:
+        return ""
+    kind = ""
+    for env in envelopes:
+        if env.status is not ProbeStatus.OK or SessionFlag.HOLDS_SENSITIVE not in env.flags_set:
+            continue
+        kind = env.evidence.get("output_only_read") if env.step is ProbeStep.AIRA else None
+        if kind not in OUTPUT_KINDS:
+            return ""
+    if not kind or prepared.session_binding.writes:
+        return ""
+    if getattr(prepared, "credential_home", None) is not None:
+        return kind
+    # A request carries what the call read whatever its shape (a header, the query): any party the call acts on
+    # off this machine means the read did not only come back as output.
+    off = any(
+        ent.kind
+        in (EntityKind.HOST, EntityKind.RECIPIENT, EntityKind.CHANNEL, EntityKind.MCP_SERVER)
+        and ent.roles - {Role.MENTIONED}
+        for ent in prepared.entities.pending()
+    )
+    return "" if off else kind
 
 
 def _reasons(

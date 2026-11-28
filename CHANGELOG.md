@@ -1381,3 +1381,27 @@ stopped call, and the reach of any off-host send, none of which a grant touched.
 - Suite: no frozen case carries the field and no call state refits under the new budget, so a strict replay of both splits (call-v12 / exposure-v2 / conv-v11, 3 repeats, policy p1, evaluation-only cases included) has 0 misses and every case is unchanged; the gate passes on both splits.
 - `sentrook serve` and `sentrook scan` default to `call-v12`; `call-v1` to `call-v11` stay selectable.
 - Tests: `test_call_v12` (the set is `call-v11` plus the block on the new view; without a shown message the view and body are `call-v11`'s; the 300-character limit; every other view drops the field; the cut; the rule side never reads it; the probe; the reserve; the default), `test_question_set_pins` (`call-v12` with and without the block), and both plugins' tests for when the message is sent.
+
+### An env check that shows no value leaves the session as it was (2026-11-28)
+- A shell read of an env file in one of a few exact shapes reaches the session only through the output it returns
+  (`aira.output_only`, AIRA evidence `output_only_read`, token `PendingMarks.output_only`):
+  - a masked check: whole-line readers ending in `sed 's/=.*/=***/'`;
+  - a names listing: an anchored names extractor such as `grep -o '^[A-Z_]*'`, `cut -d= -f1` or `sed 's/=.*//'`,
+    optionally joined with `tr '\n' ' '`;
+  - a listing: `ls` and filters of its output, or `test -f`.
+  Around them only `set -a`/`+a`, `echo` of fixed text, `test`, `true` and `:` are allowed.
+  There may be no other command, no sourcing, no expansion, no input redirect, no redirect but to `/dev/null` or
+  `2>&1`, no subshell and no comment. The read must also write no local file and act on no party off this machine.
+- When the next scan carries that output whole (`ok`, not truncated) and it shows no value
+  (`prepare.shown_output`), the call's own `holds_sensitive` and sensitive marks are dropped instead of applied.
+  For a masked check or names listing, every line must be one of:
+  - a masked assignment;
+  - env-style names;
+  - exactly an `echo`'s text;
+  - an env-file comment with nothing secret-like in it.
+  For a listing, only a placeholder or credential shape counts. A host's JSON wrapper is read by its keys and text
+  fields.
+- Unchanged: any other command, every code (Python) read, a script that reads a key for its own service, an output
+  that shows a value or is missing or cut, a file-read tool, a session that already held the flag.
+- Tests: `test_output_only_read` (the shapes recognised and a wide set that is not, output lines, token round trip,
+  linear growth).

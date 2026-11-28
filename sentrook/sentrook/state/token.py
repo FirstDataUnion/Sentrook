@@ -24,7 +24,9 @@ sets bind the session judgements to what they are about:
 What the scanned call itself would add (`holds_sensitive` and the sensitive set from a sensitive read it makes, and
 the files it writes from a sensitive or tainted file) is not applied when it is scanned: the plugin has not yet
 decided whether the call runs. It is kept in `pending`, keyed to the call, and the next scan settles it from the
-call's decision in its history (`settle_pending`): applied once the call ran, dropped when it never did.
+call's decision in its history (`settle_pending`): applied once the call ran, dropped when it never did. A sensitive
+read whose only way into the session is the output the call returns (`PendingMarks.output_only`) holds nothing when
+that output, as the next scan sees it, shows no value: its `holds_sensitive` and sensitive marks are dropped then.
 
 `impacts` keeps the last few scans' impact (the consequence tier without self-modification), oldest first, for the
 escalation trend (`probes.context`). It is null when the earlier impacts are not known: a token issued before it
@@ -42,6 +44,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -60,6 +63,8 @@ TAINTED_CAP = 32
 TRUSTED_CAP = 64
 SKILL_NAMED_CAP = 32
 KERNEL_CAP = 64
+#: How an output-only read's output is read (`PendingMarks.output_only`).
+OUTPUT_KINDS = frozenset({"shell", "list"})
 #: Calls whose own marks wait for their outcome; past it the oldest are dropped (they never showed as run).
 PENDING_CAP = 8
 #: Scan impacts kept for the escalation trend, oldest first.
@@ -101,6 +106,10 @@ class PendingMarks:
     kernel_unknown: bool = False
     #: A later scan saw the call waiting for the owner: once it leaves the history it is dropped, not applied.
     waiting: bool = False
+    #: The call's sensitive read reaches the session only through the output it returns (`aira.output_only`): how
+    #: that output is read, `shell` or `list`; empty when it is not such a read. When the output shows no value
+    #: the read holds nothing (`settle_pending`).
+    output_only: str = ""
 
     def empty(self) -> bool:
         return not (
@@ -215,8 +224,14 @@ class SessionState:
                     self.kernel_unknown = True
             del self.pending[: len(self.pending) - PENDING_CAP]
 
-    def apply(self, marks: PendingMarks) -> None:
-        """The call ran: what it read and wrote joins the session."""
+    def apply(self, marks: PendingMarks, *, clean: frozenset[str] = frozenset()) -> None:
+        """The call ran: what it read and wrote joins the session. `clean`: the ways of reading the call's returned
+        output (`shell`, `list`) under which it shows no value; a read whose only way into the session is that output,
+        read that way, adds no sensitive mark."""
+        if marks.output_only and marks.output_only in clean:
+            marks.flags.discard(SessionFlag.HOLDS_SENSITIVE)
+            marks.sensitive = []
+            marks.sensitive_unbound = False
         self.flags |= marks.flags
         self.add_sensitive(marks.sensitive)
         self.sensitive_unbound = self.sensitive_unbound or marks.sensitive_unbound
@@ -240,20 +255,24 @@ def settle_pending(
     state: SessionState,
     decisions: list[tuple[str, str]],
     ran: set[str] | frozenset[str] = frozenset(),
+    nothing_shown: Mapping[str, frozenset[str]] | None = None,
 ) -> None:
     """Settle the pending marks from the history this request sends (`(call_id, decision)`, oldest first) and the
     calls it shows ran whatever their decision (`ran`: an `ok` result, or a tool result in the request; a host can
     run a call a remembered answer approved without telling the plugin, so its decision stays a review): a call that
     ran is applied, one that never ran is dropped, one waiting for the owner stays pending. A call the history does
     not name, or with a decision the scanner does not know, is applied: nothing says it was stopped. A call that was
-    seen waiting and has since left the history is dropped."""
+    seen waiting and has since left the history is dropped. `nothing_shown` maps a call whose returned output this
+    request carries whole to the ways of reading it under which it shows no value (`prepare.shown_output`): an
+    output-only read among them, read its own way, adds no sensitive mark."""
     latest = {call_hash(state.salt, cid): d for cid, d in decisions}
     shown_run = {call_hash(state.salt, cid) for cid in ran}
+    clean = {call_hash(state.salt, cid): kinds for cid, kinds in (nothing_shown or {}).items()}
     keep: list[PendingMarks] = []
     for marks in state.pending:
         decision = latest.get(marks.call)
         if marks.call in shown_run:
-            state.apply(marks)
+            state.apply(marks, clean=clean.get(marks.call, frozenset()))
         elif decision in NOT_RUN or (decision is None and marks.waiting):
             continue
         elif decision in WAITING:
@@ -397,6 +416,8 @@ def _encode_pending(marks: PendingMarks) -> dict:
         out["kru"] = True
     if marks.waiting:
         out["w"] = True
+    if marks.output_only:
+        out["oo"] = marks.output_only
     return out
 
 
@@ -419,6 +440,7 @@ def _decode_pending(raw: object) -> list[PendingMarks]:
                 kernel=_strings(entry.get("krn"))[:KERNEL_CAP],
                 kernel_unknown=entry.get("kru") is True,
                 waiting=entry.get("w") is True,
+                output_only=entry["oo"] if entry.get("oo") in OUTPUT_KINDS else "",
             )
         )
     return out
